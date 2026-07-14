@@ -2,6 +2,11 @@ import { mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSy
 import { createHash } from "node:crypto";
 import { dirname, join, relative, resolve } from "node:path";
 import {
+  globalConfigPath,
+  readGlobalConfig,
+  type ZvecGrepGlobalConfig,
+} from "../config.js";
+import {
   Collection,
   CollectionRegistry,
   isCollectionIndexed,
@@ -60,6 +65,7 @@ import { enrichLexicalItemsWithStructure } from "./structure-enrichment.js";
 const DEFAULT_CONTEXT_LIMIT = 10;
 const DEFAULT_CONTEXT_TOTAL_LIMIT = 30;
 const DEFAULT_LOCAL_EMBEDDING = "local/embeddinggemma-300m";
+const MAX_RECOVERED_EMBEDDING_MODELS = 4;
 
 
 export async function createZvecGrep(options: CreateZvecGrepOptions = {}): Promise<ZvecGrep> {
@@ -71,15 +77,15 @@ class ZvecGrepService implements ZvecGrep {
   readonly root: string;
   readonly collections: ZvecGrepCollections;
   private readonly embeddingModel?: EmbeddingModel;
-  private readonly embeddingModelExplicit: boolean;
   private readonly recoveredEmbeddingModels = new Map<string, EmbeddingModel>();
+  private readonly retiredEmbeddingModels = new Set<EmbeddingModel>();
+  private activeEmbeddingModelOperations = 0;
   private closed = false;
 
 
   constructor(private readonly options: CreateZvecGrepOptions) {
     this.root = resolveZvecGrepRoot(options.root);
-    this.embeddingModelExplicit = hasExplicitEmbeddingModel(options);
-    this.embeddingModel = resolveEmbeddingModel(options, this.root);
+    this.embeddingModel = options.embeddingModel;
     this.collections = {
       list: () => this.listCollections(),
       info: (name) => this.collectionInfo(name),
@@ -94,50 +100,54 @@ class ZvecGrepService implements ZvecGrep {
     this.ensureOpen();
     const root = resolveZvecGrepRoot(options.root ?? this.root);
     const location = anonymousIndexLocation(root);
-    return await withHomeWriteLock(location.home, options.rebuild ? "index.rebuild" : "index", async () => {
-      const existing = readCollectionInfo(location.home, ANONYMOUS_COLLECTION_NAME);
-      const embeddingModel = this.embeddingModelForIndex(existing, location.home, "index");
-      const registry = new CollectionRegistry(location.home, embeddingModel);
+    return await this.withEmbeddingModelOperation(() => withHomeWriteLock(
+      location.home,
+      options.rebuild ? "index.rebuild" : "index",
+      async () => {
+        const existing = readCollectionInfo(location.home, ANONYMOUS_COLLECTION_NAME);
+        const embeddingModel = this.embeddingModelForIndex(existing, location.home, "index");
+        const registry = new CollectionRegistry(location.home, embeddingModel);
 
-      try {
-        const rootPaths = resolveIndexRootPaths(
-          existing,
-          options.rootPaths,
-          root,
-          {
-            resetPaths: options.resetPaths === true,
-            includePaths: options.includePaths,
-            excludePaths: options.excludePaths,
-          },
-        );
-
-        if (options.rebuild) {
-          registry.remove(ANONYMOUS_COLLECTION_NAME);
-        }
-
-        const existingAfterRebuild = registry.get(ANONYMOUS_COLLECTION_NAME);
-        if (isCollectionIndexed(existingAfterRebuild)) {
-          assertCollectionEmbeddingMatchesCurrentModel(
-            existingAfterRebuild,
-            embeddingModel,
-            "zg --index --rebuild",
+        try {
+          const rootPaths = resolveIndexRootPaths(
+            existing,
+            options.rootPaths,
+            root,
+            {
+              resetPaths: options.resetPaths === true,
+              includePaths: options.includePaths,
+              excludePaths: options.excludePaths,
+            },
           );
-        }
-        registry.prepareIndex(
-          ANONYMOUS_COLLECTION_NAME,
-          rootPaths,
-          anonymousCollectionPath(root),
-        );
 
-        return await registry.open(ANONYMOUS_COLLECTION_NAME).index({
-          rebuild: false,
-          embeddingConcurrency: options.embeddingConcurrency,
-          onProgress: options.onProgress,
-        });
-      } finally {
-        registry.close();
-      }
-    });
+          if (options.rebuild) {
+            registry.remove(ANONYMOUS_COLLECTION_NAME);
+          }
+
+          const existingAfterRebuild = registry.get(ANONYMOUS_COLLECTION_NAME);
+          if (isCollectionIndexed(existingAfterRebuild)) {
+            assertCollectionEmbeddingMatchesCurrentModel(
+              existingAfterRebuild,
+              embeddingModel,
+              "zg --index --rebuild",
+            );
+          }
+          registry.prepareIndex(
+            ANONYMOUS_COLLECTION_NAME,
+            rootPaths,
+            anonymousCollectionPath(root),
+          );
+
+          return await registry.open(ANONYMOUS_COLLECTION_NAME).index({
+            rebuild: false,
+            embeddingConcurrency: options.embeddingConcurrency,
+            onProgress: options.onProgress,
+          });
+        } finally {
+          registry.close();
+        }
+      },
+    ));
   }
 
 
@@ -165,9 +175,11 @@ class ZvecGrepService implements ZvecGrep {
 
   async context(options: ZvecGrepContextOptions): Promise<ZvecGrepContextResult> {
     this.ensureOpen();
-    const timings = new TimingCollector();
-    const result = await timings.time("total", () => this.contextWithTimings(options, timings));
-    return withContextTimings(result, timings);
+    return await this.withEmbeddingModelOperation(async () => {
+      const timings = new TimingCollector();
+      const result = await timings.time("total", () => this.contextWithTimings(options, timings));
+      return withContextTimings(result, timings);
+    });
   }
 
 
@@ -260,8 +272,10 @@ class ZvecGrepService implements ZvecGrep {
     const models = new Set<EmbeddingModel>([
       ...(this.embeddingModel ? [this.embeddingModel] : []),
       ...this.recoveredEmbeddingModels.values(),
+      ...this.retiredEmbeddingModels,
     ]);
     this.recoveredEmbeddingModels.clear();
+    this.retiredEmbeddingModels.clear();
 
     for (const model of models) {
       await model.dispose();
@@ -317,49 +331,53 @@ class ZvecGrepService implements ZvecGrep {
   ): Promise<IndexResult> {
     this.ensureOpen();
     const home = serviceHome(this.options);
-    return await withHomeWriteLock(home, options.rebuild ? "collections.index.rebuild" : "collections.index", async () => {
-      const existing = readCollectionInfo(home, name);
-      const embeddingModel = this.embeddingModelForIndex(existing, home, "collections.index");
-      const registry = this.createRegistry(false, embeddingModel);
-      try {
-        const requestedRootPaths = paths === undefined
-          ? undefined
-          : Array.isArray(paths)
-            ? paths
-            : [paths];
-        const rootPaths = resolveIndexRootPaths(
-          existing,
-          requestedRootPaths,
-          this.root,
-          {
-            resetPaths: options.resetPaths === true,
-            includePaths: options.includePaths,
-            excludePaths: options.excludePaths,
-          },
-        );
-
-        if (options.rebuild) {
-          registry.remove(name);
-        }
-
-        const existingAfterRebuild = registry.get(name);
-        if (isCollectionIndexed(existingAfterRebuild)) {
-          assertCollectionEmbeddingMatchesCurrentModel(
-            existingAfterRebuild,
-            embeddingModel,
-            "zg --collections index <name> --rebuild",
+    return await this.withEmbeddingModelOperation(() => withHomeWriteLock(
+      home,
+      options.rebuild ? "collections.index.rebuild" : "collections.index",
+      async () => {
+        const existing = readCollectionInfo(home, name);
+        const embeddingModel = this.embeddingModelForIndex(existing, home, "collections.index");
+        const registry = this.createRegistry(false, embeddingModel);
+        try {
+          const requestedRootPaths = paths === undefined
+            ? undefined
+            : Array.isArray(paths)
+              ? paths
+              : [paths];
+          const rootPaths = resolveIndexRootPaths(
+            existing,
+            requestedRootPaths,
+            this.root,
+            {
+              resetPaths: options.resetPaths === true,
+              includePaths: options.includePaths,
+              excludePaths: options.excludePaths,
+            },
           );
-        }
-        registry.prepareIndex(name, rootPaths);
 
-        return await registry.open(name).index({
-          embeddingConcurrency: options.embeddingConcurrency,
-          onProgress: options.onProgress,
-        });
-      } finally {
-        registry.close();
-      }
-    });
+          if (options.rebuild) {
+            registry.remove(name);
+          }
+
+          const existingAfterRebuild = registry.get(name);
+          if (isCollectionIndexed(existingAfterRebuild)) {
+            assertCollectionEmbeddingMatchesCurrentModel(
+              existingAfterRebuild,
+              embeddingModel,
+              "zg --collections index <name> --rebuild",
+            );
+          }
+          registry.prepareIndex(name, rootPaths);
+
+          return await registry.open(name).index({
+            embeddingConcurrency: options.embeddingConcurrency,
+            onProgress: options.onProgress,
+          });
+        } finally {
+          registry.close();
+        }
+      },
+    ));
   }
 
 
@@ -699,11 +717,16 @@ class ZvecGrepService implements ZvecGrep {
     registryHome: string,
     operation: string,
   ): EmbeddingModel {
-    if (isCollectionIndexed(existing) && !this.embeddingModelExplicit) {
+    if (isCollectionIndexed(existing) && !this.embeddingModel && !this.options.embedding) {
       return this.recoverEmbeddingModel(existing.embedding, registryHome);
     }
 
-    return this.requireEmbeddingModel(operation);
+    const reference = this.options.embedding
+      ?? (this.options.defaultEmbedding === true ? DEFAULT_LOCAL_EMBEDDING : undefined);
+    return this.embeddingModel
+      ?? (reference ? this.embeddingModelFromReference(reference, registryHome) : undefined)
+      ?? this.configuredEmbeddingModel(registryHome)
+      ?? this.requireEmbeddingModel(operation);
   }
 
 
@@ -711,18 +734,89 @@ class ZvecGrepService implements ZvecGrep {
     schema: CollectionEmbeddingSchema,
     registryHome: string,
   ): EmbeddingModel {
-    const key = `${schema.provider}/${schema.model}/${modelCacheDir(this.options, this.root, registryHome)}`;
+    const config = readGlobalConfig();
+    const options = providerOptions(this.options, this.root, registryHome, schema.provider, config);
+    const key = `${schema.provider}/${schema.model}/${providerOptionsFingerprint(options)}`;
+    return this.cachedEmbeddingModel(key, () => createEmbeddingModel({
+      provider: schema.provider,
+      model: schema.model,
+    }, options));
+  }
+
+
+  private configuredEmbeddingModel(registryHome: string): EmbeddingModel | undefined {
+    const config = readGlobalConfig();
+    const reference = config.defaults?.embedding;
+    if (!reference) {
+      return undefined;
+    }
+
+    return this.embeddingModelFromReference(reference, registryHome, config);
+  }
+
+
+  private embeddingModelFromReference(
+    reference: string,
+    registryHome: string,
+    config: ZvecGrepGlobalConfig = readGlobalConfig(),
+  ): EmbeddingModel {
+    const provider = providerFromReference(reference);
+    const options = providerOptions(this.options, this.root, registryHome, provider, config);
+    const key = `configured/${reference}/${providerOptionsFingerprint(options)}`;
+    return this.cachedEmbeddingModel(key, () => createEmbeddingModelFromReference(reference, options));
+  }
+
+
+  private cachedEmbeddingModel(key: string, create: () => EmbeddingModel): EmbeddingModel {
     const cached = this.recoveredEmbeddingModels.get(key);
     if (cached) {
+      this.recoveredEmbeddingModels.delete(key);
+      this.recoveredEmbeddingModels.set(key, cached);
       return cached;
     }
 
-    const model = createEmbeddingModel({
-      provider: schema.provider,
-      model: schema.model,
-    }, providerOptions(this.options, this.root, registryHome));
+    const model = create();
     this.recoveredEmbeddingModels.set(key, model);
+    this.trimRecoveredEmbeddingModels();
     return model;
+  }
+
+
+  private trimRecoveredEmbeddingModels(): void {
+    while (this.recoveredEmbeddingModels.size > MAX_RECOVERED_EMBEDDING_MODELS) {
+      const oldestKey = this.recoveredEmbeddingModels.keys().next().value;
+      if (oldestKey === undefined) {
+        return;
+      }
+
+      const model = this.recoveredEmbeddingModels.get(oldestKey);
+      this.recoveredEmbeddingModels.delete(oldestKey);
+      if (model) {
+        this.retiredEmbeddingModels.add(model);
+      }
+    }
+  }
+
+
+  private async withEmbeddingModelOperation<T>(operation: () => Promise<T>): Promise<T> {
+    this.activeEmbeddingModelOperations += 1;
+    try {
+      return await operation();
+    } finally {
+      this.activeEmbeddingModelOperations -= 1;
+      if (this.activeEmbeddingModelOperations === 0) {
+        await this.disposeRetiredEmbeddingModels();
+      }
+    }
+  }
+
+
+  private async disposeRetiredEmbeddingModels(): Promise<void> {
+    const models = [...this.retiredEmbeddingModels];
+    this.retiredEmbeddingModels.clear();
+    for (const model of models) {
+      await model.dispose();
+    }
   }
 
 
@@ -732,7 +826,7 @@ class ZvecGrepService implements ZvecGrep {
         code: "ZVEC_GREP.ENGINE.SERVICE.EMBEDDING_MODEL_REQUIRED",
         context: errorDetails([
           detail("operation", operation),
-          detail("hint", 'Pass "--embedding <model>" or set ZVEC_GREP_EMBEDDING. Existing indexes can rerun --index without --embedding to reuse the stored schema.'),
+          detail("hint", `Pass "--embedding <model>", set ZVEC_GREP_EMBEDDING, or configure defaults.embedding in ${globalConfigPath()}. Existing indexes can rerun --index without --embedding to reuse the stored schema.`),
           detail("examples", "local/embeddinggemma-300m, qwen/text-embedding-v4"),
         ]),
       });
@@ -1002,38 +1096,6 @@ function applyRootPathFilterOverrides(
 }
 
 
-function resolveEmbeddingModel(
-  options: CreateZvecGrepOptions,
-  root: string,
-): EmbeddingModel | undefined {
-  if (options.embeddingModel) {
-    return options.embeddingModel;
-  }
-
-  if (options.embedding) {
-    return createEmbeddingModelFromReference(
-      options.embedding,
-      providerOptions(options, root),
-    );
-  }
-
-  if (options.defaultEmbedding === true) {
-    return createEmbeddingModelFromReference(
-      DEFAULT_LOCAL_EMBEDDING,
-      providerOptions(options, root),
-    );
-  }
-
-  return undefined;
-}
-
-
-function hasExplicitEmbeddingModel(options: CreateZvecGrepOptions): boolean {
-  return options.embeddingModel !== undefined
-    || options.embedding !== undefined;
-}
-
-
 function readCollectionInfo(home: string, name: string): CollectionInfo | null {
   const registry = new CollectionRegistry(home, undefined, true);
   try {
@@ -1063,14 +1125,45 @@ function providerOptions(
   options: CreateZvecGrepOptions,
   root: string,
   registryHome?: string,
+  provider?: string,
+  config: ZvecGrepGlobalConfig = readGlobalConfig(),
 ) {
+  const providerConfig = provider ? config.providers?.[provider] : undefined;
   return {
-    apiKey: options.apiKey ?? "",
-    endpoint: options.endpoint,
-    modelCacheDir: modelCacheDir(options, root, registryHome),
-    llamaGpu: options.llamaGpu,
-    embeddingParallelism: options.embeddingParallelism,
+    apiKey: options.apiKey ?? providerConfig?.apiKey ?? "",
+    endpoint: options.endpoint ?? providerConfig?.endpoint,
+    modelCacheDir: options.modelCacheDir
+      ?? process.env.ZVEC_GREP_MODEL_CACHE
+      ?? config.defaults?.modelCacheDir
+      ?? modelCacheDir(options, root, registryHome),
+    llamaGpu: options.llamaGpu ?? config.defaults?.llamaGpu,
+    embeddingParallelism: options.embeddingParallelism ?? config.defaults?.embeddingParallelism,
   };
+}
+
+
+function providerFromReference(reference: string): string | undefined {
+  const separator = reference.indexOf("/");
+  return separator > 0 ? reference.slice(0, separator) : undefined;
+}
+
+
+function providerOptionsFingerprint(options: {
+  apiKey: string;
+  endpoint?: string;
+  modelCacheDir?: string;
+  llamaGpu?: "auto" | "metal" | "vulkan" | "cuda" | false;
+  embeddingParallelism?: number;
+}): string {
+  return createHash("sha256")
+    .update(JSON.stringify([
+      options.apiKey,
+      options.endpoint,
+      options.modelCacheDir,
+      options.llamaGpu,
+      options.embeddingParallelism,
+    ]))
+    .digest("hex");
 }
 
 

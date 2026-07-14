@@ -32,6 +32,7 @@ pnpm-debug.log*
 # Package manager metadata
 .npm/
 .pnpm-store/
+*.tgz
 
 
 # OS and editor files

@@ -59,8 +59,16 @@ const MANAGED_RG_OUTPUT_OPTIONS = new Set([
 export function parseArgs(args: readonly string[]): ParsedArgs {
   const options: CliOptions = {};
   const positionals: string[] = [];
+  let startIndex = 0;
+  if (args[0] === "install") {
+    options.install = true;
+    startIndex = 1;
+  } else if (args[0] === "serve") {
+    options.serve = true;
+    startIndex = 1;
+  }
 
-  for (let index = 0; index < args.length; index++) {
+  for (let index = startIndex; index < args.length; index++) {
     const arg = args[index]!;
 
     if (arg === "--") {
@@ -85,6 +93,21 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
       options.status = true;
     } else if (arg === "--collections") {
       options.collections = true;
+    } else if (arg === "--mcp") {
+      options.mcp = true;
+    } else if (isLongOptionWithValue(arg, "--target")) {
+      options.installTargets = appendInstallTargets(options.installTargets, valueFromLongOption(arg));
+    } else if (arg === "--target") {
+      options.installTargets = appendInstallTargets(options.installTargets, readOptionValue(args, ++index, arg));
+    } else if (isLongOptionWithValue(arg, "--mcp-tool-timeout")) {
+      options.installMcpToolTimeoutSeconds = parsePositiveInteger(
+        valueFromLongOption(arg),
+        "--mcp-tool-timeout",
+      );
+    } else if (arg === "--mcp-tool-timeout") {
+      options.installMcpToolTimeoutSeconds = parsePositiveInteger(readOptionValue(args, ++index, arg), arg);
+    } else if (arg === "--yes") {
+      options.yes = true;
     } else if (arg === "--rg") {
       options.rg = true;
     } else if (arg === "--debug") {
@@ -103,6 +126,8 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
       options.color = "never";
     } else if (arg === "--rebuild") {
       options.rebuild = true;
+    } else if (arg === "--force") {
+      options.force = true;
     } else if (arg === "--reset-paths") {
       options.resetPaths = true;
     } else if (arg === "--no-fallback") {
@@ -249,8 +274,35 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
 
 
 function validateCliShape(options: CliOptions): void {
+  const hasUtilityCommand = options.index
+    || options.disableIndex
+    || options.status
+    || options.collections
+    || options.install
+    || options.serve;
+
   if (options.index && options.collections) {
     throw new Error("--index and --collections cannot be used together");
+  }
+
+  if (options.install && (options.index || options.disableIndex || options.status || options.collections)) {
+    throw new Error("zg install cannot be combined with index, status, or collections commands");
+  }
+
+  if (options.serve && (options.index || options.disableIndex || options.status || options.collections)) {
+    throw new Error("zg serve cannot be combined with index, status, or collections commands");
+  }
+
+  if (options.serve && options.install) {
+    throw new Error("zg serve cannot be combined with install");
+  }
+
+  if (options.serve && !options.mcp) {
+    throw new Error("zg serve currently requires --mcp");
+  }
+
+  if (options.mcp && !options.serve) {
+    throw new Error("--mcp can only be used with zg serve");
   }
 
   if (options.disableIndex && options.collections) {
@@ -293,19 +345,31 @@ function validateCliShape(options: CliOptions): void {
     throw new Error("--collections and --collection cannot be used together");
   }
 
-  if ((options.index || options.disableIndex || options.status || options.collections) && hasExplicitRoutes(options)) {
+  if (options.install && options.collection) {
+    throw new Error("zg install does not accept --collection");
+  }
+
+  if (options.installMcpToolTimeoutSeconds !== undefined && !options.install) {
+    throw new Error("--mcp-tool-timeout can only be used with zg install");
+  }
+
+  if (options.serve && options.collection) {
+    throw new Error("zg serve does not accept --collection");
+  }
+
+  if (hasUtilityCommand && hasExplicitRoutes(options)) {
     throw new Error("--fts and --vector can only be used with query commands");
   }
 
-  if ((options.index || options.disableIndex || options.status || options.collections) && options.rg) {
+  if (hasUtilityCommand && options.rg) {
     throw new Error("--rg can only be used with query commands");
   }
 
-  if ((options.index || options.disableIndex || options.status || options.collections) && options.preview) {
+  if (hasUtilityCommand && options.preview) {
     throw new Error("--preview can only be used with query commands");
   }
 
-  if ((options.index || options.disableIndex || options.status || options.collections) && options.noAutoUpdate) {
+  if (hasUtilityCommand && options.noAutoUpdate) {
     throw new Error("--no-auto-update can only be used with query commands");
   }
 
@@ -520,6 +584,16 @@ function appendRgPattern(
 }
 
 
+function appendInstallTargets(existing: string[] | undefined, value: string): string[] {
+  const targets = value
+    .split(/[,\s]+/)
+    .map((target) => target.trim())
+    .filter((target) => target.length > 0);
+
+  return [...(existing ?? []), ...targets];
+}
+
+
 function setRgContext(
   existing: CliRgOptions | undefined,
   direction: "before" | "after" | "both",
@@ -629,7 +703,7 @@ function parsePreviewMode(value: string): PreviewMode {
 }
 
 
-function parseLlamaGpu(value: string): "auto" | "metal" | "vulkan" | "cuda" | false {
+export function parseLlamaGpu(value: string): "auto" | "metal" | "vulkan" | "cuda" | false {
   const normalized = value.trim().toLowerCase();
   if (normalized === "auto" || normalized === "metal" || normalized === "vulkan" || normalized === "cuda") {
     return normalized;
@@ -669,17 +743,20 @@ function parseSymbolType(value: string): CodeSymbolType {
 }
 
 
-function appendPathFilters(existing: string[] | undefined, value: string): string[] {
-  const values = value
+export function splitPathFilters(value: string): string[] {
+  return value
     .split(",")
     .map((item) => item.trim())
     .filter((item) => item.length > 0);
-
-  return [...(existing ?? []), ...values];
 }
 
 
-function parseModifiedTime(value: string, option: string): number {
+function appendPathFilters(existing: string[] | undefined, value: string): string[] {
+  return [...(existing ?? []), ...splitPathFilters(value)];
+}
+
+
+export function parseModifiedTime(value: string, option: string): number {
   if (/^\d+$/.test(value)) {
     const parsed = Number.parseInt(value, 10);
     if (Number.isSafeInteger(parsed) && parsed >= 0) {

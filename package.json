@@ -44,10 +44,12 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@vscode/ripgrep": "^1.18.0",
     "@zvec/zvec": "^0.5.0",
     "tree-sitter-wasms": "^0.1.13",
-    "web-tree-sitter": "^0.20.8"
+    "web-tree-sitter": "^0.20.8",
+    "zod": "^3.25.76"
   },
   "optionalDependencies": {
     "node-llama-cpp": "3.18.1"

@@ -23,6 +23,12 @@ export type CliOptions = {
   disableIndex?: boolean;
   status?: boolean;
   collections?: boolean;
+  install?: boolean;
+  serve?: boolean;
+  mcp?: boolean;
+  installTargets?: string[];
+  installMcpToolTimeoutSeconds?: number;
+  yes?: boolean;
   collection?: string;
   rg?: boolean;
   rgCompatibilityOptions?: string[];
@@ -43,6 +49,7 @@ export type CliOptions = {
   limit?: number;
   routes?: ZvecGrepContextRoute[];
   rebuild?: boolean;
+  force?: boolean;
   resetPaths?: boolean;
   noFallback?: boolean;
   noAutoUpdate?: boolean;

@@ -25,6 +25,7 @@ export type {
   ZvecGrepInfoResult,
   ZvecGrepIndexOptions,
   ZvecGrepLexicalFallbackDiagnostics,
+  ZvecGrepSearchOptions,
 } from "./engine/service/index.js";
 export {
   EMBEDDING_MODEL_CATALOG,

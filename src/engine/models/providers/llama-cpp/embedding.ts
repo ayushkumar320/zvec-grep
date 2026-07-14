@@ -59,6 +59,13 @@ type NodeLlamaCppLoader = () => Promise<NodeLlamaCppModule>;
 const DEFAULT_MODEL_CACHE_DIR = join(defaultHome(), "models");
 const GGUF_MAGIC = Buffer.from("GGUF");
 const DEFAULT_PARALLELISM_CAP = 8;
+const DEFAULT_DARWIN_CMAKE_OPTIONS = {
+  GGML_OPENMP: "OFF",
+} as const;
+const DEFAULT_DARWIN_ARM64_CMAKE_OPTIONS = {
+  ...DEFAULT_DARWIN_CMAKE_OPTIONS,
+  GGML_NATIVE: "OFF",
+} as const;
 const SUPPRESSED_LLAMA_CPP_LOG_MESSAGES = new Set([
   "Failed to get swap info",
 ]);
@@ -240,6 +247,7 @@ export class LlamaCppEmbeddingModel extends EmbeddingModel {
       logLevel: runtime.LlamaLogLevel?.error,
       logger: llamaCppLogger,
       gpu,
+      cmakeOptions: defaultLlamaCppCmakeOptions(),
       progressLogs: false,
     });
 
@@ -551,6 +559,21 @@ function formatLlamaCppLogMessage(message: string): string {
     .split("\n")
     .map((line) => `[node-llama-cpp] ${line}`)
     .join("\n")}\n`;
+}
+
+
+function defaultLlamaCppCmakeOptions(): Record<string, string> | undefined {
+  if (process.platform !== "darwin") {
+    return undefined;
+  }
+
+  // macOS machines commonly lack libomp, and Apple Clang's native ARM flag
+  // probe emits a scary CMake warning despite falling back successfully.
+  if (process.arch === "arm64") {
+    return { ...DEFAULT_DARWIN_ARM64_CMAKE_OPTIONS };
+  }
+
+  return { ...DEFAULT_DARWIN_CMAKE_OPTIONS };
 }
 
 
