@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { readGlobalConfig } from "../engine/config.js";
 import { defaultHome } from "../engine/utils/path.js";
 import { DaemonError } from "./errors.js";
 
@@ -12,6 +13,32 @@ export type ServerListenAddress = {
   host: string;
   port: number;
 };
+
+
+export function daemonHome(home?: string): string {
+  return join(home ?? defaultHome(), "daemon");
+}
+
+
+export function daemonTokenPath(home?: string): string {
+  return join(daemonHome(home), "token");
+}
+
+
+export function configuredListenAddress(listen?: string): ServerListenAddress {
+  if (listen) return parseListenAddress(listen);
+  const configured = readGlobalConfig().server;
+  return parseListenAddress(`${configured?.host ?? DEFAULT_SERVER_HOST}:${configured?.port ?? DEFAULT_SERVER_PORT}`);
+}
+
+
+export function configuredServerUrl(): string {
+  const config = readGlobalConfig();
+  if (config.client?.serverUrl) return config.client.serverUrl;
+  const listen = configuredListenAddress();
+  const host = listen.host.includes(":") ? `[${listen.host}]` : listen.host;
+  return `http://${host}:${listen.port}/mcp`;
+}
 
 
 export function parseListenAddress(value?: string): ServerListenAddress {
@@ -51,7 +78,7 @@ export async function resolveServerToken(options: {
 
   const tokenFile = options.tokenFile
     ?? process.env.ZVEC_GREP_SERVER_TOKEN_FILE
-    ?? join(options.home ?? defaultHome(), "daemon", "token");
+    ?? daemonTokenPath(options.home);
   try {
     const existing = (await readFile(tokenFile, "utf8")).trim();
     validateToken(existing);

@@ -64,12 +64,11 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
     options.install = true;
     startIndex = 1;
   } else if (args[0] === "serve") {
-    options.serve = true;
-    startIndex = 1;
+    throw new Error("zg serve has been removed; use zg server on and Streamable HTTP MCP");
   } else if (args[0] === "server") {
     options.server = true;
-    if (args[1] === "run") {
-      options.serverAction = "run";
+    if (args[1] === "on" || args[1] === "off" || args[1] === "status" || args[1] === "run") {
+      options.serverAction = args[1];
       startIndex = 2;
     } else {
       startIndex = 1;
@@ -101,8 +100,12 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
       options.status = true;
     } else if (arg === "--collections") {
       options.collections = true;
-    } else if (arg === "--mcp") {
-      options.mcp = true;
+    } else if (isLongOptionWithValue(arg, "--mode")) {
+      options.mode = parseClientMode(valueFromLongOption(arg));
+    } else if (arg === "--mode") {
+      options.mode = parseClientMode(readOptionValue(args, ++index, arg));
+    } else if (arg === "--force-direct") {
+      options.forceDirect = true;
     } else if (isLongOptionWithValue(arg, "--listen")) {
       options.listen = valueFromLongOption(arg);
     } else if (arg === "--listen") {
@@ -291,15 +294,14 @@ function validateCliShape(options: CliOptions): void {
     || options.status
     || options.collections
     || options.install
-    || options.serve
     || options.server;
 
-  if (options.server && options.serverAction !== "run" && !options.help) {
-    throw new Error("zg server currently requires the run action");
+  if (options.server && !options.serverAction && !options.help) {
+    throw new Error("zg server requires on, off, status, or run");
   }
 
-  if (options.listen !== undefined && !options.server) {
-    throw new Error("--listen can only be used with zg server run");
+  if (options.listen !== undefined && options.serverAction !== "run" && options.serverAction !== "on") {
+    throw new Error("--listen can only be used with zg server on or run");
   }
 
   if (options.server && (
@@ -308,7 +310,6 @@ function validateCliShape(options: CliOptions): void {
     || options.status
     || options.collections
     || options.install
-    || options.serve
   )) {
     throw new Error("zg server cannot be combined with another command");
   }
@@ -321,24 +322,8 @@ function validateCliShape(options: CliOptions): void {
     throw new Error("zg install cannot be combined with index, status, or collections commands");
   }
 
-  if (options.serve && (options.index || options.disableIndex || options.status || options.collections)) {
-    throw new Error("zg serve cannot be combined with index, status, or collections commands");
-  }
-
-  if (options.serve && options.install) {
-    throw new Error("zg serve cannot be combined with install");
-  }
-
   if (options.server && options.collection) {
     throw new Error("zg server does not accept --collection");
-  }
-
-  if (options.serve && !options.mcp) {
-    throw new Error("zg serve currently requires --mcp");
-  }
-
-  if (options.mcp && !options.serve) {
-    throw new Error("--mcp can only be used with zg serve");
   }
 
   if (options.disableIndex && options.collections) {
@@ -389,8 +374,8 @@ function validateCliShape(options: CliOptions): void {
     throw new Error("--mcp-tool-timeout can only be used with zg install");
   }
 
-  if (options.serve && options.collection) {
-    throw new Error("zg serve does not accept --collection");
+  if (options.forceDirect && options.mode !== "direct") {
+    throw new Error("--force-direct requires --mode direct");
   }
 
   if (hasUtilityCommand && hasExplicitRoutes(options)) {
@@ -437,6 +422,12 @@ function validateCliShape(options: CliOptions): void {
     const [option] = options.rgCompatibilityOptions!;
     throw new Error(`${option} can only be used with --rg`);
   }
+}
+
+
+function parseClientMode(value: string): "direct" | "server" | "auto" {
+  if (value === "direct" || value === "server" || value === "auto") return value;
+  throw new Error("--mode must be direct, server, or auto");
 }
 
 

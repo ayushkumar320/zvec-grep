@@ -55,10 +55,11 @@ test("Codex installer removes orphaned managed markers", async (t) => {
   const installed = await readFile(configPath, "utf8");
   const agents = await readFile(agentsPath, "utf8");
   assert.match(installed, /\[mcp_servers\.other\]/);
-  assert.doesNotMatch(installed, /mcp_servers\.zvec_grep\.tools\.zvec_grep_index/);
-  assert.doesNotMatch(agents, /zvec_grep_(?:index|status)/);
-  assert.match(agents, /zg --index/);
-  assert.match(agents, /zg --status/);
+  assert.match(installed, /^url = "http:\/\/127\.0\.0\.1:7999\/mcp"$/m);
+  assert.match(installed, /^bearer_token_env_var = "ZVEC_GREP_SERVER_TOKEN"$/m);
+  assert.doesNotMatch(installed, /^command\s*=\s*"zg"$/m);
+  assert.match(agents, /zvec_grep_index/);
+  assert.match(agents, /zg server on/);
   assert.match(installed, /^tool_timeout_sec = 600$/m);
   assert.equal(countOccurrences(installed, "# ZVEC_GREP_START"), 1);
   assert.equal(countOccurrences(installed, "# ZVEC_GREP_END"), 1);

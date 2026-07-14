@@ -2,6 +2,7 @@ import type {
   CodeSymbolType,
   ZvecGrepContextRoute,
 } from "../index.js";
+import type { ZvecGrepClientMode } from "../engine/config.js";
 
 
 export type ColorMode =
@@ -24,11 +25,11 @@ export type CliOptions = {
   status?: boolean;
   collections?: boolean;
   install?: boolean;
-  serve?: boolean;
-  mcp?: boolean;
   server?: boolean;
-  serverAction?: "run";
+  serverAction?: "on" | "off" | "status" | "run";
   listen?: string;
+  mode?: ZvecGrepClientMode;
+  forceDirect?: boolean;
   installTargets?: string[];
   installMcpToolTimeoutSeconds?: number;
   yes?: boolean;

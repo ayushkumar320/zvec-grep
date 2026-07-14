@@ -50,7 +50,7 @@ zg "where query auto update happens"
 - **Managed ripgrep Route**: `zg --rg` supports common `rg` flags and works even before a repository is indexed.
 - **Explicit Model Choice**: The first index build requires a model such as `local/embeddinggemma-300m`, `local/qwen3-embedding-0.6b`, or `qwen/text-embedding-v4`.
 - **Schema Reuse**: Re-running `zg --index` on an existing index reuses the stored embedding schema unless you explicitly change it.
-- **MCP Server**: Run `zg serve --mcp` to expose indexed and no-index lexical search tools to MCP clients. Indexing and status remain CLI-only operations.
+- **Shared MCP Server**: Run `zg server on` to expose the four indexed search, indexing, index-status, and server-status tools over authenticated Streamable HTTP.
 - **Library API**: Use `createZvecGrep()` directly from Node.js tools, agents, or MCP servers.
 
 ## <a id="installation"></a>📦 Installation
@@ -79,10 +79,11 @@ npm install -g .
 zg --version
 ```
 
-Run the stdio MCP server:
+Start the local background server:
 
 ```bash
-zg serve --mcp
+zg server on
+zg server status
 ```
 
 Install the Codex MCP integration:
@@ -92,6 +93,9 @@ zg install --target codex --yes
 ```
 
 Codex MCP tool calls default to a 600-second timeout. Override it during installation with `--mcp-tool-timeout <seconds>`.
+Set `ZVEC_GREP_SERVER_TOKEN` to the contents of `~/.zvec-grep/daemon/token` in the client environment. The installed MCP URL is `http://127.0.0.1:7999/mcp`. Stop the daemon with `zg server off`.
+
+CLI indexed queries and index commands can use `--mode direct`, `--mode server`, or `--mode auto`. The development-preview default remains `direct`; `auto` uses the daemon only when it is ready and otherwise falls back before submitting a request.
 
 ### ✅ Requirements
 

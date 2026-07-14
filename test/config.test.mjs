@@ -29,6 +29,8 @@ test("global config is created securely and merged incrementally", async (t) => 
         apiKey: "first-key",
       },
     },
+    client: { mode: "server", serverUrl: "http://127.0.0.1:8123/mcp" },
+    server: { host: "127.0.0.1", port: 8123 },
   }, configPath);
   updateGlobalConfig({
     defaults: {
@@ -39,6 +41,7 @@ test("global config is created securely and merged incrementally", async (t) => 
         endpoint: "https://example.test/embeddings",
       },
     },
+    client: { mode: "auto" },
   }, configPath);
 
   assert.deepEqual(readGlobalConfig(configPath), {
@@ -54,6 +57,8 @@ test("global config is created securely and merged incrementally", async (t) => 
         endpoint: "https://example.test/embeddings",
       },
     },
+    client: { mode: "auto", serverUrl: "http://127.0.0.1:8123/mcp" },
+    server: { host: "127.0.0.1", port: 8123 },
   });
 
   if (process.platform !== "win32") {

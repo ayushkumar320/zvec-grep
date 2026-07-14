@@ -50,7 +50,7 @@ zg "where query auto update happens"
 - **托管 ripgrep 通道**：`zg --rg` 支持常见 `rg` 参数，未建索引仓库也能使用。
 - **显式模型选择**：第一次建索引必须指定模型，例如 `local/embeddinggemma-300m`、`local/qwen3-embedding-0.6b` 或 `qwen/text-embedding-v4`。
 - **Schema 复用**：已有索引再次运行 `zg --index` 会复用保存的 embedding schema，除非你显式切换模型。
-- **MCP Server**：运行 `zg serve --mcp`，向 MCP 客户端暴露索引搜索和无索引文本搜索工具；建索引和状态查看仍由 CLI 提供。
+- **共享 MCP Server**：运行 `zg server on`，通过带鉴权的 Streamable HTTP 暴露索引检索、建索引、索引状态和服务状态四个工具。
 - **库 API**：Node.js 工具、agent 或 MCP server 可以直接使用 `createZvecGrep()`。
 
 ## <a id="installation"></a>📦 安装
@@ -79,10 +79,11 @@ npm install -g .
 zg --version
 ```
 
-运行 stdio MCP server：
+启动本机后台 server：
 
 ```bash
-zg serve --mcp
+zg server on
+zg server status
 ```
 
 安装 Codex MCP 集成：
@@ -92,6 +93,9 @@ zg install --target codex --yes
 ```
 
 Codex MCP 工具调用默认超时为 600 秒，可在安装时通过 `--mcp-tool-timeout <秒数>` 覆盖。
+在客户端环境中，将 `ZVEC_GREP_SERVER_TOKEN` 设置为 `~/.zvec-grep/daemon/token` 的内容。安装后的 MCP URL 为 `http://127.0.0.1:7999/mcp`。使用 `zg server off` 停止 daemon。
+
+CLI 的索引检索和建索引命令支持 `--mode direct`、`--mode server` 和 `--mode auto`。开发预览阶段默认仍为 `direct`；`auto` 只在 daemon ready 时使用 server，否则在提交请求前回退 Direct。
 
 ### ✅ 运行要求
 

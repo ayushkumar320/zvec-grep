@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, open, readFile, unlink } from "node:fs/promises";
+import { mkdir, open, readFile, unlink, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname } from "node:path";
 import {
@@ -20,6 +20,9 @@ export type RootLease = {
 type ManagedLease = {
   refs: number;
   record: DaemonLeaseRecord;
+  heartbeat?: ReturnType<typeof setInterval>;
+  heartbeatInFlight?: Promise<void>;
+  stopped: boolean;
 };
 
 
@@ -31,10 +34,13 @@ export class RootLeaseManager {
   async acquire(root: string): Promise<RootLease> {
     let managed = this.leases.get(root);
     if (!managed) {
+      const record = await this.createLease(root);
       managed = {
         refs: 0,
-        record: await this.createLease(root),
+        record,
+        stopped: false,
       };
+      managed.heartbeat = this.startHeartbeat(root, managed);
       this.leases.set(root, managed);
     }
     managed.refs += 1;
@@ -55,7 +61,12 @@ export class RootLeaseManager {
   async close(): Promise<void> {
     const leases = [...this.leases.entries()];
     this.leases.clear();
-    await Promise.all(leases.map(([root, managed]) => this.removeOwnedLease(root, managed.record)));
+    await Promise.all(leases.map(async ([root, managed]) => {
+      managed.stopped = true;
+      if (managed.heartbeat) clearInterval(managed.heartbeat);
+      await managed.heartbeatInFlight;
+      await this.removeOwnedLease(root, managed.record);
+    }));
   }
 
 
@@ -126,7 +137,34 @@ export class RootLeaseManager {
       return;
     }
     this.leases.delete(root);
+    managed.stopped = true;
+    if (managed.heartbeat) clearInterval(managed.heartbeat);
+    await managed.heartbeatInFlight;
     await this.removeOwnedLease(root, managed.record);
+  }
+
+
+  private startHeartbeat(root: string, managed: ManagedLease): ReturnType<typeof setInterval> {
+    const timer = setInterval(() => {
+      const heartbeat = (async () => {
+        if (managed.stopped) return;
+        const current = await readLeaseFile(daemonLeasePath(root));
+        if (
+          managed.stopped
+          || current?.pid !== managed.record.pid
+          || current.instanceToken !== managed.record.instanceToken
+        ) return;
+        managed.record.updatedAt = Date.now();
+        if (managed.stopped) return;
+        await writeFile(daemonLeasePath(root), `${JSON.stringify(managed.record)}\n`, { mode: 0o600 });
+      })().catch(() => undefined);
+      managed.heartbeatInFlight = heartbeat;
+      void heartbeat.finally(() => {
+        if (managed.heartbeatInFlight === heartbeat) managed.heartbeatInFlight = undefined;
+      });
+    }, 5_000);
+    timer.unref?.();
+    return timer;
   }
 
 

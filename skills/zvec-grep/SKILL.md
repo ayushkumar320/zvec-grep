@@ -7,7 +7,9 @@ description: Use zvec-grep instead of grep or rg: check the index state once per
 
 Use zvec-grep through the `zg` command for repository search instead of `grep`, `rg`, or broad manual file scans. zvec-grep provides higher-quality results by combining indexed semantic context with lexical matching, while `zg --rg` provides an explicit no-index lexical search route.
 
-At the start of a repository investigation, check the current repository's anonymous index status once:
+When the HTTP MCP tools are available, prefer `zvec_grep_search`, use `zvec_grep_index_status` once at the start of an investigation, and call `zvec_grep_index` only when the user requests persistent indexing. Every repository tool call must pass an absolute root. Use `zvec_grep_server_status` only for daemon diagnostics.
+
+When working through the CLI, check the current repository's anonymous index status once:
 
 ```bash
 zg --status

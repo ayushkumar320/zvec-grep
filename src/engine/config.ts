@@ -20,16 +20,35 @@ export type ZvecGrepProviderConfig = {
 };
 
 
+export type ZvecGrepClientMode = "direct" | "server" | "auto";
+
+
+export type ZvecGrepClientConfig = {
+  mode?: ZvecGrepClientMode;
+  serverUrl?: string;
+};
+
+
+export type ZvecGrepServerConfig = {
+  host?: string;
+  port?: number;
+};
+
+
 export type ZvecGrepGlobalConfig = {
   version: 1;
   defaults?: ZvecGrepGlobalDefaults;
   providers?: Record<string, ZvecGrepProviderConfig>;
+  client?: ZvecGrepClientConfig;
+  server?: ZvecGrepServerConfig;
 };
 
 
 export type ZvecGrepGlobalConfigUpdate = {
   defaults?: ZvecGrepGlobalDefaults;
   providers?: Record<string, ZvecGrepProviderConfig>;
+  client?: ZvecGrepClientConfig;
+  server?: ZvecGrepServerConfig;
 };
 
 
@@ -75,6 +94,8 @@ export function updateGlobalConfig(
         ...update.defaults,
       },
       providers: mergeProviderConfigs(current.providers, update.providers),
+      client: { ...current.client, ...update.client },
+      server: { ...current.server, ...update.server },
     }, path);
 
     writeJsonFileSync(path, next, {
@@ -145,11 +166,37 @@ function parseGlobalConfig(value: unknown, path: string): ZvecGrepGlobalConfig {
 
   const defaults = parseDefaults(value.defaults, path);
   const providers = parseProviders(value.providers, path);
+  const client = parseClient(value.client, path);
+  const server = parseServer(value.server, path);
   return {
     version: GLOBAL_CONFIG_VERSION,
     ...(defaults ? { defaults } : {}),
     ...(providers ? { providers } : {}),
+    ...(client ? { client } : {}),
+    ...(server ? { server } : {}),
   };
+}
+
+
+function parseClient(value: unknown, path: string): ZvecGrepClientConfig | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) throw invalidConfig(path, "client must be an object");
+  const mode = value.mode;
+  if (mode !== undefined && mode !== "direct" && mode !== "server" && mode !== "auto") {
+    throw invalidConfig(path, "client.mode must be direct, server, or auto");
+  }
+  const serverUrl = optionalNonEmptyString(value.serverUrl, path, "client.serverUrl");
+  return mode || serverUrl ? { ...(mode ? { mode } : {}), ...(serverUrl ? { serverUrl } : {}) } : undefined;
+}
+
+
+function parseServer(value: unknown, path: string): ZvecGrepServerConfig | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) throw invalidConfig(path, "server must be an object");
+  const host = optionalNonEmptyString(value.host, path, "server.host");
+  const port = value.port === undefined ? undefined : optionalPositiveInteger(value.port, path, "server.port");
+  if (port !== undefined && port > 65_535) throw invalidConfig(path, "server.port must not exceed 65535");
+  return host || port ? { ...(host ? { host } : {}), ...(port ? { port } : {}) } : undefined;
 }
 
 

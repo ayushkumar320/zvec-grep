@@ -10,6 +10,7 @@ import { DaemonBackend } from "../dist/daemon/backend.js";
 import { DaemonHttpServer } from "../dist/daemon/http-server.js";
 import { EmbeddingModel } from "../dist/engine/models/embeddings.js";
 import { createZvecGrep } from "../dist/index.js";
+import { DaemonClient } from "../dist/client/daemon-client.js";
 
 
 const token = "server-http-test-token-at-least-32-characters";
@@ -93,6 +94,8 @@ test("Streamable HTTP serves health, MCP contracts and a real cached index searc
   });
   const address = await server.start();
   const mcpUrl = new URL(`http://127.0.0.1:${address.port}/mcp`);
+  await mkdir(join(temporaryDirectory, "daemon"));
+  await writeFile(join(temporaryDirectory, "daemon", "token"), `${token}\n`);
   t.after(async () => {
     releaseEmbedding?.();
     await server.close();
@@ -103,6 +106,11 @@ test("Streamable HTTP serves health, MCP contracts and a real cached index searc
   const health = await fetch(`http://127.0.0.1:${address.port}/healthz`);
   assert.equal(health.status, 200);
   assert.deepEqual(await health.json(), { status: "ok" });
+  const cliStatus = await new DaemonClient({
+    serverUrl: mcpUrl.href,
+    home: temporaryDirectory,
+  }).callTool("zvec_grep_server_status", {});
+  assert.equal(cliStatus.version, "1.0.0");
 
   const unauthorized = await fetch(mcpUrl, { method: "POST", body: "{}" });
   assert.equal(unauthorized.status, 401);

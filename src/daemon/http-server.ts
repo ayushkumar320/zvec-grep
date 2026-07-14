@@ -12,6 +12,7 @@ export type DaemonHttpServerOptions = ServerListenAddress & {
   token: string;
   version: string;
   backend: ZvecGrepDaemonBackend;
+  onShutdown?: () => void | Promise<void>;
 };
 
 
@@ -88,6 +89,20 @@ export class DaemonHttpServer {
         return;
       }
       writeJson(response, 200, { status: "ok" });
+      return;
+    }
+
+    if (url.pathname === "/control/shutdown") {
+      if (!validHost(request.headers.host) || !validBearerToken(request.headers.authorization, this.options.token)) {
+        writeJson(response, 401, { error: "unauthorized" });
+        return;
+      }
+      if (request.method !== "POST") {
+        writeJson(response, 405, { error: "method_not_allowed" });
+        return;
+      }
+      writeJson(response, 202, { status: "stopping" });
+      setImmediate(() => { void this.options.onShutdown?.(); });
       return;
     }
 

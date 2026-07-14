@@ -15,8 +15,11 @@ Usage:
   zg --disable-index [root]
   zg --status [root]
   zg install [--target codex|all|auto] [--mcp-tool-timeout <seconds>] [--yes] [--force]
-  zg serve --mcp
+  zg server on [--listen 127.0.0.1:7999]
+  zg server off
+  zg server status
   zg server run [--listen 127.0.0.1:7999]
+  zg --mode <direct|server|auto> <query...>
   zg --collection <name> [options] <query...>
   zg --collections
   zg --collections info <name>
@@ -68,8 +71,9 @@ Options:
   --mcp-tool-timeout <seconds>    Codex MCP tool timeout written during install (default 600)
   --yes                           Use default install choices without prompting
   --force                         Replace an existing agent integration during install
-  --mcp                           Run stdio MCP server with zg serve
-  --listen <host:port>            Listen address for zg server run (loopback only)
+  --mode <direct|server|auto>     Route index, status and indexed queries (default direct)
+  --force-direct                  Confirm an explicitly selected Direct write path
+  --listen <host:port>            Listen address for zg server on/run (loopback only)
   --home <path>                   Named collection registry home
   --embedding <model>             Embedding model, e.g. local/embeddinggemma-300m or qwen/text-embedding-v4
   --model-cache <path>            Local model cache directory
@@ -100,6 +104,9 @@ Environment:
   ZVEC_GREP_EMBED_PARALLELISM
   ZVEC_GREP_API_KEY
   ZVEC_GREP_ENDPOINT
+  ZVEC_GREP_MODE
+  ZVEC_GREP_SERVER_URL
+  ZVEC_GREP_SERVER_TOKEN
   NODE_LLAMA_CPP_CMAKE_OPTION_<name>
   NO_COLOR
 `);
