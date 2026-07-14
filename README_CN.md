@@ -50,6 +50,7 @@ zg "where query auto update happens"
 - **托管 ripgrep 通道**：`zg --rg` 支持常见 `rg` 参数，未建索引仓库也能使用。
 - **显式模型选择**：第一次建索引必须指定模型，例如 `local/embeddinggemma-300m`、`local/qwen3-embedding-0.6b` 或 `qwen/text-embedding-v4`。
 - **Schema 复用**：已有索引再次运行 `zg --index` 会复用保存的 embedding schema，除非你显式切换模型。
+- **MCP Server**：运行 `zg serve --mcp`，向 MCP 客户端暴露索引搜索和无索引文本搜索工具；建索引和状态查看仍由 CLI 提供。
 - **库 API**：Node.js 工具、agent 或 MCP server 可以直接使用 `createZvecGrep()`。
 
 ## <a id="installation"></a>📦 安装
@@ -66,6 +67,31 @@ zg --version
 ```bash
 npx @zvec/zvec-grep --help
 ```
+
+从最新源码构建，并将 `zg` 安装为全局命令：
+
+```bash
+git clone https://github.com/zvec-ai/zvec-grep.git
+cd zvec-grep
+npm ci
+npm run build
+npm install -g .
+zg --version
+```
+
+运行 stdio MCP server：
+
+```bash
+zg serve --mcp
+```
+
+安装 Codex MCP 集成：
+
+```bash
+zg install --target codex --yes
+```
+
+Codex MCP 工具调用默认超时为 600 秒，可在安装时通过 `--mcp-tool-timeout <秒数>` 覆盖。
 
 ### ✅ 运行要求
 
@@ -118,6 +144,8 @@ zg --rg -F "ZVEC_GREP_HOME" src
 zg --human "root local index discovery" --limit 3
 ```
 
+在 MCP 客户端中可使用 `zvec_grep_search` 和 `zvec_grep_rg`。MCP 输入使用 JSON 友好的字段，例如 `include: ["src/**"]`；状态查看和建索引请使用 CLI 的 `zg --status` 与 `zg --index`。Codex installer 会向 `${CODEX_HOME:-$HOME/.codex}/config.toml` 和 `${CODEX_HOME:-$HOME/.codex}/AGENTS.md` 写入由 zvec-grep 管理的配置块。
+
 ## <a id="models"></a>🧠 模型
 
 本地模型通过 `node-llama-cpp` 运行，适合把代码检索留在本机：
@@ -127,6 +155,8 @@ zg --index --embedding local/embeddinggemma-300m
 zg --index --embedding local/qwen3-embedding-0.6b
 ```
 
+在 Apple Silicon 上，本地构建默认使用更安静的 llama.cpp CMake 配置，避免无害的 OpenMP 和 ARM native 探测 warning。可以通过 `NODE_LLAMA_CPP_CMAKE_OPTION_<name>` 覆盖任意 llama.cpp CMake 选项，例如设置 `NODE_LLAMA_CPP_CMAKE_OPTION_GGML_NATIVE=ON` 重新启用 native CPU 优化。
+
 远程 Qwen embedding 适合希望使用托管 embedding 服务，或不想在本机配置模型的场景：
 
 ```bash
@@ -134,6 +164,25 @@ zg --index \
   --embedding qwen/text-embedding-v4 \
   --api-key "$DASHSCOPE_API_KEY"
 ```
+
+索引成功后，通过 CLI 显式传入的全局模型和 provider 参数会保存到 `~/.zvec-grep/config.json`，并使用仅当前用户可读写的权限。已经运行的 `zg` MCP server 会在下一次需要模型时读取新的远程 API key，不需要重启 Codex。只从环境变量读取、没有作为 CLI 参数显式传入的值不会被持久化。
+
+```json
+{
+  "version": 1,
+  "defaults": {
+    "embedding": "qwen/text-embedding-v4"
+  },
+  "providers": {
+    "qwen": {
+      "apiKey": "...",
+      "endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings"
+    }
+  }
+}
+```
+
+配置优先级为：显式 CLI 或库参数、环境变量、全局配置、内置默认值。仓库 root 和 include/exclude 规则仍保存在各仓库自己的 `.zvec-grep` 元数据中，不进入全局配置。
 
 对于已有索引，`zg --index` 不传 `--embedding` 会复用索引里保存的 schema。只有在你明确想切换模型时，才使用 `--rebuild --embedding <model>`：
 

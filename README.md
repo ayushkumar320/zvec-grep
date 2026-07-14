@@ -50,6 +50,7 @@ zg "where query auto update happens"
 - **Managed ripgrep Route**: `zg --rg` supports common `rg` flags and works even before a repository is indexed.
 - **Explicit Model Choice**: The first index build requires a model such as `local/embeddinggemma-300m`, `local/qwen3-embedding-0.6b`, or `qwen/text-embedding-v4`.
 - **Schema Reuse**: Re-running `zg --index` on an existing index reuses the stored embedding schema unless you explicitly change it.
+- **MCP Server**: Run `zg serve --mcp` to expose indexed and no-index lexical search tools to MCP clients. Indexing and status remain CLI-only operations.
 - **Library API**: Use `createZvecGrep()` directly from Node.js tools, agents, or MCP servers.
 
 ## <a id="installation"></a>📦 Installation
@@ -66,6 +67,31 @@ Or run it without a global install:
 ```bash
 npx @zvec/zvec-grep --help
 ```
+
+Install the latest source checkout as a global `zg` command:
+
+```bash
+git clone https://github.com/zvec-ai/zvec-grep.git
+cd zvec-grep
+npm ci
+npm run build
+npm install -g .
+zg --version
+```
+
+Run the stdio MCP server:
+
+```bash
+zg serve --mcp
+```
+
+Install the Codex MCP integration:
+
+```bash
+zg install --target codex --yes
+```
+
+Codex MCP tool calls default to a 600-second timeout. Override it during installation with `--mcp-tool-timeout <seconds>`.
 
 ### ✅ Requirements
 
@@ -118,6 +144,8 @@ Switch to human-readable output:
 zg --human "root local index discovery" --limit 3
 ```
 
+Use from an MCP client with `zvec_grep_search` and `zvec_grep_rg`. MCP inputs use JSON-friendly fields such as `include: ["src/**"]`; use the CLI for `zg --status` and `zg --index`. The Codex installer writes managed zvec-grep blocks to `${CODEX_HOME:-$HOME/.codex}/config.toml` and `${CODEX_HOME:-$HOME/.codex}/AGENTS.md`.
+
 ## <a id="models"></a>🧠 Models
 
 Local models run through `node-llama-cpp` and keep code search private to your machine:
@@ -127,6 +155,8 @@ zg --index --embedding local/embeddinggemma-300m
 zg --index --embedding local/qwen3-embedding-0.6b
 ```
 
+On Apple Silicon, local builds use quiet llama.cpp CMake defaults to avoid harmless OpenMP and ARM native-detection warnings. Override any llama.cpp CMake option with `NODE_LLAMA_CPP_CMAKE_OPTION_<name>`, for example `NODE_LLAMA_CPP_CMAKE_OPTION_GGML_NATIVE=ON` to opt back into native CPU tuning.
+
 Remote Qwen embeddings are useful when you prefer a managed embedding service or want to avoid local model setup:
 
 ```bash
@@ -134,6 +164,25 @@ zg --index \
   --embedding qwen/text-embedding-v4 \
   --api-key "$DASHSCOPE_API_KEY"
 ```
+
+After a successful index, explicitly passed global model and provider options are saved to `~/.zvec-grep/config.json` with user-only permissions. This lets an already-running `zg` MCP server load a newly configured remote API key on its next model request without restarting Codex. Values read only from environment variables are not persisted.
+
+```json
+{
+  "version": 1,
+  "defaults": {
+    "embedding": "qwen/text-embedding-v4"
+  },
+  "providers": {
+    "qwen": {
+      "apiKey": "...",
+      "endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings"
+    }
+  }
+}
+```
+
+Resolution order is explicit CLI or library options, then environment variables, then global config, then built-in defaults. Repository roots and include/exclude filters remain in each repository's `.zvec-grep` metadata rather than global config.
 
 For existing indexes, `zg --index` without `--embedding` reuses the stored schema. Use `--rebuild --embedding <model>` only when you intentionally want to rebuild with a different model:
 

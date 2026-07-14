@@ -1,4 +1,5 @@
 import { EngineError } from "../../../errors/index.js";
+import { globalConfigPath } from "../../../config.js";
 import type { Content, ImageFormat, TextContent } from "../../../types.js";
 import {
   EmbeddingModel,
@@ -41,7 +42,7 @@ export class QwenTextEmbeddingV4Model extends EmbeddingModel {
     if (options.apiKey.trim().length === 0) {
       throw new EngineError("Qwen text-embedding-v4 model requires an API key", {
         code: "ZVEC_GREP.ENGINE.MODELS.QWEN_TEXT_EMBEDDING_V4_MISSING_API_KEY",
-        context: `model=${this.ref.model}`,
+        context: `model=${this.ref.model}\nhint=Pass --api-key, set ZVEC_GREP_API_KEY, or configure providers.qwen.apiKey in ${globalConfigPath()}.`,
       });
     }
 
@@ -192,7 +193,7 @@ export class Qwen3VlEmbeddingModel extends EmbeddingModel {
     if (options.apiKey.trim().length === 0) {
       throw new EngineError("Qwen3 VL embedding model requires an API key", {
         code: "ZVEC_GREP.ENGINE.MODELS.QWEN3_VL_EMBEDDING_MISSING_API_KEY",
-        context: `model=${this.ref.model}`,
+        context: `model=${this.ref.model}\nhint=Pass --api-key, set ZVEC_GREP_API_KEY, or configure providers.qwen.apiKey in ${globalConfigPath()}.`,
       });
     }
 

@@ -23,4 +23,5 @@ export type {
   ZvecGrepInfoResult,
   ZvecGrepIndexOptions,
   ZvecGrepLexicalFallbackDiagnostics,
+  ZvecGrepSearchOptions,
 } from "./types.js";

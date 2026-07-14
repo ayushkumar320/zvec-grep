@@ -14,6 +14,8 @@ Usage:
   zg --index --embedding local/embeddinggemma-300m [root]
   zg --disable-index [root]
   zg --status [root]
+  zg install [--target codex|all|auto] [--mcp-tool-timeout <seconds>] [--yes] [--force]
+  zg serve --mcp
   zg --collection <name> [options] <query...>
   zg --collections
   zg --collections info <name>
@@ -34,7 +36,9 @@ Query:
   Use --disable-index to remember that this workspace should not be indexed.
   Existing anonymous indexes are checked and incrementally refreshed before query.
   Indexing skips dependency/third-party/generated/build/cache dirs, hidden paths, nested git repos, .gitignore entries, and files over 1 MB by default.
-  New indexes require --embedding <model> or ZVEC_GREP_EMBEDDING; existing indexes reuse stored schema.
+  New indexes require --embedding <model>, ZVEC_GREP_EMBEDDING, or defaults.embedding in ~/.zvec-grep/config.json; existing indexes reuse stored schema.
+  Successful index commands persist explicitly passed global model/provider options to ~/.zvec-grep/config.json.
+  CLI options override environment variables, which override global config. Environment-only values are not persisted.
   --rg is explicit exhaustive ripgrep search and works without an index.
   Without --limit, --rg returns every match.
   --rg uses rg regex syntax by default. Use -F/--fixed-strings for literal text.
@@ -59,6 +63,11 @@ Options:
   --no-fallback                   Compatibility flag; anonymous queries already require an index
   --collection <name>             Query a named collection
   --collections                   Manage named collections
+  --target <agent>                Agent install target; currently codex, all, auto, none
+  --mcp-tool-timeout <seconds>    Codex MCP tool timeout written during install (default 600)
+  --yes                           Use default install choices without prompting
+  --force                         Replace an existing agent integration during install
+  --mcp                           Run stdio MCP server with zg serve
   --home <path>                   Named collection registry home
   --embedding <model>             Embedding model, e.g. local/embeddinggemma-300m or qwen/text-embedding-v4
   --model-cache <path>            Local model cache directory
@@ -66,8 +75,8 @@ Options:
   --no-gpu                        Force CPU local embeddings
   --llama-gpu <mode>              CPU by default; auto, metal, vulkan, cuda, off
   --embedding-parallelism <n>     Local embedding context parallelism
-  --api-key <key>                 Embedding provider API key
-  --endpoint <url>                Embedding provider endpoint
+  --api-key <key>                 Embedding provider API key; explicit index values are persisted globally
+  --endpoint <url>                Provider endpoint; explicit index values are persisted globally
   --include <glob>                Include indexed/query paths
   --exclude <glob>                Exclude indexed/query paths
   --modified-after <time>         Query files modified after time
@@ -77,6 +86,10 @@ Options:
   --rebuild                       Rebuild on --index/collections index
   --reset-paths                   Clear inherited include/exclude filters on rebuild
 
+Global config:
+  ~/.zvec-grep/config.json        Global model defaults and provider credentials (user-only permissions)
+                                  Running MCP servers reload provider settings on the next model request
+
 Environment:
   ZVEC_GREP_HOME
   ZVEC_GREP_EMBEDDING
@@ -85,6 +98,7 @@ Environment:
   ZVEC_GREP_EMBED_PARALLELISM
   ZVEC_GREP_API_KEY
   ZVEC_GREP_ENDPOINT
+  NODE_LLAMA_CPP_CMAKE_OPTION_<name>
   NO_COLOR
 `);
 }
