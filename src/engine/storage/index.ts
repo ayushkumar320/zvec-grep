@@ -40,6 +40,7 @@ export type StorageSearchHit = StoredEntityFragment & {
 export interface CollectionStorage {
   getFileById(fileId: string): FileInfo | null;
   getFileByPath(absolutePath: string): FileInfo | null;
+  listFilesByPathPrefix(absolutePath: string): FileInfo[];
   listFiles(): FileInfo[];
   listEntitiesByFile(fileId: string, options?: { limit?: number; offset?: number; }): StoredEntity[];
   getEntity(entityId: string, options?: { includeVector?: boolean; }): (StoredEntity & { vector?: number[]; }) | null;

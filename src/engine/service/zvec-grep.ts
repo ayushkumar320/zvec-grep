@@ -246,6 +246,7 @@ class ZvecGrepService implements ZvecGrep {
             rebuild: false,
             embeddingConcurrency: options.embeddingConcurrency,
             onProgress: options.onProgress,
+            changedPaths: options.changedPaths,
           });
         } finally {
           registry.close();
@@ -369,7 +370,9 @@ class ZvecGrepService implements ZvecGrep {
           indexPath: nearest.location.collectionPath,
           source: indexed ? "index" : "unindexed",
           collection: collection ?? undefined,
-          status: indexed ? await registry.status(ANONYMOUS_COLLECTION_NAME) : null,
+          status: indexed && options.includeStatus !== false
+            ? await registry.status(ANONYMOUS_COLLECTION_NAME)
+            : null,
           suggestion: anonymousInfoSuggestion(collection),
         };
       } finally {

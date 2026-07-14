@@ -21,6 +21,7 @@ import type { EmbeddingModel } from "../models/embeddings.js";
 import {
   getCollectionIndexStatus,
   indexCollection,
+  indexCollectionPaths,
 } from "../pipeline/indexing/index.js";
 import {
   fileBelongsToRootPath,
@@ -116,13 +117,16 @@ export class Collection {
 
     const embeddingModel = this.requireEmbeddingModel("index");
 
-    return indexCollection({
+    const context = {
       collection: this.info,
       embeddingModel,
       storage: this.storage,
       embeddingConcurrency: options.embeddingConcurrency,
       onProgress: options.onProgress,
-    });
+    };
+    return options.changedPaths && options.changedPaths.length > 0
+      ? indexCollectionPaths(context, options.changedPaths)
+      : indexCollection(context);
   }
 
 

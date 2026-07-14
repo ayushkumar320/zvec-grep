@@ -211,6 +211,7 @@ test("Streamable HTTP serves health, MCP contracts and a real cached index searc
     arguments: { root: join(root, "src"), wait: true },
   });
   assert.equal(refreshed.structuredContent.root, canonicalRoot);
+  await backend.scheduler.waitForRootIdle(canonicalRoot);
   assert.equal(refreshed.structuredContent.state, "succeeded");
   const refreshedSearch = await clients[0].callTool({
     name: "zvec_grep_search",

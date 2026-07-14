@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { lstat, readFile } from "node:fs/promises";
 import {
   collectionDetail,
   detail,
@@ -21,9 +21,14 @@ import type {
   IndexResult,
 } from "../../types.js";
 import { sha256Bytes } from "../../utils/hash.js";
+import { normalizePath } from "../../utils/path.js";
 import { ConcurrentTiming, TimingCollector } from "../../utils/timing.js";
 import { ExtractorRegistry, type Source } from "../../extraction/index.js";
-import { scanRootPaths } from "./scanner/index.js";
+import {
+  scanDirectoryPath,
+  scanFilePath,
+  scanRootPaths,
+} from "./scanner/index.js";
 
 
 export type IndexContext = {
@@ -134,6 +139,21 @@ export async function indexCollection(ctx: IndexContext): Promise<IndexResult> {
 }
 
 
+export async function indexCollectionPaths(
+  ctx: IndexContext,
+  changedPaths: readonly string[],
+): Promise<IndexResult> {
+  try {
+    return await indexCollectionPathsUnchecked(ctx, changedPaths);
+  } catch (error) {
+    throw toEngineError(error, "Indexing changed paths failed", {
+      code: "ZVEC_GREP.ENGINE.INDEXING.COLLECTION_FAILED",
+      context: collectionContext(ctx.collection),
+    });
+  }
+}
+
+
 export async function getCollectionIndexStatus(
   collection: CollectionInfo,
   storedFiles: readonly FileInfo[],
@@ -225,6 +245,58 @@ async function indexCollectionUnchecked(ctx: IndexContext): Promise<IndexResult>
 }
 
 
+async function indexCollectionPathsUnchecked(
+  ctx: IndexContext,
+  changedPaths: readonly string[],
+): Promise<IndexResult> {
+  const start = Date.now();
+  const report = ctx.onProgress ?? (() => undefined);
+  const timings = new TimingCollector();
+  const normalizedPaths = [...new Set(changedPaths.map(normalizePath))];
+  const firstPass = await runPathIndexPass(ctx, report, normalizedPaths, timings);
+  const passes = [firstPass];
+  if (firstPass.stats.filesFailed > 0) {
+    passes.push(await runPathIndexPass(ctx, report, normalizedPaths, timings));
+  }
+  const finalPass = passes[passes.length - 1];
+  reportIndexFinalizing(ctx, report, finalPass);
+  timings.timeSync("index_optimize", () => optimizeStorage(ctx));
+  const result = buildIndexResult(ctx, passes, Date.now() - start, timings);
+  if (result.filesFailed > 0) {
+    throw new EngineError(`Indexing completed with ${result.filesFailed} failed files`, {
+      code: "ZVEC_GREP.ENGINE.INDEXING.FILES_FAILED",
+      context: collectionContext(ctx.collection),
+    });
+  }
+  report({ phase: "done", detail: "Indexing complete" });
+  return result;
+}
+
+
+async function runPathIndexPass(
+  ctx: IndexContext,
+  report: (progress: IndexProgress) => void,
+  changedPaths: readonly string[],
+  timings: TimingCollector,
+): Promise<IndexPassResult> {
+  report({ phase: "scanning", detail: "Scanning changed paths..." });
+  const scanned = await timings.time("index_scan_paths", async () => {
+    const files: FileInfo[] = [];
+    for (const path of changedPaths) {
+      const info = await lstat(path).catch(() => null);
+      const scan = info?.isDirectory()
+        ? await scanDirectoryPath(ctx.collection.id, ctx.collection.rootPaths, path)
+        : await scanFilePath(ctx.collection.id, ctx.collection.rootPaths, path);
+      files.push(...scan.files);
+    }
+    return [...new Map(files.map((file) => [file.id, file])).values()];
+  });
+  const existing = [...new Map(changedPaths.flatMap((path) =>
+    ctx.storage.listFilesByPathPrefix(path)).map((file) => [file.id, file])).values()];
+  return runDiffPass(ctx, report, scanned, existing, timings);
+}
+
+
 async function runIndexPass(
   ctx: IndexContext,
   report: (progress: IndexProgress) => void,
@@ -234,12 +306,23 @@ async function runIndexPass(
   report({ phase: "scanning", detail: scanningDetail });
   const scan = await timings.time("index_scan", () =>
     scanRootPaths(ctx.collection.id, ctx.collection.rootPaths));
-  const diff = await timings.time("index_diff", () => computeDiff(scan.files, ctx.storage));
+  return runDiffPass(ctx, report, scan.files, ctx.storage.listFiles(), timings);
+}
+
+
+async function runDiffPass(
+  ctx: IndexContext,
+  report: (progress: IndexProgress) => void,
+  scannedFiles: readonly FileInfo[],
+  existingFiles: readonly FileInfo[],
+  timings: TimingCollector,
+): Promise<IndexPassResult> {
+  const diff = await timings.time("index_diff", () => computeDiffFromFiles(scannedFiles, existingFiles));
   const pending = [...diff.added, ...diff.modified, ...diff.pending];
 
   report({
     phase: "scanning",
-    filesTotal: scan.files.length,
+    filesTotal: scannedFiles.length,
     detail: `${diff.added.length} added, ${diff.modified.length} modified, ${diff.pending.length} pending, ${diff.deleted.length} deleted, ${diff.unchanged.length} unchanged`,
   });
 
@@ -272,7 +355,7 @@ async function runIndexPass(
   const stats = await indexFiles(pending, ctx, reportIndexing, timings);
 
   return {
-    filesScanned: scan.files.length,
+    filesScanned: scannedFiles.length,
     diff,
     stats,
   };
@@ -334,14 +417,6 @@ function optimizeStorage(ctx: IndexContext): void {
       context: collectionContext(ctx.collection),
     });
   }
-}
-
-
-async function computeDiff(
-  scannedFiles: readonly FileInfo[],
-  storage: CollectionStorage,
-): Promise<DiffResult> {
-  return computeDiffFromFiles(scannedFiles, storage.listFiles());
 }
 
 

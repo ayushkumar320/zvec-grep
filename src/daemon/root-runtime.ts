@@ -19,6 +19,7 @@ export type RootRuntimeOptions = {
   readCollectionIdleTtlMs?: number;
   openSession?: (lease: ModelLease) => AnonymousReadSession | Promise<AnonymousReadSession>;
   searchWaitTimeoutMs?: number;
+  onActivity?: () => void;
 };
 
 type LeasedReadSession = AnonymousReadSession & {
@@ -39,6 +40,8 @@ export class RootRuntime {
   private dirtyRevision = 0;
   private indexedRevision = 0;
   private reconciliationRequired = true;
+  private watcherActive = false;
+  private watcherPending = false;
   private writerPending = false;
   private writerReady?: Promise<void>;
   private writerReadyResolve?: () => void;
@@ -57,6 +60,7 @@ export class RootRuntime {
 
 
   async search(options: ZvecGrepContextOptions): Promise<ZvecGrepContextResult> {
+    this.options.onActivity?.();
     if (this.closed) {
       throw new Error("Root runtime is closed.");
     }
@@ -100,7 +104,6 @@ export class RootRuntime {
     }
     this.writerPending = pending;
     if (pending) {
-      this.dirtyRevision += 1;
       this.writerReady = new Promise<void>((resolve) => {
         this.writerReadyResolve = resolve;
       });
@@ -112,24 +115,48 @@ export class RootRuntime {
   }
 
 
-  markIndexed(): void {
-    this.indexedRevision = this.dirtyRevision;
-    this.reconciliationRequired = false;
+  markDirty(): number {
+    this.dirtyRevision += 1;
+    return this.dirtyRevision;
+  }
+
+
+  markIndexed(revision = this.dirtyRevision): void {
+    this.indexedRevision = Math.max(this.indexedRevision, revision);
+    if (this.indexedRevision >= this.dirtyRevision) {
+      this.reconciliationRequired = false;
+    }
   }
 
 
   needsReconciliation(): boolean {
-    return this.reconciliationRequired;
+    return this.reconciliationRequired || this.indexedRevision < this.dirtyRevision;
+  }
+
+
+  setWatcherActive(active: boolean): void {
+    this.watcherActive = active;
+  }
+
+
+  setWatcherPending(pending: boolean): void {
+    this.watcherPending = pending;
+    this.options.onActivity?.();
   }
 
 
   async withWrite<T>(operation: () => Promise<T>): Promise<T> {
-    return this.runGenerationSerial(async () => {
-      const generation = this.generation;
-      this.generation = undefined;
-      await generation?.cache.close();
-      return operation();
-    });
+    this.options.onActivity?.();
+    try {
+      return await this.runGenerationSerial(async () => {
+        const generation = this.generation;
+        this.generation = undefined;
+        await generation?.cache.close();
+        return operation();
+      });
+    } finally {
+      this.options.onActivity?.();
+    }
   }
 
 
@@ -139,6 +166,8 @@ export class RootRuntime {
     writerPending: boolean;
     dirtyRevision: number;
     indexedRevision: number;
+    watcherActive: boolean;
+    watcherPending: boolean;
   } {
     const read = this.generation?.cache.snapshot();
     return {
@@ -147,6 +176,8 @@ export class RootRuntime {
       writerPending: this.writerPending,
       dirtyRevision: this.dirtyRevision,
       indexedRevision: this.indexedRevision,
+      watcherActive: this.watcherActive,
+      watcherPending: this.watcherPending,
     };
   }
 
@@ -156,6 +187,8 @@ export class RootRuntime {
       return;
     }
     this.closed = true;
+    this.watcherActive = false;
+    this.watcherPending = false;
     this.setWriterPending(false);
     await this.runGenerationSerial(async () => {
       const generation = this.generation;

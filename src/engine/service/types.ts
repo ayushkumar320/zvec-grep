@@ -42,11 +42,13 @@ export type ZvecGrepIndexOptions = {
   excludePaths?: readonly string[];
   embeddingConcurrency?: number;
   onProgress?: (progress: IndexProgress) => void;
+  changedPaths?: readonly string[];
 };
 
 
 export type ZvecGrepInfoOptions = {
   root?: string;
+  includeStatus?: boolean;
 };
 
 

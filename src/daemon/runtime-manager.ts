@@ -15,6 +15,8 @@ export type RuntimeManagerOptions = {
   serviceOptions?: CreateZvecGrepOptions;
   readCollectionIdleTtlMs?: number;
   searchWaitTimeoutMs?: number;
+  runtimeIdleTtlMs?: number;
+  onRuntimeEvicted?: (canonicalRoot: string) => void | Promise<void>;
   rootLeaseManager?: RootLeaseManager;
   createRuntime?: (input: {
     canonicalRoot: string;
@@ -33,6 +35,7 @@ export class RuntimeManager {
   private readonly creating = new Map<string, Promise<RootRuntime>>();
   private readonly aliases = new Map<string, string>();
   private readonly rootLeaseManager: RootLeaseManager;
+  private readonly idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private closed = false;
 
 
@@ -66,7 +69,7 @@ export class RuntimeManager {
     if (creatingRequestedRoot) {
       return creatingRequestedRoot;
     }
-    const info = await inspectRoot(requestedRoot, this.options.serviceOptions);
+    const info = await inspectRoot(requestedRoot, this.options.serviceOptions, false);
     if (!info.indexed || !info.collection?.embedding) {
       throw new DaemonError(
         "INDEX_MISSING",
@@ -100,7 +103,7 @@ export class RuntimeManager {
     if (creatingRequestedRoot) {
       return creatingRequestedRoot;
     }
-    const info = await inspectRoot(canonicalRequestedRoot, this.options.serviceOptions);
+    const info = await inspectRoot(canonicalRequestedRoot, this.options.serviceOptions, false);
     const canonicalRoot = await resolveRequestedRoot(info.root, true);
     this.aliases.set(canonicalRequestedRoot, canonicalRoot);
     return this.getOrCreate(canonicalRoot);
@@ -108,7 +111,7 @@ export class RuntimeManager {
 
 
   async peek(requestedRoot: string): Promise<RootRuntime | undefined> {
-    const info = await inspectRoot(requestedRoot, this.options.serviceOptions);
+    const info = await inspectRoot(requestedRoot, this.options.serviceOptions, false);
     const canonicalRoot = await realpath(info.root);
     return this.runtimes.get(canonicalRoot);
   }
@@ -131,6 +134,8 @@ export class RuntimeManager {
     this.closed = true;
     await Promise.allSettled(this.creating.values());
     const runtimes = [...this.runtimes.values()];
+    for (const timer of this.idleTimers.values()) clearTimeout(timer);
+    this.idleTimers.clear();
     this.runtimes.clear();
     this.aliases.clear();
     await Promise.all(runtimes.map((runtime) => runtime.close()));
@@ -147,6 +152,7 @@ export class RuntimeManager {
       if (modelRequest) {
         existing.updateModelRequest(modelRequest);
       }
+      this.touchRuntime(canonicalRoot);
       return existing;
     }
     let pending = this.creating.get(canonicalRoot);
@@ -159,6 +165,7 @@ export class RuntimeManager {
       if (modelRequest) {
         runtime.updateModelRequest(modelRequest);
       }
+      this.touchRuntime(canonicalRoot);
       return runtime;
     } finally {
       this.creating.delete(canonicalRoot);
@@ -186,6 +193,7 @@ export class RuntimeManager {
         rootLease,
         readCollectionIdleTtlMs: this.options.readCollectionIdleTtlMs,
         searchWaitTimeoutMs: this.options.searchWaitTimeoutMs,
+        onActivity: () => this.touchRuntime(canonicalRoot),
       });
     }
     if (this.closed) {
@@ -193,7 +201,41 @@ export class RuntimeManager {
       throw new DaemonError("DAEMON_SHUTTING_DOWN", "The daemon is shutting down.", true);
     }
     this.runtimes.set(canonicalRoot, runtime);
+    this.touchRuntime(canonicalRoot);
     return runtime;
+  }
+
+
+  private touchRuntime(canonicalRoot: string): void {
+    const idleTtlMs = this.options.runtimeIdleTtlMs ?? 30 * 60_000;
+    const existing = this.idleTimers.get(canonicalRoot);
+    if (existing) clearTimeout(existing);
+    if (idleTtlMs <= 0 || this.closed) {
+      return;
+    }
+    const timer = setTimeout(() => void this.evictIfIdle(canonicalRoot), idleTtlMs);
+    timer.unref?.();
+    this.idleTimers.set(canonicalRoot, timer);
+  }
+
+
+  private async evictIfIdle(canonicalRoot: string): Promise<void> {
+    this.idleTimers.delete(canonicalRoot);
+    const runtime = this.runtimes.get(canonicalRoot);
+    if (!runtime) {
+      return;
+    }
+    const snapshot = runtime.snapshot();
+    if (snapshot.activeReaders > 0 || snapshot.writerPending || snapshot.watcherPending) {
+      this.touchRuntime(canonicalRoot);
+      return;
+    }
+    this.runtimes.delete(canonicalRoot);
+    try {
+      await this.options.onRuntimeEvicted?.(canonicalRoot);
+    } finally {
+      await runtime.close();
+    }
   }
 }
 
@@ -201,6 +243,7 @@ export class RuntimeManager {
 export async function inspectRoot(
   requestedRoot: string,
   serviceOptions: CreateZvecGrepOptions = {},
+  includeStatus = true,
 ): Promise<ZvecGrepInfoResult> {
   const canonicalRequestedRoot = await resolveRequestedRoot(requestedRoot, false);
   const service = await createZvecGrep({
@@ -208,7 +251,7 @@ export async function inspectRoot(
     root: canonicalRequestedRoot,
   });
   try {
-    return await service.info({ root: canonicalRequestedRoot });
+    return await service.info({ root: canonicalRequestedRoot, includeStatus });
   } finally {
     await service.close();
   }

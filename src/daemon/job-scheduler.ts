@@ -221,7 +221,7 @@ export class JobScheduler {
     if (this.activeByRoot.get(job.canonicalRoot) === job) {
       this.activeByRoot.delete(job.canonicalRoot);
     }
-    const followup = !this.closed && state === "succeeded" && job.followup?.state === "queued"
+    const followup = !this.closed && state !== "cancelled" && job.followup?.state === "queued"
       ? job.followup
       : undefined;
     job.followup = undefined;

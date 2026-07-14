@@ -15,8 +15,10 @@ import type { ZvecGrepIndexInput, ZvecGrepIndexStatusInput } from "../mcp/schema
 import { DaemonError } from "./errors.js";
 import { JobScheduler, type IndexJobSnapshot, type JobSchedulerOptions } from "./job-scheduler.js";
 import { EmbeddingModelPool, type EmbeddingModelPoolOptions } from "./model-pool.js";
+import { IndexCoordinator } from "./index-coordinator.js";
 import { inspectRoot, resolveRequestedRoot, RuntimeManager } from "./runtime-manager.js";
 import type { RootRuntime } from "./root-runtime.js";
+import { WatchManager, type WatchManagerOptions } from "./watch-manager.js";
 
 
 const DEFAULT_LOCAL_EMBEDDING = "local/embeddinggemma-300m";
@@ -28,8 +30,14 @@ export type DaemonBackendOptions = {
   schedulerOptions?: JobSchedulerOptions;
   readCollectionIdleTtlMs?: number;
   searchWaitTimeoutMs?: number;
+  runtimeIdleTtlMs?: number;
   resolveEmbeddingSchema?: (reference: string) => CollectionEmbeddingSchema;
   createService?: typeof createZvecGrep;
+  watchManagerFactory?: (options: WatchManagerOptions) => WatchManager;
+};
+
+type DaemonIndexInput = ZvecGrepIndexInput & {
+  changedPaths?: readonly string[];
 };
 
 
@@ -39,6 +47,8 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
   readonly scheduler: JobScheduler;
   private readonly startedAt = Date.now();
   private readonly statusCache = new Map<string, ZvecGrepInfoResult>();
+  private readonly watchers = new Map<string, WatchManager>();
+  private readonly indexCoordinators = new Map<string, IndexCoordinator>();
   private shuttingDown = false;
   private closePromise?: Promise<void>;
 
@@ -53,6 +63,8 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
       serviceOptions: options.serviceOptions,
       readCollectionIdleTtlMs: options.readCollectionIdleTtlMs,
       searchWaitTimeoutMs: options.searchWaitTimeoutMs,
+      runtimeIdleTtlMs: options.runtimeIdleTtlMs,
+      onRuntimeEvicted: (root) => this.closeWatcher(root),
     });
     this.scheduler = new JobScheduler(options.schedulerOptions);
   }
@@ -60,14 +72,26 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
 
   async index(input: ZvecGrepIndexInput): Promise<ZvecGrepIndexResult> {
     const runtime = await this.runtimeManager.activateForIndex(input.root);
+    this.ensureWatcher(runtime);
+    const activeJob = this.scheduler.getByRoot(runtime.canonicalRoot);
+    const followsNarrowJob = activeJob?.state === "queued" || activeJob?.state === "running"
+      ? activeJob.reason === "watch"
+      : false;
+    const createsWork = !this.scheduler.hasActiveRoot(runtime.canonicalRoot)
+      || input.rebuild === true
+      || followsNarrowJob;
+    const targetRevision = createsWork ? runtime.markDirty() : runtime.snapshot().dirtyRevision;
     runtime.setWriterPending(true);
     let submitted;
     try {
       submitted = this.scheduler.submit({
         canonicalRoot: runtime.canonicalRoot,
         reason: "manual",
-        followupIfRunning: input.rebuild === true,
-        run: (report) => runtime.withWrite(() => this.runIndex(runtime, input, report)),
+        followupIfRunning: input.rebuild === true || followsNarrowJob,
+        run: (report) => runtime.withWrite(async () => {
+          await this.runIndex(runtime, input, report);
+          runtime.markIndexed(targetRevision);
+        }),
       });
     } catch (error) {
       runtime.setWriterPending(false);
@@ -82,6 +106,10 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
     const job = input.wait
       ? await this.scheduler.wait(submitted.job.id)
       : submitted.job;
+    if (input.wait) {
+      await this.watchers.get(runtime.canonicalRoot)?.flushPending();
+      await this.scheduler.waitForRootIdle(runtime.canonicalRoot);
+    }
     return {
       root: runtime.canonicalRoot,
       jobId: job.id,
@@ -93,6 +121,7 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
 
   async search(input: NormalizedSearchInput): Promise<ZvecGrepSearchResult> {
     const runtime = await this.runtimeManager.activate(input.root);
+    this.ensureWatcher(runtime);
     let updateJob: IndexJobSnapshot | undefined;
     if (runtime.needsReconciliation() && input.freshness === "wait_for_fresh") {
       updateJob = await this.submitIndex(runtime, { root: runtime.canonicalRoot }, "fresh_query", true);
@@ -155,7 +184,7 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
       persistent: persistentStatus(info),
       runtime: runtimeSnapshot
         ? {
-            watcherActive: false,
+            watcherActive: runtimeSnapshot.watcherActive,
             dirtyRevision: runtimeSnapshot.dirtyRevision,
             indexedRevision: runtimeSnapshot.indexedRevision,
             activeJobId: job?.id,
@@ -190,6 +219,12 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
     }
     this.shuttingDown = true;
     this.closePromise = (async () => {
+      await Promise.all([...this.watchers.values()].map((watcher) => watcher.close()));
+      for (const root of this.watchers.keys()) {
+        this.runtimeManager.getByCanonicalRoot(root)?.setWatcherActive(false);
+      }
+      this.watchers.clear();
+      this.indexCoordinators.clear();
       await this.scheduler.close();
       await this.runtimeManager.close();
       await this.modelPool.close();
@@ -200,11 +235,12 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
 
   private async runIndex(
     runtime: RootRuntime,
-    input: ZvecGrepIndexInput,
+    input: DaemonIndexInput,
     report: (progress: IndexProgress) => void,
   ): Promise<void> {
-    const before = await inspectRoot(runtime.canonicalRoot, this.options.serviceOptions);
-    this.statusCache.set(runtime.canonicalRoot, before);
+    const includeStatus = !input.changedPaths;
+    const before = await inspectRoot(runtime.canonicalRoot, this.options.serviceOptions, includeStatus);
+    if (includeStatus) this.statusCache.set(runtime.canonicalRoot, before);
     const schema = this.indexSchema(before, input);
     const lease = await this.modelPool.acquire({
       schema,
@@ -223,6 +259,7 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
       await service.index({
         root: runtime.canonicalRoot,
         rebuild: input.rebuild,
+        changedPaths: input.changedPaths,
         onProgress: report,
       });
     } finally {
@@ -233,8 +270,8 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
       }
     }
 
-    const after = await inspectRoot(runtime.canonicalRoot, this.options.serviceOptions);
-    this.statusCache.set(runtime.canonicalRoot, after);
+    const after = await inspectRoot(runtime.canonicalRoot, this.options.serviceOptions, includeStatus);
+    if (includeStatus) this.statusCache.set(runtime.canonicalRoot, after);
     if (!after.collection?.embedding) {
       throw new DaemonError("INDEX_MISSING", "Index completed without an embedding schema.");
     }
@@ -243,16 +280,17 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
       root: runtime.canonicalRoot,
       registryHome: after.home,
     });
-    runtime.markIndexed();
   }
 
 
   private async submitIndex(
     runtime: RootRuntime,
-    input: ZvecGrepIndexInput,
+    input: DaemonIndexInput,
     reason: "manual" | "reconcile" | "fresh_query",
     wait: boolean,
   ): Promise<IndexJobSnapshot> {
+    const createsWork = !this.scheduler.hasActiveRoot(runtime.canonicalRoot) || input.rebuild === true;
+    const targetRevision = createsWork ? runtime.markDirty() : runtime.snapshot().dirtyRevision;
     runtime.setWriterPending(true);
     let submitted;
     try {
@@ -260,7 +298,10 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
         canonicalRoot: runtime.canonicalRoot,
         reason,
         followupIfRunning: input.rebuild === true,
-        run: (report) => runtime.withWrite(() => this.runIndex(runtime, input, report)),
+        run: (report) => runtime.withWrite(async () => {
+          await this.runIndex(runtime, input, report);
+          runtime.markIndexed(targetRevision);
+        }),
       });
     } catch (error) {
       runtime.setWriterPending(false);
@@ -272,6 +313,49 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
       });
     }
     return wait ? this.scheduler.wait(submitted.job.id) : submitted.job;
+  }
+
+
+  private ensureWatcher(runtime: RootRuntime): void {
+    if (this.watchers.has(runtime.canonicalRoot) || this.shuttingDown) {
+      return;
+    }
+    const coordinator = new IndexCoordinator({
+      runtime,
+      scheduler: this.scheduler,
+      getIndexedFileCount: () => this.statusCache.get(runtime.canonicalRoot)?.status?.filesStored,
+      run: async (changes, report) => {
+        const changedPaths = [
+          ...changes.touchedFiles,
+          ...changes.rescanDirectories,
+          ...changes.deletedPrefixes,
+        ];
+        if (!changes.forceFullReconcile && changedPaths.length === 0) {
+          return;
+        }
+        await this.runIndex(runtime, {
+          root: runtime.canonicalRoot,
+          changedPaths: changes.forceFullReconcile ? undefined : changedPaths,
+        }, report);
+      },
+    });
+    const watcher = (this.options.watchManagerFactory ?? ((options) => new WatchManager(options)))({
+      root: runtime.canonicalRoot,
+      onChanges: (changes, reason) => { coordinator.enqueue(changes, reason); },
+      onPendingChange: (pending) => runtime.setWatcherPending(pending),
+    });
+    watcher.start();
+    this.indexCoordinators.set(runtime.canonicalRoot, coordinator);
+    this.watchers.set(runtime.canonicalRoot, watcher);
+    runtime.setWatcherActive(true);
+  }
+
+
+  private async closeWatcher(canonicalRoot: string): Promise<void> {
+    const watcher = this.watchers.get(canonicalRoot);
+    this.watchers.delete(canonicalRoot);
+    this.indexCoordinators.delete(canonicalRoot);
+    await watcher?.close();
   }
 
 
