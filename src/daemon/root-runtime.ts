@@ -7,14 +7,18 @@ import type {
   ModelLeaseRequest,
 } from "./model-pool.js";
 import { ReadCollectionCache } from "./read-collection-cache.js";
+import type { RootLease } from "./root-lease.js";
+import { DaemonError } from "./errors.js";
 
 
 export type RootRuntimeOptions = {
   canonicalRoot: string;
   modelPool: EmbeddingModelPool;
-  modelRequest: ModelLeaseRequest;
+  modelRequest?: ModelLeaseRequest;
+  rootLease?: RootLease;
   readCollectionIdleTtlMs?: number;
   openSession?: (lease: ModelLease) => AnonymousReadSession | Promise<AnonymousReadSession>;
+  searchWaitTimeoutMs?: number;
 };
 
 type LeasedReadSession = AnonymousReadSession & {
@@ -31,7 +35,13 @@ export class RootRuntime {
   readonly canonicalRoot: string;
   private generation?: ReadGeneration;
   private generationTail: Promise<void> = Promise.resolve();
-  private modelRequest: ModelLeaseRequest;
+  private modelRequest?: ModelLeaseRequest;
+  private dirtyRevision = 0;
+  private indexedRevision = 0;
+  private reconciliationRequired = true;
+  private writerPending = false;
+  private writerReady?: Promise<void>;
+  private writerReadyResolve?: () => void;
   private closed = false;
 
 
@@ -50,11 +60,17 @@ export class RootRuntime {
     if (this.closed) {
       throw new Error("Root runtime is closed.");
     }
+    while (this.writerPending && this.writerReady) {
+      await this.waitForWriter(this.writerReady);
+    }
     return this.runGenerationSerial(async () => {
       if (this.closed) {
         throw new Error("Root runtime is closed.");
       }
       const request = this.modelRequest;
+      if (!request) {
+        throw new Error("Root runtime does not have an indexed embedding schema.");
+      }
       const desiredKey = this.options.modelPool.keyFor(request);
       if (this.generation?.key !== desiredKey) {
         await this.generation?.cache.close();
@@ -78,11 +94,59 @@ export class RootRuntime {
   }
 
 
-  snapshot(): { readCollectionOpen: boolean; activeReaders: number } {
+  setWriterPending(pending: boolean): void {
+    if (pending === this.writerPending) {
+      return;
+    }
+    this.writerPending = pending;
+    if (pending) {
+      this.dirtyRevision += 1;
+      this.writerReady = new Promise<void>((resolve) => {
+        this.writerReadyResolve = resolve;
+      });
+    } else {
+      this.writerReadyResolve?.();
+      this.writerReadyResolve = undefined;
+      this.writerReady = undefined;
+    }
+  }
+
+
+  markIndexed(): void {
+    this.indexedRevision = this.dirtyRevision;
+    this.reconciliationRequired = false;
+  }
+
+
+  needsReconciliation(): boolean {
+    return this.reconciliationRequired;
+  }
+
+
+  async withWrite<T>(operation: () => Promise<T>): Promise<T> {
+    return this.runGenerationSerial(async () => {
+      const generation = this.generation;
+      this.generation = undefined;
+      await generation?.cache.close();
+      return operation();
+    });
+  }
+
+
+  snapshot(): {
+    readCollectionOpen: boolean;
+    activeReaders: number;
+    writerPending: boolean;
+    dirtyRevision: number;
+    indexedRevision: number;
+  } {
     const read = this.generation?.cache.snapshot();
     return {
       readCollectionOpen: read?.open ?? false,
       activeReaders: read?.activeReaders ?? 0,
+      writerPending: this.writerPending,
+      dirtyRevision: this.dirtyRevision,
+      indexedRevision: this.indexedRevision,
     };
   }
 
@@ -92,11 +156,39 @@ export class RootRuntime {
       return;
     }
     this.closed = true;
+    this.setWriterPending(false);
     await this.runGenerationSerial(async () => {
       const generation = this.generation;
       this.generation = undefined;
-      await generation?.cache.close();
+      try {
+        await generation?.cache.close();
+      } finally {
+        await this.options.rootLease?.release();
+      }
     });
+  }
+
+
+  private async waitForWriter(writerReady: Promise<void>): Promise<void> {
+    const timeoutMs = this.options.searchWaitTimeoutMs ?? 2_000;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        writerReady,
+        new Promise<never>((_, reject) => {
+          timeout = setTimeout(() => reject(new DaemonError(
+            "INDEX_BUSY",
+            "An index writer is pending for this root.",
+            true,
+          )), timeoutMs);
+          timeout.unref?.();
+        }),
+      ]);
+    } finally {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+    }
   }
 
 

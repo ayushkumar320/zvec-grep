@@ -46,6 +46,7 @@ import {
 import { runLexicalFallback, runRgSearch } from "./lexical.js";
 import { defaultHome } from "../utils/path.js";
 import { acquireReadWriteLock, assertNoWriteLock, type FileLock } from "../utils/lock.js";
+import { assertDaemonWriteAllowed } from "../utils/daemon-lease.js";
 import { TimingCollector } from "../utils/timing.js";
 import type {
   CreateZvecGrepOptions,
@@ -200,11 +201,13 @@ class ZvecGrepService implements ZvecGrep {
   async index(options: ZvecGrepIndexOptions = {}): Promise<IndexResult> {
     this.ensureOpen();
     const root = resolveZvecGrepRoot(options.root ?? this.root);
+    const daemonWritePermit = assertDaemonWriteAllowed(root, this.options.daemonInstanceToken);
     const location = anonymousIndexLocation(root);
-    return await this.withEmbeddingModelOperation(() => withHomeWriteLock(
-      location.home,
-      options.rebuild ? "index.rebuild" : "index",
-      async () => {
+    try {
+      return await this.withEmbeddingModelOperation(() => withHomeWriteLock(
+        location.home,
+        options.rebuild ? "index.rebuild" : "index",
+        async () => {
         const existing = readCollectionInfo(location.home, ANONYMOUS_COLLECTION_NAME);
         const embeddingModel = this.embeddingModelForIndex(existing, location.home, "index");
         const registry = new CollectionRegistry(location.home, embeddingModel);
@@ -247,30 +250,37 @@ class ZvecGrepService implements ZvecGrep {
         } finally {
           registry.close();
         }
-      },
-    ));
+        },
+      ));
+    } finally {
+      daemonWritePermit?.release();
+    }
   }
 
 
   async disableIndex(options: ZvecGrepInfoOptions = {}): Promise<ZvecGrepInfoResult> {
     this.ensureOpen();
     const root = resolveZvecGrepRoot(options.root ?? this.root);
+    const daemonWritePermit = assertDaemonWriteAllowed(root, this.options.daemonInstanceToken);
     const location = anonymousIndexLocation(root);
+    try {
+      await withHomeWriteLock(location.home, "index.disable", async () => {
+        const registry = new CollectionRegistry(location.home, undefined);
+        try {
+          registry.disableIndex(
+            ANONYMOUS_COLLECTION_NAME,
+            [root],
+            location.collectionPath,
+          );
+        } finally {
+          registry.close();
+        }
+      });
 
-    await withHomeWriteLock(location.home, "index.disable", async () => {
-      const registry = new CollectionRegistry(location.home, undefined);
-      try {
-        registry.disableIndex(
-          ANONYMOUS_COLLECTION_NAME,
-          [root],
-          location.collectionPath,
-        );
-      } finally {
-        registry.close();
-      }
-    });
-
-    return this.info({ root });
+      return this.info({ root });
+    } finally {
+      daemonWritePermit?.release();
+    }
   }
 
 
@@ -536,8 +546,13 @@ class ZvecGrepService implements ZvecGrep {
     options: ZvecGrepContextOptions,
     timings: TimingCollector,
   ): Promise<void> {
-    const needsRefresh = await timings.time("status_scan", () =>
-      withHomeReadLock(location.home, "context.status", async () => {
+    const daemonWritePermit = assertDaemonWriteAllowed(
+      location.root,
+      this.options.daemonInstanceToken,
+    );
+    try {
+      const needsRefresh = await timings.time("status_scan", () =>
+        withHomeReadLock(location.home, "context.status", async () => {
         const registry = new CollectionRegistry(location.home, undefined, true);
         try {
           const status = await registry.status(ANONYMOUS_COLLECTION_NAME);
@@ -545,42 +560,45 @@ class ZvecGrepService implements ZvecGrep {
         } finally {
           registry.close();
         }
+        }));
+
+      if (!needsRefresh) {
+        return;
+      }
+
+      await timings.time("auto_update", () => withHomeWriteLock(location.home, "context.refresh", async () => {
+        const existing = readCollectionInfo(location.home, ANONYMOUS_COLLECTION_NAME);
+        if (!existing) {
+          return;
+        }
+
+        const stillNeedsRefresh = await timings.time("refresh_status_scan", () =>
+          collectionNeedsRefresh(location.home, ANONYMOUS_COLLECTION_NAME));
+        if (!stillNeedsRefresh) {
+          return;
+        }
+
+        const embeddingModel = this.embeddingModelForIndex(existing, location.home, "context.refresh");
+        assertCollectionEmbeddingMatchesCurrentModel(
+          existing,
+          embeddingModel,
+          "zg --index --rebuild",
+        );
+
+        const registry = new CollectionRegistry(location.home, embeddingModel);
+        try {
+          const result = await registry.open(ANONYMOUS_COLLECTION_NAME).index({
+            embeddingConcurrency: options.embeddingConcurrency,
+            onProgress: options.onAutoUpdateProgress,
+          });
+          timings.addEntries(result.timings, "auto_update_");
+        } finally {
+          registry.close();
+        }
       }));
-
-    if (!needsRefresh) {
-      return;
+    } finally {
+      daemonWritePermit?.release();
     }
-
-    await timings.time("auto_update", () => withHomeWriteLock(location.home, "context.refresh", async () => {
-      const existing = readCollectionInfo(location.home, ANONYMOUS_COLLECTION_NAME);
-      if (!existing) {
-        return;
-      }
-
-      const stillNeedsRefresh = await timings.time("refresh_status_scan", () =>
-        collectionNeedsRefresh(location.home, ANONYMOUS_COLLECTION_NAME));
-      if (!stillNeedsRefresh) {
-        return;
-      }
-
-      const embeddingModel = this.embeddingModelForIndex(existing, location.home, "context.refresh");
-      assertCollectionEmbeddingMatchesCurrentModel(
-        existing,
-        embeddingModel,
-        "zg --index --rebuild",
-      );
-
-      const registry = new CollectionRegistry(location.home, embeddingModel);
-      try {
-        const result = await registry.open(ANONYMOUS_COLLECTION_NAME).index({
-          embeddingConcurrency: options.embeddingConcurrency,
-          onProgress: options.onAutoUpdateProgress,
-        });
-        timings.addEntries(result.timings, "auto_update_");
-      } finally {
-        registry.close();
-      }
-    }));
   }
 
 

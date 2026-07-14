@@ -22,6 +22,7 @@ export type CreateZvecGrepOptions = {
   home?: string;
   embeddingModel?: EmbeddingModel;
   embeddingModelOwnership?: "owned" | "borrowed";
+  daemonInstanceToken?: string;
   embedding?: string;
   apiKey?: string;
   endpoint?: string;

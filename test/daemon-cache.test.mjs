@@ -86,6 +86,48 @@ test("embedding model pool single-flights loads and disposes after the final lea
 });
 
 
+test("model pool rolls back an unreturned lease when capacity trimming fails", async () => {
+  const pool = new EmbeddingModelPool({
+    idleTtlMs: 60_000,
+    maxLoadedModels: 1,
+    keyForRequest: (request) => request.schema.model,
+    createModel: (request) => ({
+      dispose: async () => {
+        if (request.schema.model === "model-a") {
+          throw new Error("dispose failed");
+        }
+      },
+    }),
+  });
+  const first = await pool.acquire(modelRequest("model-a"));
+  first.release();
+  await assert.rejects(pool.acquire(modelRequest("model-b")), /dispose failed/);
+  assert.equal(pool.snapshot().activeLeases, 0);
+  await pool.close();
+});
+
+
+test("model pool close drains an in-flight load without returning a lease", async () => {
+  let finishLoad;
+  let disposals = 0;
+  const pool = new EmbeddingModelPool({
+    createModel: () => new Promise((resolve) => {
+      finishLoad = () => resolve({ dispose: async () => { disposals += 1; } });
+    }),
+  });
+  const acquiring = pool.acquire(modelRequest("model-a"));
+  while (!finishLoad) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  const closing = pool.close();
+  finishLoad();
+  await assert.rejects(acquiring, /pool is closed/);
+  await closing;
+  assert.equal(disposals, 1);
+  assert.deepEqual(pool.snapshot(), { loaded: 0, activeLeases: 0 });
+});
+
+
 test("service does not dispose a borrowed embedding model", async () => {
   let disposals = 0;
   const model = { dispose: async () => { disposals += 1; } };
@@ -160,6 +202,33 @@ test("root runtime replaces a cached session when the embedding schema changes",
   assert.equal(modelLoads, 2);
   assert.equal(sessionCloses, 1);
   await runtime.close();
+  await pool.close();
+});
+
+
+test("root runtime releases its daemon lease when read cache close fails", async () => {
+  let releases = 0;
+  const pool = new EmbeddingModelPool({
+    createModel: () => ({ dispose: async () => {} }),
+  });
+  const runtime = new RootRuntime({
+    canonicalRoot: "/tmp/repo",
+    modelPool: pool,
+    modelRequest: modelRequest("model-a"),
+    rootLease: {
+      root: "/tmp/repo",
+      release: async () => { releases += 1; },
+    },
+    readCollectionIdleTtlMs: 60_000,
+    openSession: async () => ({
+      root: "/tmp/repo",
+      context: async () => emptyContextResult(),
+      close: async () => { throw new Error("session close failed"); },
+    }),
+  });
+  await runtime.search({ query: "query" });
+  await assert.rejects(runtime.close(), /session close failed/);
+  assert.equal(releases, 1);
   await pool.close();
 });
 

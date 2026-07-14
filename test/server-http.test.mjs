@@ -58,15 +58,31 @@ test("Streamable HTTP serves health, MCP contracts and a real cached index searc
   await service.close();
 
   let modelLoads = 0;
+  let blockEmbedding = false;
+  let releaseEmbedding;
+  const embeddingReleased = new Promise((resolve) => {
+    releaseEmbedding = resolve;
+  });
   const backend = new DaemonBackend({
     version: "1.0.0",
     modelPoolOptions: {
       createModel: () => {
         modelLoads += 1;
-        return new TestEmbeddingModel();
+        return new TestEmbeddingModel(async () => {
+          if (blockEmbedding) {
+            await embeddingReleased;
+          }
+        });
       },
     },
+    resolveEmbeddingSchema: () => ({
+      provider: "test",
+      model: "deterministic",
+      dimension: 8,
+      metric: "cosine",
+    }),
     readCollectionIdleTtlMs: 60_000,
+    searchWaitTimeoutMs: 20,
   });
   const server = new DaemonHttpServer({
     host: "127.0.0.1",
@@ -78,6 +94,7 @@ test("Streamable HTTP serves health, MCP contracts and a real cached index searc
   const address = await server.start();
   const mcpUrl = new URL(`http://127.0.0.1:${address.port}/mcp`);
   t.after(async () => {
+    releaseEmbedding?.();
     await server.close();
     await backend.close();
     await rm(temporaryDirectory, { recursive: true, force: true });
@@ -133,12 +150,41 @@ test("Streamable HTTP serves health, MCP contracts and a real cached index searc
   });
   assert.equal(coldStatus.structuredContent.active_runtimes, 0);
   assert.equal(coldStatus.structuredContent.models.loaded, 0);
+  const coldIndexStatus = await clients[0].callTool({
+    name: "zvec_grep_index_status",
+    arguments: { root },
+  });
+  assert.equal(coldIndexStatus.structuredContent.indexed, true);
+  assert.equal(coldIndexStatus.structuredContent.runtime, undefined);
+  const afterColdIndexStatus = await clients[0].callTool({
+    name: "zvec_grep_server_status",
+    arguments: {},
+  });
+  assert.equal(afterColdIndexStatus.structuredContent.active_runtimes, 0);
+  assert.equal(afterColdIndexStatus.structuredContent.models.loaded, 0);
+
+  const freshSearch = await clients[0].callTool({
+    name: "zvec_grep_search",
+    arguments: {
+      root,
+      query: "answer to everything",
+      limit: 3,
+      freshness: "wait_for_fresh",
+    },
+  });
+  assert.equal(freshSearch.isError, undefined);
+  assert.equal(freshSearch.structuredContent.freshness, "fresh");
 
   const searchRoots = [root, join(root, "src")];
   const searches = await Promise.all(clients.map((client, index) => client.callTool({
     name: "zvec_grep_search",
-    arguments: { root: searchRoots[index], query: "answer to everything", limit: 3 },
+    arguments: {
+      root: searchRoots[index],
+      query: "answer to everything",
+      limit: 3,
+    },
   })));
+  await backend.scheduler.waitForRootIdle(canonicalRoot);
   for (const search of searches) {
     assert.equal(search.isError, undefined);
     assert.equal(search.structuredContent.root, canonicalRoot);
@@ -154,6 +200,25 @@ test("Streamable HTTP serves health, MCP contracts and a real cached index searc
   assert.equal(status.structuredContent.active_runtimes, 1);
   assert.equal(status.structuredContent.models.loaded, 1);
 
+  await writeFile(join(root, "src", "answer.ts"), [
+    "export function updatedAnswer() {",
+    "  return 43;",
+    "}",
+    "",
+  ].join("\n"));
+  const refreshed = await clients[0].callTool({
+    name: "zvec_grep_index",
+    arguments: { root: join(root, "src"), wait: true },
+  });
+  assert.equal(refreshed.structuredContent.root, canonicalRoot);
+  assert.equal(refreshed.structuredContent.state, "succeeded");
+  const refreshedSearch = await clients[0].callTool({
+    name: "zvec_grep_search",
+    arguments: { root, fts: "updatedAnswer" },
+  });
+  assert.equal(refreshedSearch.isError, undefined);
+  assert.match(refreshedSearch.structuredContent.result.items[0].content, /updatedAnswer/);
+
   const unindexedRoot = join(temporaryDirectory, "unindexed");
   await mkdir(unindexedRoot);
   const missing = await clients[0].callTool({
@@ -163,6 +228,67 @@ test("Streamable HTTP serves health, MCP contracts and a real cached index searc
   assert.equal(missing.isError, true);
   assert.match(missing.content[0].text, /INDEX_MISSING/);
   await assert.rejects(access(join(unindexedRoot, ".zvec-grep")));
+
+  await writeFile(join(unindexedRoot, "new.ts"), "export const newlyIndexed = true;\n");
+  blockEmbedding = true;
+  const indexed = await clients[0].callTool({
+    name: "zvec_grep_index",
+    arguments: {
+      root: unindexedRoot,
+      embedding: "test/deterministic",
+    },
+  });
+  assert.equal(indexed.isError, undefined);
+  assert.match(indexed.structuredContent.state, /queued|running/);
+  await waitFor(() => backend.scheduler.get(indexed.structuredContent.job_id)?.progress?.detail === "embedding new.ts");
+
+  const runningStatus = await clients[0].callTool({
+    name: "zvec_grep_index_status",
+    arguments: { root: unindexedRoot },
+  });
+  assert.equal(runningStatus.structuredContent.runtime.job_state, "running");
+
+  const duplicate = await clients[1].callTool({
+    name: "zvec_grep_index",
+    arguments: { root: unindexedRoot, embedding: "test/deterministic" },
+  });
+  assert.equal(duplicate.structuredContent.reused, true);
+  assert.equal(duplicate.structuredContent.job_id, indexed.structuredContent.job_id);
+
+  const busySearch = await clients[0].callTool({
+    name: "zvec_grep_search",
+    arguments: { root: unindexedRoot, query: "newly indexed" },
+  });
+  assert.equal(busySearch.isError, true);
+  assert.match(busySearch.content[0].text, /INDEX_BUSY/);
+
+  const waitedPromise = clients[1].callTool({
+    name: "zvec_grep_index",
+    arguments: { root: unindexedRoot, wait: true },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  blockEmbedding = false;
+  releaseEmbedding();
+  const waited = await waitedPromise;
+  assert.equal(waited.structuredContent.reused, true);
+  assert.equal(waited.structuredContent.state, "succeeded");
+
+  const indexStatus = await clients[0].callTool({
+    name: "zvec_grep_index_status",
+    arguments: { root: unindexedRoot },
+  });
+  assert.equal(indexStatus.isError, undefined);
+  assert.equal(indexStatus.structuredContent.indexed, true);
+  assert.equal(indexStatus.structuredContent.runtime.job_state, "succeeded");
+  assert.equal(indexStatus.structuredContent.runtime.dirty_revision, 1);
+  assert.equal(indexStatus.structuredContent.runtime.indexed_revision, 1);
+
+  const newSearch = await clients[0].callTool({
+    name: "zvec_grep_search",
+    arguments: { root: unindexedRoot, query: "newly indexed" },
+  });
+  assert.equal(newSearch.isError, undefined);
+  assert.equal(newSearch.structuredContent.result.items[0].file.relativePath, "new.ts");
 });
 
 
@@ -175,6 +301,17 @@ async function connectClient(url, name) {
   });
   await client.connect(transport);
   return client;
+}
+
+
+async function waitFor(predicate) {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    if (predicate()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("Condition was not reached.");
 }
 
 
@@ -200,7 +337,13 @@ class TestEmbeddingModel extends EmbeddingModel {
   supportedContentKinds = ["text"];
   limits = { maxBatchSize: 64 };
 
+  constructor(beforeEmbed = async () => {}) {
+    super();
+    this.beforeEmbed = beforeEmbed;
+  }
+
   async doEmbed(contents) {
+    await this.beforeEmbed();
     return contents.map((content) => {
       const text = content.kind === "text" ? content.text : "";
       const vector = new Array(this.dimension).fill(0);

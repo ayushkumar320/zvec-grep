@@ -6,15 +6,19 @@ import type { CreateZvecGrepOptions } from "../engine/service/types.js";
 import { DaemonError } from "./errors.js";
 import { EmbeddingModelPool } from "./model-pool.js";
 import { RootRuntime } from "./root-runtime.js";
+import { RootLeaseManager } from "./root-lease.js";
+import type { ModelLeaseRequest } from "./model-pool.js";
 
 
 export type RuntimeManagerOptions = {
   modelPool: EmbeddingModelPool;
   serviceOptions?: CreateZvecGrepOptions;
   readCollectionIdleTtlMs?: number;
+  searchWaitTimeoutMs?: number;
+  rootLeaseManager?: RootLeaseManager;
   createRuntime?: (input: {
     canonicalRoot: string;
-    info: ZvecGrepInfoResult;
+    modelRequest?: ModelLeaseRequest;
     modelPool: EmbeddingModelPool;
   }) => RootRuntime | Promise<RootRuntime>;
 };
@@ -27,15 +31,40 @@ export type RuntimeManagerSnapshot = {
 export class RuntimeManager {
   private readonly runtimes = new Map<string, RootRuntime>();
   private readonly creating = new Map<string, Promise<RootRuntime>>();
+  private readonly aliases = new Map<string, string>();
+  private readonly rootLeaseManager: RootLeaseManager;
   private closed = false;
 
 
-  constructor(private readonly options: RuntimeManagerOptions) {}
+  constructor(private readonly options: RuntimeManagerOptions) {
+    this.rootLeaseManager = options.rootLeaseManager ?? new RootLeaseManager();
+  }
+
+
+  get instanceToken(): string {
+    return this.rootLeaseManager.instanceToken;
+  }
 
 
   async activate(requestedRoot: string): Promise<RootRuntime> {
     if (this.closed) {
       throw new DaemonError("DAEMON_SHUTTING_DOWN", "The daemon is shutting down.", true);
+    }
+    const canonicalRequestedRoot = await resolveRequestedRoot(requestedRoot, false);
+    const activeRequestedRoot = this.runtimes.get(
+      this.aliases.get(canonicalRequestedRoot) ?? canonicalRequestedRoot,
+    );
+    if (
+      activeRequestedRoot
+      && (activeRequestedRoot.snapshot().writerPending || activeRequestedRoot.needsReconciliation())
+    ) {
+      return activeRequestedRoot;
+    }
+    const creatingRequestedRoot = this.creating.get(
+      this.aliases.get(canonicalRequestedRoot) ?? canonicalRequestedRoot,
+    );
+    if (creatingRequestedRoot) {
+      return creatingRequestedRoot;
     }
     const info = await inspectRoot(requestedRoot, this.options.serviceOptions);
     if (!info.indexed || !info.collection?.embedding) {
@@ -45,32 +74,48 @@ export class RuntimeManager {
       );
     }
     const canonicalRoot = await realpath(info.root);
-    const existing = this.runtimes.get(canonicalRoot);
-    if (existing) {
-      existing.updateModelRequest({
-        schema: info.collection.embedding,
-        root: canonicalRoot,
-        registryHome: info.home,
-      });
-      return existing;
-    }
+    this.aliases.set(canonicalRequestedRoot, canonicalRoot);
+    return this.getOrCreate(canonicalRoot, {
+      schema: info.collection.embedding,
+      root: canonicalRoot,
+      registryHome: info.home,
+    });
+  }
 
-    let pending = this.creating.get(canonicalRoot);
-    if (!pending) {
-      pending = this.createRuntime(canonicalRoot, info);
-      this.creating.set(canonicalRoot, pending);
+
+  async activateForIndex(requestedRoot: string): Promise<RootRuntime> {
+    if (this.closed) {
+      throw new DaemonError("DAEMON_SHUTTING_DOWN", "The daemon is shutting down.", true);
     }
-    try {
-      const runtime = await pending;
-      runtime.updateModelRequest({
-        schema: info.collection.embedding,
-        root: canonicalRoot,
-        registryHome: info.home,
-      });
-      return runtime;
-    } finally {
-      this.creating.delete(canonicalRoot);
+    const canonicalRequestedRoot = await resolveRequestedRoot(requestedRoot, true);
+    const activeRequestedRoot = this.runtimes.get(
+      this.aliases.get(canonicalRequestedRoot) ?? canonicalRequestedRoot,
+    );
+    if (activeRequestedRoot) {
+      return activeRequestedRoot;
     }
+    const creatingRequestedRoot = this.creating.get(
+      this.aliases.get(canonicalRequestedRoot) ?? canonicalRequestedRoot,
+    );
+    if (creatingRequestedRoot) {
+      return creatingRequestedRoot;
+    }
+    const info = await inspectRoot(canonicalRequestedRoot, this.options.serviceOptions);
+    const canonicalRoot = await resolveRequestedRoot(info.root, true);
+    this.aliases.set(canonicalRequestedRoot, canonicalRoot);
+    return this.getOrCreate(canonicalRoot);
+  }
+
+
+  async peek(requestedRoot: string): Promise<RootRuntime | undefined> {
+    const info = await inspectRoot(requestedRoot, this.options.serviceOptions);
+    const canonicalRoot = await realpath(info.root);
+    return this.runtimes.get(canonicalRoot);
+  }
+
+
+  getByCanonicalRoot(canonicalRoot: string): RootRuntime | undefined {
+    return this.runtimes.get(canonicalRoot);
   }
 
 
@@ -87,31 +132,60 @@ export class RuntimeManager {
     await Promise.allSettled(this.creating.values());
     const runtimes = [...this.runtimes.values()];
     this.runtimes.clear();
+    this.aliases.clear();
     await Promise.all(runtimes.map((runtime) => runtime.close()));
+    await this.rootLeaseManager.close();
+  }
+
+
+  private async getOrCreate(
+    canonicalRoot: string,
+    modelRequest?: ModelLeaseRequest,
+  ): Promise<RootRuntime> {
+    const existing = this.runtimes.get(canonicalRoot);
+    if (existing) {
+      if (modelRequest) {
+        existing.updateModelRequest(modelRequest);
+      }
+      return existing;
+    }
+    let pending = this.creating.get(canonicalRoot);
+    if (!pending) {
+      pending = this.createRuntime(canonicalRoot, modelRequest);
+      this.creating.set(canonicalRoot, pending);
+    }
+    try {
+      const runtime = await pending;
+      if (modelRequest) {
+        runtime.updateModelRequest(modelRequest);
+      }
+      return runtime;
+    } finally {
+      this.creating.delete(canonicalRoot);
+    }
   }
 
 
   private async createRuntime(
     canonicalRoot: string,
-    info: ZvecGrepInfoResult,
+    modelRequest?: ModelLeaseRequest,
   ): Promise<RootRuntime> {
     let runtime: RootRuntime;
     if (this.options.createRuntime) {
       runtime = await this.options.createRuntime({
         canonicalRoot,
-        info,
+        modelRequest,
         modelPool: this.options.modelPool,
       });
     } else {
+      const rootLease = await this.rootLeaseManager.acquire(canonicalRoot);
       runtime = new RootRuntime({
         canonicalRoot,
         modelPool: this.options.modelPool,
-        modelRequest: {
-          schema: info.collection!.embedding!,
-          root: canonicalRoot,
-          registryHome: info.home,
-        },
+        modelRequest,
+        rootLease,
         readCollectionIdleTtlMs: this.options.readCollectionIdleTtlMs,
+        searchWaitTimeoutMs: this.options.searchWaitTimeoutMs,
       });
     }
     if (this.closed) {
@@ -128,6 +202,20 @@ export async function inspectRoot(
   requestedRoot: string,
   serviceOptions: CreateZvecGrepOptions = {},
 ): Promise<ZvecGrepInfoResult> {
+  const canonicalRequestedRoot = await resolveRequestedRoot(requestedRoot, false);
+  const service = await createZvecGrep({
+    ...serviceOptions,
+    root: canonicalRequestedRoot,
+  });
+  try {
+    return await service.info({ root: canonicalRequestedRoot });
+  } finally {
+    await service.close();
+  }
+}
+
+
+export async function resolveRequestedRoot(requestedRoot: string, writable: boolean): Promise<string> {
   if (!isAbsolute(requestedRoot)) {
     throw new DaemonError("ROOT_NOT_ABSOLUTE", "root must be an absolute path.");
   }
@@ -145,19 +233,10 @@ export async function inspectRoot(
     throw new DaemonError("ROOT_NOT_FOUND", "root is not a directory.");
   }
   try {
-    await access(requestedRoot, fsConstants.R_OK);
+    await access(requestedRoot, writable ? fsConstants.R_OK | fsConstants.W_OK : fsConstants.R_OK);
   } catch {
-    throw new DaemonError("ROOT_PERMISSION_DENIED", "root is not readable.");
+    throw new DaemonError("ROOT_PERMISSION_DENIED", writable ? "root is not writable." : "root is not readable.");
   }
 
-  const canonicalRequestedRoot = await realpath(requestedRoot);
-  const service = await createZvecGrep({
-    ...serviceOptions,
-    root: canonicalRequestedRoot,
-  });
-  try {
-    return await service.info({ root: canonicalRequestedRoot });
-  } finally {
-    await service.close();
-  }
+  return realpath(requestedRoot);
 }

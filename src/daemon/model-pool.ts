@@ -50,6 +50,7 @@ export class EmbeddingModelPool {
   private readonly createModel: (request: ModelLeaseRequest) => EmbeddingModel | Promise<EmbeddingModel>;
   private readonly keyForRequest: (request: ModelLeaseRequest) => string;
   private closed = false;
+  private closePromise?: Promise<void>;
 
 
   constructor(options: EmbeddingModelPoolOptions = {}) {
@@ -104,9 +105,23 @@ export class EmbeddingModelPool {
       }
     }
 
+    if (this.closed) {
+      entry.retired = true;
+      throw new Error("Embedding model pool is closed.");
+    }
+
     entry.leases += 1;
     entry.lastUsedAt = Date.now();
-    await this.trimIdleEntries(key);
+    try {
+      await this.trimIdleEntries(key);
+    } catch (error) {
+      this.release(entry);
+      throw error;
+    }
+    if (this.closed) {
+      this.release(entry);
+      throw new Error("Embedding model pool is closed.");
+    }
     let released = false;
     return {
       model: entry.model,
@@ -140,11 +155,17 @@ export class EmbeddingModelPool {
   }
 
 
-  async close(): Promise<void> {
-    if (this.closed) {
-      return;
+  close(): Promise<void> {
+    if (!this.closePromise) {
+      this.closed = true;
+      this.closePromise = this.closeEntries();
     }
-    this.closed = true;
+    return this.closePromise;
+  }
+
+
+  private async closeEntries(): Promise<void> {
+    await Promise.allSettled([...this.entries.values()].map((entry) => entry.loading));
     const disposals: Promise<void>[] = [];
     for (const entry of this.entries.values()) {
       if (entry.idleTimer) {
