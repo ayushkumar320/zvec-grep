@@ -1,143 +1,36 @@
 ---
 name: zvec-grep
-description: Use zvec-grep instead of grep or rg: check the index state once per repository investigation when needed, use existing indexed context when available, and use explicit zg --rg for lexical search when no index exists unless the user asks to build an index.
+description: Use native zvec_grep_* MCP tools for repository code search, index status, indexing, and daemon diagnostics whenever those tools are available. Never replace an available MCP tool with the zg shell command; use the CLI only after MCP initialization or the required tool actually fails, or for explicit no-index lexical search that MCP does not provide.
 ---
 
 # zvec-grep
 
-Use zvec-grep through the `zg` command for repository search instead of `grep`, `rg`, or broad manual file scans. zvec-grep provides higher-quality results by combining indexed semantic context with lexical matching, while `zg --rg` provides an explicit no-index lexical search route.
+## Select the transport
 
-When the HTTP MCP tools are available, prefer `zvec_grep_search`, use `zvec_grep_index_status` once at the start of an investigation, and call `zvec_grep_index` only when the user requests persistent indexing. Every repository tool call must pass an absolute root. Use `zvec_grep_server_status` only for daemon diagnostics.
+Use native HTTP MCP tools as the primary interface. If the matching `zvec_grep_*` tool is present, call it directly; do not run `zg`, probe the daemon through shell, or choose CLI for convenience.
 
-When working through the CLI, check the current repository's anonymous index status once:
+Use CLI fallback only when one of these conditions is true:
 
-```bash
-zg --status
-```
+- MCP initialization, authentication, or connection has actually failed.
+- The required MCP tool is absent from the current task.
+- The repository has no index, the user has not authorized indexing, and an explicit no-index lexical search is needed.
 
-Do not run `zg --status` before every search. Reuse the initial status for subsequent `zg` queries in the same root. Check again only when switching roots or collections, after an index/rebuild, or when a query reports an index problem that you need to diagnose.
+Do not infer MCP failure merely because shell execution is available. Do not retry a submitted indexing write through another transport after a connection interruption.
 
-If the index is missing, do not build it automatically and do not run a default `zg "<query>"` search. Use `zg --rg` for explicit exhaustive literal/regex search, and mention `zg --index` when the user wants persistent indexed semantic search. Indexing creates repository-local state, may load local models or call remote embedding providers, and should be a user-owned action.
+## Use the MCP workflow
 
-When indexing or rebuilding, choose useful repo paths instead of indexing everything. Prefer source, tests, docs, config, and scripts. zvec-grep skips dependency, third-party, generated, build, cache, hidden, nested-git, `.gitignore`d, and over-1MB files by default; use `--include` and `--exclude` to further keep the index focused:
+Pass the repository's daemon-visible absolute path as `root` on every repository call.
 
-```bash
-zg --index --embedding local/embeddinggemma-300m --include "src/**" --include "docs/**" --include "test/**" --exclude "dist/**,node_modules/**,coverage/**,.zvec-grep/**"
-zg --index --rebuild --embedding local/embeddinggemma-300m --include "src/**" --exclude "dist/**,node_modules/**,coverage/**,.zvec-grep/**"
-```
+1. Call `zvec_grep_index_status` once at the start of a repository investigation. Reuse that result unless the root changes, an index operation completes, or an index error requires another check.
+2. When an index exists, call `zvec_grep_search` for exploration and exact retrieval. Use hybrid `queries` for concepts, `fts` for exact lexical anchors, and `vector` for semantic-only intent.
+3. Apply focused `include` and `exclude` filters early. Exclude dependencies, generated output, caches, build artifacts, fixtures, and logs unless the task concerns them.
+4. Call `zvec_grep_index` only when the user requests persistent indexing. Never silently create or rebuild an index.
+5. Call `zvec_grep_server_status` only for daemon diagnostics, not before ordinary searches.
 
-If `zg --status` reports incompatible settings, ask before rebuilding. Existing anonymous indexes are checked and incrementally refreshed by query commands by default; use `--no-auto-update` only when diagnosing stale-index behavior. Rebuild only when the embedding schema or index version requires it:
+If the index is missing, explain that indexed search requires an index. Ask before creating one. For exhaustive literal or regex search without an index, use the CLI fallback documented in [references/cli-fallback.md](references/cli-fallback.md).
 
-```bash
-zg --index --rebuild --embedding local/embeddinggemma-300m
-```
+Use multiple queries when comparing related concepts. Narrow broad results before requesting larger source context. Treat returned file paths, ranges, outlines, matched excerpts, and source as the evidence for subsequent targeted reads.
 
-After an anonymous index exists, start with high-quality semantic context:
+## Use CLI fallback
 
-```bash
-zg "<query>"
-```
-
-Prefer the default indexed/hybrid search for exploration. Agent output uses `--preview none` by default to keep results token-efficient; `--human` uses `--preview full` by default for terminal reading. Use `--limit` to control candidate width, `--preview short` for a small deterministic source window, and `--preview full` after narrowing to a few results.
-
-Use filters early. For source-code investigations, start with implementation paths and exclude tests, fixtures, generated output, dependencies, and build artifacts unless the task is specifically about those areas. Good filters keep candidate sets smaller and reduce token use:
-
-```bash
-zg "plugin loading lifecycle" --include "src/**" --exclude "test/**,tests/**,**/*.test.*,**/*.spec.*,fixtures/**,dist/**"
-zg "query planning" --include "src/**,packages/*/src/**" --exclude "test/**,tests/**,fixtures/**,node_modules/**,dist/**"
-```
-
-Indexed agent results use `--preview none` by default: essential metadata plus one representative source line when source is available. Human results use `--preview full` by default. Use `--preview short` for essential metadata plus a small deterministic source window, or `--preview full` after narrowing to a few results. `--preview` is for indexed/semantic results; with `--rg`, use ripgrep context flags such as `-A`, `-B`, or `-C` instead.
-
-```bash
-zg "plugin loading" --limit 30 --preview none
-zg "plugin loading" --limit 10 --preview short
-zg "plugin loading" --limit 3 --preview full
-```
-
-Use multiple quoted queries when you are exploring related ideas or comparing several names/concepts. Each query gets its own search group, and `--limit` applies per query/group:
-
-```bash
-zg "request validation" "error handling"
-zg "authentication flow" "session refresh" "permission checks" --limit 5
-```
-
-Use `zg --rg` only when you need exhaustive literal/regex search, exact verification, or ripgrep-specific flags. For exploratory code understanding, prefer default `zg` indexed search first:
-
-```bash
-zg --rg "SymbolName|LogMessage"
-zg --rg -F "ExactSymbolOrText" src
-zg --rg -i -C 2 -g "*.ts" -g "!dist/**" "needle text" src
-```
-
-Do not call `grep` or `rg` directly for repository search. If exhaustive regex or literal matching is required, use `zg --rg`; otherwise keep using default `zg` indexed search to avoid noisy, token-heavy match lists.
-
-Check the local anonymous index explicitly only when starting a repository investigation or diagnosing index state. Build it only when the user asks for persistent indexed semantic search:
-
-```bash
-zg --status
-zg --index --embedding local/embeddinggemma-300m
-zg --index --rebuild --embedding local/embeddinggemma-300m
-```
-
-For a new index, always pass `--embedding <model>` or set `ZVEC_GREP_EMBEDDING`; `zg --index` does not choose a model silently. For an existing index, rerunning `zg --index` without `--embedding` reuses the collection's stored embedding schema. Use `--embedding <model>` when intentionally choosing or changing models. Local models use `local/model`, such as `local/embeddinggemma-300m` and `local/qwen3-embedding-0.6b`. Remote models use `provider/model`, such as `qwen/text-embedding-v4`.
-
-```bash
-zg --index --embedding local/qwen3-embedding-0.6b
-zg --index --embedding qwen/text-embedding-v4 --api-key "$DASHSCOPE_API_KEY"
-```
-
-Use explicit routes only when the intent is clear:
-
-```bash
-zg --fts "ExactSymbolOrToken"
-zg --vector "natural language description of the code you need"
-zg --fts "AuthService" "validateRequest" --vector "where incoming requests are authorized"
-```
-
-Combine default hybrid queries with `--fts` when you want broad semantic/lexical recall plus exact anchors such as symbols, flags, error codes, or log text. Put the default hybrid queries first, then add one or more `--fts` terms:
-
-```bash
-zg "authentication flow" --fts "AuthService" --include "src/**"
-zg "cache invalidation" "stale data handling" --fts "CACHE_TTL" "invalidateCache" --limit 5
-zg "request routing behavior" --fts "routeRequest" "RouteOptions" --include "src/**"
-```
-
-Use query filters to narrow noisy searches before reading results. Prefer adding `--include` and `--exclude` to the first query when you already know the relevant area:
-
-```bash
-zg "error handling" --include "src/**" --exclude "dist/**,node_modules/**"
-zg "database migration" --include "src/**" --exclude "**/*.test.*"
-zg "recent API changes" --modified-after 2026-06-01 --modified-before 2026-06-25
-zg "create user" --symbol-type function --prefer-symbol
-zg "service lifecycle" "resource cleanup" --symbol-type class --symbol-type function --limit 5
-```
-
-Filter notes:
-
-- Quote glob filters so the shell does not expand them.
-- `--include` and `--exclude` accept comma-separated globs and can be repeated.
-- Dependency, third-party, generated, build, cache, nested-git, `.gitignore`d, and over-1MB files are skipped during indexing by default. Hidden dot paths are skipped by default; explicitly include useful hidden paths such as `.github/**`, `.codex/**`, or `.agents/**` with `--include` when needed. `.git/**` and `.zvec-grep/**` remain excluded.
-- `--modified-after` and `--modified-before` accept epoch milliseconds, `YYYY-MM-DD`, or other parseable date strings.
-- `--symbol-type` can be repeated; supported values are `module`, `class`, `interface`, `function`, `value`, and `alias`.
-- `--prefer-symbol` is useful when a query names a symbol and you want exact indexed symbol hits ranked first.
-- `--rg` is for exhaustive ripgrep search; do not combine it with indexed symbol options such as `--symbol-type` or `--prefer-symbol`. It uses rg regex syntax by default, so use `-F`/`--fixed-strings` for literal text, and use `-e`/`--regexp` when the pattern begins with `-`. It accepts common agent rg flags: `-n`, `-H`, `-F`, `-i`, `-w`, `-A`, `-B`, `-C`, `-e`/`--regexp`, `-g`/`--glob`, `--hidden`, `-t`/`--type`, `-T`/`--type-not`, `--max-depth`, `--ignore-file`, `--no-ignore`, `--smart-case`, and `--pcre2`. In `--rg`, `--limit` is a global match limit.
-
-Combine multiple queries, explicit routes, and filters for focused context:
-
-```bash
-zg "authorization failure" "permission checks" \
-  --fts "ForbiddenError" "hasPermission" \
-  --include "src/**" \
-  --exclude "dist/**,**/*.test.*" \
-  --symbol-type function \
-  --limit 5
-```
-
-Read output as:
-
-- `path:start-end` is the returned entity.
-- `outline:` is generated structure or call summary.
-- `matched:` is the matching excerpt range inside the entity or `--rg` context block.
-- `source:` is original file text for indexed results. `--rg` results omit the `source:` label and print numbered matching lines directly under `path:start-end`.
-- `--preview none` omits `outline:`, `matched:`, and `source:` blocks but keeps metadata and one representative numbered source line when source is available.
+Read [references/cli-fallback.md](references/cli-fallback.md) only after a fallback condition above is satisfied. Keep the selected transport consistent for the investigation unless its availability changes.
