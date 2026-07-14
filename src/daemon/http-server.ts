@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net";
 import type { ZvecGrepDaemonBackend } from "../mcp/tools.js";
 import { handleMcpPost } from "../mcp/http-transport.js";
 import { isLoopbackHost, type ServerListenAddress } from "./config.js";
+import { requestId, type DaemonLogger } from "./logger.js";
 
 
 const MAX_REQUEST_BYTES = 1024 * 1024;
@@ -13,6 +14,7 @@ export type DaemonHttpServerOptions = ServerListenAddress & {
   version: string;
   backend: ZvecGrepDaemonBackend;
   onShutdown?: () => void | Promise<void>;
+  logger?: DaemonLogger;
 };
 
 
@@ -32,7 +34,13 @@ export class DaemonHttpServer {
       return this.address();
     }
     this.server = createServer((request, response) => {
-      void this.handleRequest(request, response).catch(() => {
+      const id = requestId();
+      const startedAt = Date.now();
+      void this.handleRequest(request, response, id).catch((error) => {
+        this.options.logger?.event("request.failed", {
+          request_id: id,
+          error_code: errorCode(error),
+        });
         if (!response.headersSent) {
           writeJson(response, 500, {
             jsonrpc: "2.0",
@@ -42,6 +50,14 @@ export class DaemonHttpServer {
         } else if (!response.writableEnded) {
           response.end();
         }
+      }).finally(() => {
+        this.options.logger?.event("request.completed", {
+          request_id: id,
+          method: request.method,
+          path: safeRequestPath(request.url),
+          status: response.statusCode,
+          duration_ms: Date.now() - startedAt,
+        });
       });
     });
     try {
@@ -81,7 +97,7 @@ export class DaemonHttpServer {
   }
 
 
-  private async handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
+  private async handleRequest(request: IncomingMessage, response: ServerResponse, id: string): Promise<void> {
     const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
     if (url.pathname === "/healthz") {
       if (request.method !== "GET") {
@@ -140,6 +156,11 @@ export class DaemonHttpServer {
       });
       return;
     }
+    this.options.logger?.event("mcp.request", {
+      request_id: id,
+      client_id: request.headers["x-client-id"] as string | undefined,
+      tool: toolName(body),
+    });
     await handleMcpPost(request, response, this.options.backend, this.options.version, body);
   }
 }
@@ -204,3 +225,29 @@ function writeJson(response: ServerResponse, status: number, body: unknown): voi
 
 
 class RequestBodyTooLargeError extends Error {}
+
+
+function safeRequestPath(value: string | undefined): string {
+  try {
+    return new URL(value ?? "/", "http://localhost").pathname;
+  } catch {
+    return "invalid";
+  }
+}
+
+
+function toolName(body: unknown): string | undefined {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return undefined;
+  const value = body as { method?: unknown; params?: { name?: unknown } };
+  return value.method === "tools/call" && typeof value.params?.name === "string"
+    ? value.params.name
+    : typeof value.method === "string" ? value.method : undefined;
+}
+
+
+function errorCode(error: unknown): string {
+  if (typeof error === "object" && error !== null && "code" in error && typeof error.code === "string") {
+    return error.code;
+  }
+  return "INTERNAL_ERROR";
+}

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { IndexProgress } from "../engine/types.js";
 import { DaemonError } from "./errors.js";
+import { rootIdentity, type DaemonLogger } from "./logger.js";
 
 
 export type JobState = "queued" | "running" | "succeeded" | "failed" | "cancelled";
@@ -35,6 +36,7 @@ export type JobSchedulerOptions = {
   concurrency?: number;
   maxAttempts?: number;
   retryBaseDelayMs?: number;
+  logger?: DaemonLogger;
 };
 
 type ScheduledJob = IndexJobSnapshot & {
@@ -58,12 +60,14 @@ export class JobScheduler {
   private closed = false;
   private closePromise?: Promise<void>;
   private closeResolve?: () => void;
+  private readonly logger?: DaemonLogger;
 
 
   constructor(options: JobSchedulerOptions = {}) {
     this.concurrency = options.concurrency ?? 1;
     this.maxAttempts = options.maxAttempts ?? 3;
     this.retryBaseDelayMs = options.retryBaseDelayMs ?? 250;
+    this.logger = options.logger;
   }
 
 
@@ -178,6 +182,12 @@ export class JobScheduler {
       job.attempt += 1;
       job.error = undefined;
       job.startedAt ??= Date.now();
+      this.logger?.event("job.started", {
+        root_id: rootIdentity(job.canonicalRoot),
+        job_id: job.id,
+        reason: job.reason,
+        attempt: job.attempt,
+      });
       void this.runJob(job);
     }
   }
@@ -194,6 +204,12 @@ export class JobScheduler {
         job.state = "queued";
         job.error = errorInfo(error);
         const delay = this.retryBaseDelayMs * (2 ** (job.attempt - 1));
+        this.logger?.event("job.retry", {
+          root_id: rootIdentity(job.canonicalRoot),
+          job_id: job.id,
+          error_code: job.error.code,
+          retry_after_ms: delay,
+        });
         job.retryTimer = setTimeout(() => {
           job.retryTimer = undefined;
           this.queue.push(job);
@@ -218,6 +234,14 @@ export class JobScheduler {
   private finish(job: ScheduledJob, state: Extract<JobState, "succeeded" | "failed" | "cancelled">): void {
     job.state = state;
     job.finishedAt = Date.now();
+    this.logger?.event("job.finished", {
+      root_id: rootIdentity(job.canonicalRoot),
+      job_id: job.id,
+      state,
+      attempt: job.attempt,
+      error_code: job.error?.code,
+      duration_ms: job.startedAt ? job.finishedAt - job.startedAt : 0,
+    });
     if (this.activeByRoot.get(job.canonicalRoot) === job) {
       this.activeByRoot.delete(job.canonicalRoot);
     }
@@ -336,13 +360,21 @@ function isRetryable(error: unknown): boolean {
 
 function errorInfo(error: unknown): { code: string; message: string } {
   if (error instanceof DaemonError) {
-    return { code: error.code, message: error.message };
+    return { code: error.code, message: redactMessage(error.message) };
   }
   if (error && typeof error === "object" && "code" in error && typeof error.code === "string") {
-    return { code: error.code, message: error instanceof Error ? error.message : String(error) };
+    return { code: error.code, message: redactMessage(error instanceof Error ? error.message : String(error)) };
   }
   return {
     code: "INDEX_FAILED",
-    message: error instanceof Error ? error.message : String(error),
+    message: redactMessage(error instanceof Error ? error.message : String(error)),
   };
+}
+
+
+function redactMessage(message: string): string {
+  return message
+    .replace(/Bearer\s+\S+/gi, "Bearer [redacted]")
+    .replace(/(api[_ -]?key|token|authorization)\s*[:=]\s*\S+/gi, "$1=[redacted]")
+    .slice(0, 512);
 }

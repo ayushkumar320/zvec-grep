@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
@@ -29,4 +29,27 @@ test("daemon instance lock is exclusive, heartbeat-safe and owner-released", asy
   assert.equal(status.ready, false);
   await lock.release();
   assert.equal(await readInstanceRecord(home), undefined);
+});
+
+
+test("a dead daemon instance record is replaced", async (t) => {
+  const home = await mkdtemp(join(tmpdir(), "zvec-grep-controller-stale-"));
+  t.after(async () => rm(home, { recursive: true, force: true }));
+  const daemon = join(home, "daemon");
+  await mkdir(daemon);
+  await writeFile(join(daemon, "instance.lock"), `${JSON.stringify({
+    pid: 2_147_483_647,
+    hostname: hostname(),
+    instanceToken: "stale-instance",
+    startedAt: 1,
+    updatedAt: 1,
+    serverUrl: "http://127.0.0.1:7999/mcp",
+    ready: true,
+  })}\n`);
+  const lock = await DaemonInstanceLock.acquire(home, "http://127.0.0.1:8123/mcp");
+  try {
+    assert.equal((await readInstanceRecord(home)).pid, process.pid);
+  } finally {
+    await lock.release();
+  }
 });

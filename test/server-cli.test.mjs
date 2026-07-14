@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -9,6 +9,7 @@ import test from "node:test";
 import { parseArgs } from "../dist/cli/args.js";
 import { parseListenAddress } from "../dist/daemon/config.js";
 import { DaemonHttpServer } from "../dist/daemon/http-server.js";
+import { readInstanceRecord } from "../dist/daemon/server-controller.js";
 
 
 const execFileAsync = promisify(execFile);
@@ -77,6 +78,28 @@ test("server on, status and off are idempotent", async (t) => {
 });
 
 
+test("foreground server releases its instance record on termination", {
+  skip: process.platform === "win32" ? "Windows uses the control endpoint instead of POSIX signals" : false,
+}, async (t) => {
+  const home = await mkdtemp(join(tmpdir(), "zvec-grep-server-signal-"));
+  const port = await availablePort();
+  const child = spawn(process.execPath, [
+    cliPath, "server", "run", "--listen", `127.0.0.1:${port}`, "--home", home,
+  ], { stdio: "ignore", windowsHide: true });
+  t.after(async () => {
+    if (child.exitCode === null) child.kill();
+    await rm(home, { recursive: true, force: true });
+  });
+  await waitFor(async () => (await readInstanceRecord(home))?.ready === true);
+  child.kill();
+  await new Promise((resolve, reject) => {
+    child.once("exit", resolve);
+    child.once("error", reject);
+  });
+  assert.equal(await readInstanceRecord(home), undefined);
+});
+
+
 async function availablePort() {
   const server = createServer();
   await new Promise((resolve, reject) => {
@@ -87,4 +110,13 @@ async function availablePort() {
   const port = typeof address === "object" && address ? address.port : 0;
   await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   return port;
+}
+
+
+async function waitFor(predicate) {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    if (await predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("Condition was not reached.");
 }

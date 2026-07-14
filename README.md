@@ -96,6 +96,7 @@ Codex MCP tool calls default to a 600-second timeout. Override it during install
 Set `ZVEC_GREP_SERVER_TOKEN` to the contents of `~/.zvec-grep/daemon/token` in the client environment. The installed MCP URL is `http://127.0.0.1:7999/mcp`. Stop the daemon with `zg server off`.
 
 CLI indexed queries and index commands can use `--mode direct`, `--mode server`, or `--mode auto`. The development-preview default remains `direct`; `auto` uses the daemon only when it is ready and otherwise falls back before submitting a request.
+Daemon logs are written as JSON lines to `~/.zvec-grep/daemon/logs/server.log`; credentials and complete query text are not recorded. Server changes are gated by the macOS, Linux, and Windows CI matrix before the default mode can change.
 
 ### ✅ Requirements
 

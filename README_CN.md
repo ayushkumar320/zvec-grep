@@ -96,6 +96,7 @@ Codex MCP 工具调用默认超时为 600 秒，可在安装时通过 `--mcp-too
 在客户端环境中，将 `ZVEC_GREP_SERVER_TOKEN` 设置为 `~/.zvec-grep/daemon/token` 的内容。安装后的 MCP URL 为 `http://127.0.0.1:7999/mcp`。使用 `zg server off` 停止 daemon。
 
 CLI 的索引检索和建索引命令支持 `--mode direct`、`--mode server` 和 `--mode auto`。开发预览阶段默认仍为 `direct`；`auto` 只在 daemon ready 时使用 server，否则在提交请求前回退 Direct。
+Daemon 以 JSON Lines 写日志到 `~/.zvec-grep/daemon/logs/server.log`，不会记录凭证或完整查询文本。默认 mode 变更前，Server 改动必须通过 macOS、Linux 和 Windows CI 矩阵。
 
 ### ✅ 运行要求
 

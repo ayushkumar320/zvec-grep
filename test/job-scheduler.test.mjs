@@ -152,6 +152,21 @@ test("scheduler cancels queued jobs and lets a running job finish during close",
 });
 
 
+test("scheduler status redacts credentials from failures", async () => {
+  const scheduler = new JobScheduler({ maxAttempts: 1 });
+  const submitted = scheduler.submit({
+    canonicalRoot: "/repo",
+    reason: "manual",
+    run: async () => { throw new Error("provider failed api_key=top-secret token:another-secret"); },
+  });
+  const result = await scheduler.wait(submitted.job.id);
+  assert.equal(result.state, "failed");
+  assert.match(result.error.message, /\[redacted\]/);
+  assert.doesNotMatch(result.error.message, /top-secret|another-secret/);
+  await scheduler.close();
+});
+
+
 async function waitFor(predicate) {
   for (let attempt = 0; attempt < 100; attempt++) {
     if (predicate()) {

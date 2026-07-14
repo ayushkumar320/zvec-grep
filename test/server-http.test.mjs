@@ -114,6 +114,11 @@ test("Streamable HTTP serves health, MCP contracts and a real cached index searc
 
   const unauthorized = await fetch(mcpUrl, { method: "POST", body: "{}" });
   assert.equal(unauthorized.status, 401);
+  const unauthorizedShutdown = await fetch(new URL("/control/shutdown", mcpUrl), {
+    method: "POST",
+    headers: { Authorization: "Bearer invalid-token-value-that-is-long-enough" },
+  });
+  assert.equal(unauthorizedShutdown.status, 401);
   const invalidHost = await rawRequestStatus(mcpUrl, {
     method: "POST",
     headers: {
@@ -298,6 +303,7 @@ test("Streamable HTTP serves health, MCP contracts and a real cached index searc
   });
   assert.equal(newSearch.isError, undefined);
   assert.equal(newSearch.structuredContent.result.items[0].file.relativePath, "new.ts");
+  assert.equal(modelLoads, 1);
 });
 
 

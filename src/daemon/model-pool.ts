@@ -5,6 +5,7 @@ import {
 } from "../engine/service/zvec-grep.js";
 import type { EmbeddingModel } from "../engine/models/embeddings.js";
 import type { CollectionEmbeddingSchema } from "../engine/types.js";
+import { opaqueIdentity, type DaemonLogger } from "./logger.js";
 
 
 export type ModelLeaseRequest = {
@@ -30,6 +31,7 @@ export type EmbeddingModelPoolOptions = {
   serviceOptions?: CreateZvecGrepOptions;
   createModel?: (request: ModelLeaseRequest) => EmbeddingModel | Promise<EmbeddingModel>;
   keyForRequest?: (request: ModelLeaseRequest) => string;
+  logger?: DaemonLogger;
 };
 
 type ModelEntry = {
@@ -51,6 +53,7 @@ export class EmbeddingModelPool {
   private readonly keyForRequest: (request: ModelLeaseRequest) => string;
   private closed = false;
   private closePromise?: Promise<void>;
+  private readonly logger?: DaemonLogger;
 
 
   constructor(options: EmbeddingModelPoolOptions = {}) {
@@ -68,6 +71,7 @@ export class EmbeddingModelPool {
       request.registryHome,
       options.serviceOptions,
     ));
+    this.logger = options.logger;
   }
 
 
@@ -94,7 +98,10 @@ export class EmbeddingModelPool {
     }
 
     if (!entry.model) {
-      entry.loading ??= Promise.resolve(this.createModel(request));
+      if (!entry.loading) {
+        this.logger?.event("model.load", { model_id: opaqueIdentity(key) });
+        entry.loading = Promise.resolve(this.createModel(request));
+      }
       try {
         entry.model = await entry.loading;
       } catch (error) {
@@ -103,6 +110,8 @@ export class EmbeddingModelPool {
       } finally {
         entry.loading = undefined;
       }
+    } else {
+      this.logger?.event("model.cache_hit", { model_id: opaqueIdentity(key) });
     }
 
     if (this.closed) {
@@ -234,5 +243,6 @@ export class EmbeddingModelPool {
     entry.model = undefined;
     this.entries.delete(entry.key);
     await model.dispose();
+    this.logger?.event("model.evicted", { model_id: opaqueIdentity(entry.key) });
   }
 }

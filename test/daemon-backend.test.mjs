@@ -178,6 +178,42 @@ test("watch changes use the path-level index pipeline and advance revisions", as
 });
 
 
+test("daemon restart forgets runtimes and jobs but preserves index discovery", async () => {
+  const temporaryDirectory = await mkdtemp(join(tmpdir(), "zvec-grep-restart-"));
+  const root = join(temporaryDirectory, "repo");
+  await mkdir(root);
+  await writeFile(join(root, "answer.ts"), "export const answer = 42;\n");
+  const service = await createZvecGrep({ root, embeddingModel: new TestEmbeddingModel() });
+  await service.index();
+  await service.close();
+  const options = {
+    version: "1.0.0",
+    modelPoolOptions: { createModel: () => new TestEmbeddingModel() },
+  };
+  const first = new DaemonBackend(options);
+  try {
+    await first.search(searchInput(root, "answer", "wait_for_fresh"));
+    assert.equal((await first.serverStatus()).activeRuntimes, 1);
+  } finally {
+    await first.close();
+  }
+
+  const second = new DaemonBackend(options);
+  try {
+    const server = await second.serverStatus();
+    assert.equal(server.activeRuntimes, 0);
+    assert.equal(server.queuedJobs, 0);
+    assert.equal(server.runningJobs, 0);
+    const index = await second.indexStatus({ root });
+    assert.equal(index.indexed, true);
+    assert.equal(index.runtime, undefined);
+  } finally {
+    await second.close();
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+
 class TestEmbeddingModel extends EmbeddingModel {
   ref = { provider: "test", model: "deterministic" };
   dimension = 8;
