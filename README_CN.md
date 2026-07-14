@@ -33,7 +33,7 @@ zg "where query auto update happens"
 ```
 
 > [!IMPORTANT]
-> **v0.1.4**
+> **v0.1.5**
 >
 > - **混合代码检索**：可以用自然语言、精确关键词，或两者组合来搜索代码。
 > - **明确的索引生命周期**：新仓库必须显式运行 `zg --index --embedding <model>`；agent 不会静默创建索引。

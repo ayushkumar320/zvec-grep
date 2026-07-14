@@ -33,7 +33,7 @@ zg "where query auto update happens"
 ```
 
 > [!IMPORTANT]
-> **v0.1.4**
+> **v0.1.5**
 >
 > - **Hybrid Code Search**: Query code with natural language, exact terms, or both in one command.
 > - **Explicit Index Lifecycle**: New repositories require `zg --index --embedding <model>`; agents do not silently create indexes.
