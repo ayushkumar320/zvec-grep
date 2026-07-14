@@ -106,6 +106,11 @@ export async function runParsedCommand(parsed: ParsedArgs): Promise<void> {
     return;
   }
 
+  if (parsed.options.server) {
+    await runServer(parsed);
+    return;
+  }
+
   await runQuery(parsed);
 }
 
@@ -297,6 +302,25 @@ async function runServe(parsed: ParsedArgs): Promise<void> {
 
   const { runMcpServer } = await import("./mcp.js");
   await runMcpServer(createServiceOptions(parsed.options, process.cwd()));
+}
+
+
+async function runServer(parsed: ParsedArgs): Promise<void> {
+  if (parsed.options.serverAction !== "run") {
+    throw new Error("zg server currently requires the run action");
+  }
+  if (parsed.positionals.length > 0) {
+    throw new Error("zg server run does not accept positional arguments");
+  }
+
+  const { runDaemonForeground } = await import("../daemon/runtime.js");
+  const { readPackageVersion } = await import("./version.js");
+  await runDaemonForeground({
+    version: readPackageVersion(),
+    listen: parsed.options.listen,
+    home: parsed.options.home,
+    serviceOptions: createServiceOptions(parsed.options, process.cwd()),
+  });
 }
 
 

@@ -66,6 +66,14 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
   } else if (args[0] === "serve") {
     options.serve = true;
     startIndex = 1;
+  } else if (args[0] === "server") {
+    options.server = true;
+    if (args[1] === "run") {
+      options.serverAction = "run";
+      startIndex = 2;
+    } else {
+      startIndex = 1;
+    }
   }
 
   for (let index = startIndex; index < args.length; index++) {
@@ -95,6 +103,10 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
       options.collections = true;
     } else if (arg === "--mcp") {
       options.mcp = true;
+    } else if (isLongOptionWithValue(arg, "--listen")) {
+      options.listen = valueFromLongOption(arg);
+    } else if (arg === "--listen") {
+      options.listen = readOptionValue(args, ++index, arg);
     } else if (isLongOptionWithValue(arg, "--target")) {
       options.installTargets = appendInstallTargets(options.installTargets, valueFromLongOption(arg));
     } else if (arg === "--target") {
@@ -279,7 +291,27 @@ function validateCliShape(options: CliOptions): void {
     || options.status
     || options.collections
     || options.install
-    || options.serve;
+    || options.serve
+    || options.server;
+
+  if (options.server && options.serverAction !== "run" && !options.help) {
+    throw new Error("zg server currently requires the run action");
+  }
+
+  if (options.listen !== undefined && !options.server) {
+    throw new Error("--listen can only be used with zg server run");
+  }
+
+  if (options.server && (
+    options.index
+    || options.disableIndex
+    || options.status
+    || options.collections
+    || options.install
+    || options.serve
+  )) {
+    throw new Error("zg server cannot be combined with another command");
+  }
 
   if (options.index && options.collections) {
     throw new Error("--index and --collections cannot be used together");
@@ -295,6 +327,10 @@ function validateCliShape(options: CliOptions): void {
 
   if (options.serve && options.install) {
     throw new Error("zg serve cannot be combined with install");
+  }
+
+  if (options.server && options.collection) {
+    throw new Error("zg server does not accept --collection");
   }
 
   if (options.serve && !options.mcp) {

@@ -1,0 +1,78 @@
+import { randomBytes } from "node:crypto";
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { defaultHome } from "../engine/utils/path.js";
+import { DaemonError } from "./errors.js";
+
+
+export const DEFAULT_SERVER_HOST = "127.0.0.1";
+export const DEFAULT_SERVER_PORT = 7_999;
+
+export type ServerListenAddress = {
+  host: string;
+  port: number;
+};
+
+
+export function parseListenAddress(value?: string): ServerListenAddress {
+  const listen = value ?? `${DEFAULT_SERVER_HOST}:${DEFAULT_SERVER_PORT}`;
+  const separator = listen.lastIndexOf(":");
+  if (separator <= 0 || separator === listen.length - 1) {
+    throw new DaemonError("INVALID_LISTEN_ADDRESS", "listen must use host:port format.");
+  }
+  const host = listen.slice(0, separator).replace(/^\[|\]$/g, "");
+  const port = Number(listen.slice(separator + 1));
+  if (!isLoopbackHost(host)) {
+    throw new DaemonError("LOOPBACK_REQUIRED", "Server MVP only supports loopback listen addresses.");
+  }
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw new DaemonError("INVALID_LISTEN_ADDRESS", "listen port must be between 1 and 65535.");
+  }
+  return { host, port };
+}
+
+
+export function isLoopbackHost(host: string): boolean {
+  const normalized = host.toLowerCase();
+  return normalized === "127.0.0.1" || normalized === "::1" || normalized === "localhost";
+}
+
+
+export async function resolveServerToken(options: {
+  token?: string;
+  tokenFile?: string;
+  home?: string;
+} = {}): Promise<{ token: string; tokenFile?: string }> {
+  const explicit = options.token ?? process.env.ZVEC_GREP_SERVER_TOKEN;
+  if (explicit) {
+    validateToken(explicit);
+    return { token: explicit };
+  }
+
+  const tokenFile = options.tokenFile
+    ?? process.env.ZVEC_GREP_SERVER_TOKEN_FILE
+    ?? join(options.home ?? defaultHome(), "daemon", "token");
+  try {
+    const existing = (await readFile(tokenFile, "utf8")).trim();
+    validateToken(existing);
+    await chmod(tokenFile, 0o600);
+    return { token: existing, tokenFile };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw error;
+    }
+  }
+
+  const token = randomBytes(32).toString("base64url");
+  await mkdir(dirname(tokenFile), { recursive: true, mode: 0o700 });
+  await writeFile(tokenFile, `${token}\n`, { mode: 0o600, flag: "wx" });
+  await chmod(tokenFile, 0o600);
+  return { token, tokenFile };
+}
+
+
+function validateToken(token: string): void {
+  if (token.length < 32) {
+    throw new DaemonError("INVALID_TOKEN", "Server token must contain at least 32 characters.");
+  }
+}

@@ -26,6 +26,9 @@ export type CliOptions = {
   install?: boolean;
   serve?: boolean;
   mcp?: boolean;
+  server?: boolean;
+  serverAction?: "run";
+  listen?: string;
   installTargets?: string[];
   installMcpToolTimeoutSeconds?: number;
   yes?: boolean;

@@ -16,6 +16,7 @@ Usage:
   zg --status [root]
   zg install [--target codex|all|auto] [--mcp-tool-timeout <seconds>] [--yes] [--force]
   zg serve --mcp
+  zg server run [--listen 127.0.0.1:7999]
   zg --collection <name> [options] <query...>
   zg --collections
   zg --collections info <name>
@@ -68,6 +69,7 @@ Options:
   --yes                           Use default install choices without prompting
   --force                         Replace an existing agent integration during install
   --mcp                           Run stdio MCP server with zg serve
+  --listen <host:port>            Listen address for zg server run (loopback only)
   --home <path>                   Named collection registry home
   --embedding <model>             Embedding model, e.g. local/embeddinggemma-300m or qwen/text-embedding-v4
   --model-cache <path>            Local model cache directory

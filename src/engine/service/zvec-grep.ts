@@ -73,6 +73,107 @@ export async function createZvecGrep(options: CreateZvecGrepOptions = {}): Promi
 }
 
 
+export type AnonymousReadSession = {
+  readonly root: string;
+  context(options: ZvecGrepContextOptions): Promise<ZvecGrepContextResult>;
+  close(): Promise<void>;
+};
+
+
+export function openAnonymousReadSession(
+  startRoot: string,
+  embeddingModel?: EmbeddingModel,
+): AnonymousReadSession {
+  const start = resolveZvecGrepRoot(startRoot);
+  assertNearestAnonymousHomeUnlocked(start, "daemon.context.open");
+  const nearest = findNearestAnonymousCollection(start);
+  if (!nearest) {
+    throw anonymousIndexMissingError(start, "undecided");
+  }
+
+  const { location, info } = nearest;
+  if (info.indexPolicy === "disabled") {
+    throw anonymousIndexDisabledError(location.root);
+  }
+  if (!isCollectionIndexed(info)) {
+    throw anonymousIndexMissingError(location.root, info.indexPolicy ?? "enabled");
+  }
+
+  const collection = new Collection(
+    info,
+    embeddingModel,
+    true,
+    join(location.home, "files.zvec"),
+  );
+  let closed = false;
+
+  return {
+    root: location.root,
+    async context(options) {
+      if (closed) {
+        throw new EngineError("Anonymous read session is already closed", {
+          code: "ZVEC_GREP.ENGINE.SERVICE.READ_SESSION_CLOSED",
+        });
+      }
+      const timings = new TimingCollector();
+      const request = normalizeContextRequest(options);
+      const result = await timings.time("total", () => withHomeReadLock(
+        location.home,
+        "daemon.context",
+        () => contextFromOpenCollection({
+          root: location.root,
+          request,
+          collection,
+          anonymous: true,
+          options: { ...options, autoUpdate: false, fallback: "disabled" },
+          timings,
+        }),
+      ));
+      return withContextTimings(result, timings);
+    },
+    async close() {
+      if (closed) {
+        return;
+      }
+      collection.close();
+      closed = true;
+    },
+  };
+}
+
+
+export function createEmbeddingModelForSchema(
+  schema: CollectionEmbeddingSchema,
+  root: string,
+  registryHome: string,
+  options: CreateZvecGrepOptions = {},
+): EmbeddingModel {
+  return createEmbeddingModel(
+    { provider: schema.provider, model: schema.model },
+    providerOptions(options, root, registryHome, schema.provider),
+  );
+}
+
+
+export function embeddingModelPoolKeyForSchema(
+  schema: CollectionEmbeddingSchema,
+  root: string,
+  registryHome: string,
+  options: CreateZvecGrepOptions = {},
+): string {
+  const fingerprint = providerOptionsFingerprint(
+    providerOptions(options, root, registryHome, schema.provider),
+  );
+  return [
+    schema.provider,
+    schema.model,
+    schema.dimension,
+    schema.metric,
+    fingerprint,
+  ].join("/");
+}
+
+
 class ZvecGrepService implements ZvecGrep {
   readonly root: string;
   readonly collections: ZvecGrepCollections;
@@ -270,7 +371,9 @@ class ZvecGrepService implements ZvecGrep {
 
   async close(): Promise<void> {
     const models = new Set<EmbeddingModel>([
-      ...(this.embeddingModel ? [this.embeddingModel] : []),
+      ...(this.embeddingModel && this.options.embeddingModelOwnership !== "borrowed"
+        ? [this.embeddingModel]
+        : []),
       ...this.recoveredEmbeddingModels.values(),
       ...this.retiredEmbeddingModels,
     ]);
@@ -531,49 +634,7 @@ class ZvecGrepService implements ZvecGrep {
     options: ZvecGrepContextOptions;
     timings: TimingCollector;
   }): Promise<ZvecGrepContextResult> {
-    const searches: SearchPlanResult[] = [];
-    const limit = contextGroupLimit(input.options.limit, input.request.groups.length);
-
-    for (const group of input.request.groups) {
-      const search = await input.collection.searchPlan({
-        routes: group.routes,
-        limit,
-        trace: input.options.trace,
-        preferSymbol: input.options.preferSymbol,
-        symbolTypes: input.options.symbolTypes,
-        includePaths: input.options.includePaths,
-        excludePaths: input.options.excludePaths,
-        modifiedAfter: input.options.modifiedAfter,
-        modifiedBefore: input.options.modifiedBefore,
-      });
-      input.timings.addEntries(search.timings);
-      searches.push(search);
-    }
-
-    const items = dedupeAndRerankContextItems(
-      searches.flatMap((search) => searchPlanToContextItems(search, input.root)),
-    );
-
-    return {
-      query: input.request.displayQuery,
-      root: input.root,
-      source: "index",
-      coverage: "ranked_sample",
-      collection: {
-        id: input.collection.info.id,
-        name: input.collection.info.name,
-        path: input.collection.info.path,
-        anonymous: input.anonymous,
-      },
-      items,
-      diagnostics: {
-        emptyReason: items.length === 0 ? "no_matches" : undefined,
-        index: {
-          hitsReturned: items.length,
-          routes: searches.flatMap((search) => search.plan.routes),
-        },
-      },
-    };
+    return contextFromOpenCollection(input);
   }
 
 
@@ -843,6 +904,60 @@ class ZvecGrepService implements ZvecGrep {
       });
     }
   }
+}
+
+
+async function contextFromOpenCollection(input: {
+  root: string;
+  request: NormalizedContextRequest;
+  collection: Collection;
+  anonymous: boolean;
+  options: ZvecGrepContextOptions;
+  timings: TimingCollector;
+}): Promise<ZvecGrepContextResult> {
+  const searches: SearchPlanResult[] = [];
+  const limit = contextGroupLimit(input.options.limit, input.request.groups.length);
+
+  for (const group of input.request.groups) {
+    const search = await input.collection.searchPlan({
+      routes: group.routes,
+      limit,
+      trace: input.options.trace,
+      preferSymbol: input.options.preferSymbol,
+      symbolTypes: input.options.symbolTypes,
+      includePaths: input.options.includePaths,
+      excludePaths: input.options.excludePaths,
+      modifiedAfter: input.options.modifiedAfter,
+      modifiedBefore: input.options.modifiedBefore,
+    });
+    input.timings.addEntries(search.timings);
+    searches.push(search);
+  }
+
+  const items = dedupeAndRerankContextItems(
+    searches.flatMap((search) => searchPlanToContextItems(search, input.root)),
+  );
+
+  return {
+    query: input.request.displayQuery,
+    root: input.root,
+    source: "index",
+    coverage: "ranked_sample",
+    collection: {
+      id: input.collection.info.id,
+      name: input.collection.info.name,
+      path: input.collection.info.path,
+      anonymous: input.anonymous,
+    },
+    items,
+    diagnostics: {
+      emptyReason: items.length === 0 ? "no_matches" : undefined,
+      index: {
+        hitsReturned: items.length,
+        routes: searches.flatMap((search) => search.plan.routes),
+      },
+    },
+  };
 }
 
 
