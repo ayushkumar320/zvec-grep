@@ -1,0 +1,195 @@
+import type {
+  CodeSymbolType,
+  ZvecGrepContextOptions,
+  ZvecGrepSearchOptions,
+} from "../index.js";
+import { parseModifiedTime, splitPathFilters } from "../cli/args.js";
+import type {
+  LegacyRgInput,
+  LegacySearchInput,
+  StringListInput,
+  TimeInput,
+  ZvecGrepSearchInput,
+} from "./schemas.js";
+
+
+export type NormalizedSearchInput = {
+  root: string;
+  queries?: string[];
+  routes: Array<{ mode: "fts" | "vector"; query: string }>;
+  limit?: number;
+  freshness: "eventual" | "wait_for_fresh";
+  preferSymbol?: boolean;
+  symbolTypes?: CodeSymbolType[];
+  includePaths?: string[];
+  excludePaths?: string[];
+  modifiedAfter?: number;
+  modifiedBefore?: number;
+  trace?: boolean;
+  maxContentChars: number;
+};
+
+
+export function normalizeSearchInput(input: ZvecGrepSearchInput): NormalizedSearchInput {
+  const common = normalizeSearchFields(input);
+  return {
+    root: input.root,
+    ...common,
+    freshness: input.freshness,
+    maxContentChars: input.maxContentChars,
+  };
+}
+
+
+export function contextOptionsFromSearchInput(input: LegacySearchInput): ZvecGrepContextOptions {
+  const normalized = normalizeSearchFields(input);
+  return {
+    queries: normalized.queries,
+    routes: normalized.routes,
+    root: normalizeOptionalString(input.root),
+    collection: normalizeOptionalString(input.collection),
+    limit: input.limit,
+    fallback: "disabled",
+    autoUpdate: input.autoUpdate ?? true,
+    trace: input.trace,
+    preferSymbol: input.preferSymbol,
+    symbolTypes: normalized.symbolTypes,
+    includePaths: normalized.includePaths,
+    excludePaths: normalized.excludePaths,
+    modifiedAfter: normalized.modifiedAfter,
+    modifiedBefore: normalized.modifiedBefore,
+    embeddingConcurrency: input.embeddingConcurrency,
+  };
+}
+
+
+export function contextOptionsFromRgInput(input: LegacyRgInput): ZvecGrepContextOptions {
+  const queries = [
+    ...normalizeQueryList(input.pattern),
+    ...normalizeQueryList(input.patterns),
+  ];
+  if (queries.length === 0) {
+    throw new Error("zvec_grep_rg requires pattern or patterns.");
+  }
+
+  const { includePaths, excludePaths } = pathFiltersFromRgGlobs(input.glob);
+  const rgOptions: ZvecGrepSearchOptions = {
+    fixedStrings: input.fixedStrings,
+    ignoreCase: input.ignoreCase,
+    wordRegexp: input.wordRegexp,
+    beforeContext: input.beforeContext ?? input.context,
+    afterContext: input.afterContext ?? input.context,
+    hidden: input.hidden,
+  };
+  return {
+    queries,
+    rg: true,
+    rgOptions,
+    rgPaths: normalizePlainStringList(input.paths),
+    root: normalizeOptionalString(input.root),
+    limit: input.limit,
+    includePaths,
+    excludePaths,
+  };
+}
+
+
+function normalizeSearchFields(input: Pick<
+  ZvecGrepSearchInput,
+  "query" | "queries" | "fts" | "vector" | "include" | "exclude" | "preferSymbol" |
+  "symbolTypes" | "modifiedAfter" | "modifiedBefore" | "limit" | "trace"
+>) {
+  const queries = [
+    ...normalizeQueryList(input.query),
+    ...normalizeQueryList(input.queries),
+  ];
+  const fts = normalizeQueryList(input.fts);
+  const vector = normalizeQueryList(input.vector);
+  if (queries.length === 0 && fts.length === 0 && vector.length === 0) {
+    throw new Error("zvec_grep_search requires query, queries, fts, or vector.");
+  }
+
+  const includePaths = normalizePathFilters(input.include);
+  const excludePaths = normalizePathFilters(input.exclude);
+  return {
+    queries: queries.length > 0 ? queries : undefined,
+    routes: [
+      ...fts.map((query) => ({ mode: "fts" as const, query })),
+      ...vector.map((query) => ({ mode: "vector" as const, query })),
+    ],
+    limit: input.limit,
+    trace: input.trace,
+    preferSymbol: input.preferSymbol,
+    symbolTypes: input.symbolTypes.length > 0 ? input.symbolTypes : undefined,
+    includePaths: includePaths.length > 0 ? includePaths : undefined,
+    excludePaths: excludePaths.length > 0 ? excludePaths : undefined,
+    modifiedAfter: normalizeModifiedTime(input.modifiedAfter, "modifiedAfter"),
+    modifiedBefore: normalizeModifiedTime(input.modifiedBefore, "modifiedBefore"),
+  };
+}
+
+
+function pathFiltersFromRgGlobs(value: StringListInput): {
+  includePaths?: string[];
+  excludePaths?: string[];
+} {
+  const includePaths: string[] = [];
+  const excludePaths: string[] = [];
+  for (const glob of normalizePathFilters(value)) {
+    if (glob.startsWith("!")) {
+      const exclude = glob.slice(1).trim();
+      if (exclude.length > 0) {
+        excludePaths.push(exclude);
+      }
+      continue;
+    }
+    includePaths.push(glob);
+  }
+
+  return {
+    includePaths: includePaths.length > 0 ? includePaths : undefined,
+    excludePaths: excludePaths.length > 0 ? excludePaths : undefined,
+  };
+}
+
+
+export function normalizeQueryList(value: StringListInput): string[] {
+  return normalizePlainStringList(value) ?? [];
+}
+
+
+export function normalizePlainStringList(value: StringListInput): string[] | undefined {
+  const items = value === undefined
+    ? []
+    : Array.isArray(value)
+      ? value
+      : [value];
+  const normalized = items
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+
+export function normalizePathFilters(value: StringListInput): string[] {
+  const items = value === undefined
+    ? []
+    : Array.isArray(value)
+      ? value
+      : [value];
+  return items.flatMap(splitPathFilters);
+}
+
+
+export function normalizeModifiedTime(value: TimeInput, option: string): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  return typeof value === "number" ? value : parseModifiedTime(value, option);
+}
+
+
+export function normalizeOptionalString(value: string | undefined): string | undefined {
+  const normalized = value?.trim() ?? "";
+  return normalized.length > 0 ? normalized : undefined;
+}
