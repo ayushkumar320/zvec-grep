@@ -148,7 +148,7 @@ async function installCodexIntegration(options: InstallAgentOptions): Promise<In
     endMarker: ZVEC_GREP_CONFIG_END,
     block: codexConfigBlock(options.mcpToolTimeoutSeconds),
     force: options.force,
-    conflictPattern: /^\[mcp_servers\.zvec_grep\]/m,
+    hasConflict: hasCodexMcpServerConfig,
     conflictMessage: `Existing [mcp_servers.zvec_grep] found in ${configPath}. Re-run with --force after removing or moving that table into the zvec-grep managed block.`,
     removeConflict: removeCodexMcpServerConfig,
   });
@@ -588,7 +588,7 @@ async function writeMarkedFile(options: {
   endMarker: string;
   block: string;
   force: boolean;
-  conflictPattern?: RegExp;
+  hasConflict?: (existing: string) => boolean;
   conflictMessage?: string;
   removeConflict?: (existing: string) => string;
 }): Promise<void> {
@@ -601,7 +601,7 @@ async function writeMarkedFile(options: {
 
   if (
     next === null
-    && options.conflictPattern?.test(existing)
+    && options.hasConflict?.(existing)
   ) {
     if (!options.force) {
       throw new Error(options.conflictMessage ?? `Existing unmanaged configuration found in ${options.path}`);
@@ -782,15 +782,23 @@ function appendMarkedBlock(existing: string, block: string): string {
 }
 
 
+function hasCodexMcpServerConfig(existing: string): boolean {
+  return existing.split(/\r?\n/).some((line) => {
+    const tableName = tomlTableName(line);
+    return tableName !== undefined && isCodexMcpServerTableName(tableName);
+  });
+}
+
+
 function removeCodexMcpServerConfig(existing: string): string {
   const lines = existing.split(/\r?\n/);
   const kept: string[] = [];
   let skipping = false;
 
   for (const line of lines) {
-    const tableName = line.match(/^\s*\[([^\]]+)\]\s*$/)?.[1]?.trim();
-    if (tableName) {
-      skipping = tableName === "mcp_servers.zvec_grep" || tableName.startsWith("mcp_servers.zvec_grep.");
+    const tableName = tomlTableName(line);
+    if (tableName !== undefined) {
+      skipping = isCodexMcpServerTableName(tableName);
     }
 
     if (!skipping) {
@@ -799,6 +807,16 @@ function removeCodexMcpServerConfig(existing: string): string {
   }
 
   return kept.join("\n").trimEnd() + "\n";
+}
+
+
+function tomlTableName(line: string): string | undefined {
+  return line.match(/^\s*\[([^\]]+)\]\s*(?:#.*)?$/)?.[1]?.trim();
+}
+
+
+function isCodexMcpServerTableName(tableName: string): boolean {
+  return /^(?:mcp_servers|"mcp_servers"|'mcp_servers')\s*\.\s*(?:zvec_grep|"zvec_grep"|'zvec_grep')(?:\s*\.|$)/.test(tableName);
 }
 
 

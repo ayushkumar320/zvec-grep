@@ -66,6 +66,45 @@ test("Codex installer removes orphaned managed markers", async (t) => {
 });
 
 
+test("Codex installer detects and replaces equivalent unmanaged MCP table headers", async (t) => {
+  const temporaryDirectory = await mkdtemp(join(tmpdir(), "zvec-grep-install-conflict-"));
+  t.after(async () => {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  });
+
+  const cases = [
+    ["leading-whitespace", "  [mcp_servers.zvec_grep]"],
+    ["quoted-key", "[mcp_servers.\"zvec_grep\"]"],
+  ];
+
+  for (const [name, tableHeader] of cases) {
+    const codexHome = join(temporaryDirectory, name);
+    const configPath = join(codexHome, "config.toml");
+    const existing = [
+      "[mcp_servers.other]",
+      'command = "other"',
+      "",
+      tableHeader,
+      'command = "old-zg"',
+      "",
+    ].join("\n");
+
+    await mkdir(codexHome, { recursive: true });
+    await writeFile(configPath, existing);
+
+    await assert.rejects(installCodex(codexHome));
+    assert.equal(await readFile(configPath, "utf8"), existing);
+
+    await installCodex(codexHome, ["--force"]);
+
+    const installed = await readFile(configPath, "utf8");
+    assert.match(installed, /\[mcp_servers\.other\]\ncommand = "other"/);
+    assert.doesNotMatch(installed, /old-zg/);
+    assert.equal(countOccurrences(installed, "[mcp_servers.zvec_grep]"), 1);
+  }
+});
+
+
 test("Codex installer ignores an orphaned end marker before a complete block", async (t) => {
   const temporaryDirectory = await mkdtemp(join(tmpdir(), "zvec-grep-install-existing-"));
   const codexHome = join(temporaryDirectory, ".codex");
