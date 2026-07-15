@@ -198,6 +198,13 @@ After a successful index, explicitly passed global model and provider options ar
 
 For local embeddings, `models["provider/model"]` selects GPU and parallelism independently for each model; these settings apply to both daemon indexing and searching, and do not require rebuilding an existing index. Explicit CLI or library options override model settings, which override global defaults and environment fallback. Remote embeddings ignore the local GPU settings. Repository roots and include/exclude filters remain in each repository's `.zvec-grep` metadata rather than global config.
 
+Configure the same settings without editing JSON:
+
+```bash
+zg config model set local/embeddinggemma-300m --llama-gpu metal --embedding-parallelism 2
+zg config model set local/qwen3-embedding-0.6b --no-gpu --embedding-parallelism 1
+```
+
 For existing indexes, `zg --index` without `--embedding` reuses the stored schema. Use `--rebuild --embedding <model>` only when you intentionally want to rebuild with a different model:
 
 ```bash

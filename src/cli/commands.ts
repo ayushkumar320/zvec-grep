@@ -15,6 +15,7 @@ import { dirname, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import {
   createZvecGrep,
+  getEmbeddingModelCatalogEntryByRef,
   type CreateZvecGrepOptions,
   type IndexProgress,
   type RootPath,
@@ -24,6 +25,7 @@ import {
 } from "../index.js";
 import {
   globalConfigPath,
+  updateGlobalConfig,
   updateGlobalConfigFromExplicitOptions,
 } from "../engine/config.js";
 import { DaemonClient } from "../client/daemon-client.js";
@@ -87,6 +89,11 @@ export async function runParsedCommand(parsed: ParsedArgs): Promise<void> {
     return;
   }
 
+  if (parsed.options.config) {
+    runConfig(parsed);
+    return;
+  }
+
   if (parsed.options.index) {
     await runIndex(parsed);
     return;
@@ -113,6 +120,42 @@ export async function runParsedCommand(parsed: ParsedArgs): Promise<void> {
   }
 
   await runQuery(parsed);
+}
+
+
+function runConfig(parsed: ParsedArgs): void {
+  if (parsed.options.configAction !== "model-set") {
+    throw new Error("zg config requires model set");
+  }
+  if (parsed.positionals.length !== 1) {
+    throw new Error("zg config model set requires exactly one local embedding reference");
+  }
+  const reference = parsed.positionals[0]!;
+  const separator = reference.indexOf("/");
+  const provider = separator > 0 ? reference.slice(0, separator) : "";
+  const model = separator > 0 ? reference.slice(separator + 1) : "";
+  const catalogEntry = getEmbeddingModelCatalogEntryByRef({ provider, model });
+  if (provider !== "local") {
+    throw new Error("zg config model set only supports local embedding models");
+  }
+  if (!catalogEntry || catalogEntry.provider !== "local") {
+    throw new Error(`Unsupported local embedding model: ${reference}`);
+  }
+  if (parsed.options.llamaGpu === undefined && parsed.options.embeddingParallelism === undefined) {
+    throw new Error("zg config model set requires --llama-gpu, --gpu, --no-gpu, or --embedding-parallelism");
+  }
+  updateGlobalConfig({
+    models: {
+      [reference]: {
+        ...(parsed.options.llamaGpu !== undefined ? { llamaGpu: parsed.options.llamaGpu } : {}),
+        ...(parsed.options.embeddingParallelism !== undefined
+          ? { embeddingParallelism: parsed.options.embeddingParallelism }
+          : {}),
+      },
+    },
+  });
+  console.log(`Model config: ${reference}`);
+  console.log(`Global config: ${globalConfigPath()}`);
 }
 
 

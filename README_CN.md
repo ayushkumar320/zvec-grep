@@ -199,6 +199,13 @@ zg --index \
 
 本地 embedding 会按 `models["provider/model"]` 为每个模型分别选择 GPU 和并行度；daemon 建索引和搜索都会使用这份配置，切换运行配置不需要重建已有索引。显式 CLI 或库参数优先于模型配置，模型配置优先于全局默认值和环境变量回退。远程 embedding 会忽略本地 GPU 配置。仓库 root 和 include/exclude 规则仍保存在各仓库自己的 `.zvec-grep` 元数据中，不进入全局配置。
 
+也可以通过命令配置，无需手工编辑 JSON：
+
+```bash
+zg config model set local/embeddinggemma-300m --llama-gpu metal --embedding-parallelism 2
+zg config model set local/qwen3-embedding-0.6b --no-gpu --embedding-parallelism 1
+```
+
 对于已有索引，`zg --index` 不传 `--embedding` 会复用索引里保存的 schema。只有在你明确想切换模型时，才使用 `--rebuild --embedding <model>`：
 
 ```bash

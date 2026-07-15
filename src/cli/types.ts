@@ -25,6 +25,8 @@ export type CliOptions = {
   status?: boolean;
   collections?: boolean;
   install?: boolean;
+  config?: boolean;
+  configAction?: "model-set";
   server?: boolean;
   serverAction?: "on" | "off" | "status" | "run";
   listen?: string;

@@ -63,6 +63,14 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
   if (args[0] === "install") {
     options.install = true;
     startIndex = 1;
+  } else if (args[0] === "config") {
+    options.config = true;
+    if (args[1] === "model" && args[2] === "set") {
+      options.configAction = "model-set";
+      startIndex = 3;
+    } else {
+      startIndex = 1;
+    }
   } else if (args[0] === "serve") {
     throw new Error("zg serve has been removed; use zg server on and Streamable HTTP MCP");
   } else if (args[0] === "server") {
@@ -168,11 +176,11 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
     } else if (arg === "--model-cache") {
       options.modelCacheDir = readOptionValue(args, ++index, arg);
     } else if (arg === "--gpu") {
-      options.llamaGpu = "auto";
+      setLlamaGpuOption(options, "auto", arg);
     } else if (arg === "--no-gpu") {
-      options.llamaGpu = false;
+      setLlamaGpuOption(options, false, arg);
     } else if (arg === "--llama-gpu") {
-      options.llamaGpu = parseLlamaGpu(readOptionValue(args, ++index, arg));
+      setLlamaGpuOption(options, parseLlamaGpu(readOptionValue(args, ++index, arg)), arg);
     } else if (arg === "--embedding-parallelism") {
       options.embeddingParallelism = parsePositiveInteger(readOptionValue(args, ++index, arg), arg);
     } else if (arg === "--api-key") {
@@ -302,7 +310,20 @@ function validateCliShape(options: CliOptions): void {
     || options.status
     || options.collections
     || options.install
+    || options.config
     || options.server;
+
+  if (options.config && !options.configAction && !options.help) {
+    throw new Error("zg config requires model set");
+  }
+  if (options.config) {
+    const allowed = new Set(["config", "configAction", "llamaGpu", "embeddingParallelism", "help"]);
+    const unsupported = Object.keys(options).find((key) => !allowed.has(key));
+    if (unsupported) {
+      const flag = `--${unsupported.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}`;
+      throw new Error(`zg config model set does not accept ${flag}`);
+    }
+  }
 
   if (options.server && !options.serverAction && !options.help) {
     throw new Error("zg server requires on, off, status, or run");
@@ -334,6 +355,10 @@ function validateCliShape(options: CliOptions): void {
 
   if (options.install && (options.index || options.disableIndex || options.status || options.collections)) {
     throw new Error("zg install cannot be combined with index, status, or collections commands");
+  }
+
+  if (options.config && (options.index || options.disableIndex || options.status || options.collections || options.install || options.server)) {
+    throw new Error("zg config cannot be combined with another command");
   }
 
   if (options.server && options.collection) {
@@ -763,6 +788,18 @@ export function parseLlamaGpu(value: string): "auto" | "metal" | "vulkan" | "cud
   }
 
   throw new Error(`Unsupported llama GPU mode: ${value}`);
+}
+
+
+function setLlamaGpuOption(
+  options: CliOptions,
+  value: "auto" | "metal" | "vulkan" | "cuda" | false,
+  option: string,
+): void {
+  if (options.config && options.llamaGpu !== undefined) {
+    throw new Error(`${option} conflicts with an earlier GPU option`);
+  }
+  options.llamaGpu = value;
 }
 
 

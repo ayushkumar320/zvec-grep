@@ -14,6 +14,7 @@ Usage:
   zg --index --embedding local/embeddinggemma-300m [root]
   zg --disable-index [root]
   zg --status [root]
+  zg config model set <local/model> [--gpu|--no-gpu|--llama-gpu <mode>] [--embedding-parallelism <n>]
   zg install [--target codex|all|auto] [--mcp-tool-timeout <seconds>] [--mcp-token-env <name>] [--yes] [--force]
   zg server on [--listen 127.0.0.1:7999] [--token-file <path>]
   zg server off [--token-file <path>]
