@@ -14,7 +14,6 @@ export type RuntimeManagerOptions = {
   modelPool: EmbeddingModelPool;
   serviceOptions?: CreateZvecGrepOptions;
   readCollectionIdleTtlMs?: number;
-  searchWaitTimeoutMs?: number;
   runtimeIdleTtlMs?: number;
   onRuntimeEvicted?: (canonicalRoot: string) => void | Promise<void>;
   rootLeaseManager?: RootLeaseManager;
@@ -192,7 +191,6 @@ export class RuntimeManager {
         modelRequest,
         rootLease,
         readCollectionIdleTtlMs: this.options.readCollectionIdleTtlMs,
-        searchWaitTimeoutMs: this.options.searchWaitTimeoutMs,
         onActivity: () => this.touchRuntime(canonicalRoot),
       });
     }

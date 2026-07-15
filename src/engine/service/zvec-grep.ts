@@ -242,12 +242,19 @@ class ZvecGrepService implements ZvecGrep {
             anonymousCollectionPath(root),
           );
 
-          return await registry.open(ANONYMOUS_COLLECTION_NAME).index({
-            rebuild: false,
-            embeddingConcurrency: options.embeddingConcurrency,
-            onProgress: options.onProgress,
-            changedPaths: options.changedPaths,
-          });
+          const collection = registry.open(ANONYMOUS_COLLECTION_NAME);
+          const releaseWriterContext = options.onWriterContext?.((contextOptions) =>
+            this.contextFromWriterCollection(root, collection, contextOptions));
+          try {
+            return await collection.index({
+              rebuild: false,
+              embeddingConcurrency: options.embeddingConcurrency,
+              onProgress: options.onProgress,
+              changedPaths: options.changedPaths,
+            });
+          } finally {
+            await releaseWriterContext?.();
+          }
         } finally {
           registry.close();
         }
@@ -656,6 +663,27 @@ class ZvecGrepService implements ZvecGrep {
     timings: TimingCollector;
   }): Promise<ZvecGrepContextResult> {
     return contextFromOpenCollection(input);
+  }
+
+
+  private async contextFromWriterCollection(
+    root: string,
+    collection: Collection,
+    options: ZvecGrepContextOptions,
+  ): Promise<ZvecGrepContextResult> {
+    return await this.withEmbeddingModelOperation(async () => {
+      const timings = new TimingCollector();
+      const request = normalizeContextRequest(options);
+      const result = await timings.time("total", () => contextFromOpenCollection({
+        root,
+        request,
+        collection,
+        anonymous: true,
+        options: { ...options, autoUpdate: false, fallback: "disabled" },
+        timings,
+      }));
+      return withContextTimings(result, timings);
+    });
   }
 
 

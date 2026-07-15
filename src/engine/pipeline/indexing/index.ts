@@ -213,7 +213,7 @@ async function indexCollectionUnchecked(ctx: IndexContext): Promise<IndexResult>
 
   const finalPass = passes[passes.length - 1];
   reportIndexFinalizing(ctx, report, finalPass);
-  timings.timeSync("index_optimize", () => optimizeStorage(ctx));
+  await timings.time("index_optimize", () => optimizeStorage(ctx));
 
   const result = buildIndexResult(ctx, passes, Date.now() - start, timings);
 
@@ -260,7 +260,7 @@ async function indexCollectionPathsUnchecked(
   }
   const finalPass = passes[passes.length - 1];
   reportIndexFinalizing(ctx, report, finalPass);
-  timings.timeSync("index_optimize", () => optimizeStorage(ctx));
+  await timings.time("index_optimize", () => optimizeStorage(ctx));
   const result = buildIndexResult(ctx, passes, Date.now() - start, timings);
   if (result.filesFailed > 0) {
     throw new EngineError(`Indexing completed with ${result.filesFailed} failed files`, {
@@ -408,9 +408,9 @@ function buildIndexResult(
 }
 
 
-function optimizeStorage(ctx: IndexContext): void {
+async function optimizeStorage(ctx: IndexContext): Promise<void> {
   try {
-    ctx.storage.optimize();
+    await ctx.storage.optimize();
   } catch (error) {
     throw toEngineError(error, "Indexing failed to finalize storage", {
       code: "ZVEC_GREP.ENGINE.INDEXING.OPTIMIZE_FAILED",

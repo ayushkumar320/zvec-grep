@@ -49,7 +49,7 @@ export interface CollectionStorage {
   deleteFile(fileId: string): void;
   searchFts(query: string, limit: number, filter?: StorageSearchFilter): StorageSearchHit[];
   searchVector(vector: readonly number[], limit: number, filter?: StorageSearchFilter): StorageSearchHit[];
-  optimize(): void;
+  optimize(): Promise<void>;
   close(): void;
 }
 

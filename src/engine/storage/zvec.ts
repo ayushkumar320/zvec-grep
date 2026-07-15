@@ -329,16 +329,19 @@ export class ZvecCollectionStorage implements CollectionStorage {
   }
 
 
-  optimize(): void {
+  async optimize(): Promise<void> {
     if (this.needsOptimize) {
-      this.collection.optimizeSync();
+      await this.collection.optimize();
       this.needsOptimize = false;
     }
   }
 
 
   close(): void {
-    this.optimize();
+    if (this.needsOptimize) {
+      this.collection.optimizeSync();
+      this.needsOptimize = false;
+    }
 
     this.files.close();
     this.collection.closeSync();

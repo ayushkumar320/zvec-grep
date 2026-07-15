@@ -216,7 +216,6 @@ export class JobScheduler {
           this.sortQueue();
           this.pump();
         }, delay);
-        job.retryTimer.unref?.();
       } else {
         job.error = errorInfo(error);
         this.finish(job, this.closed ? "cancelled" : "failed");

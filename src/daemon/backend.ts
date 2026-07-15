@@ -30,7 +30,6 @@ export type DaemonBackendOptions = {
   modelPoolOptions?: EmbeddingModelPoolOptions;
   schedulerOptions?: JobSchedulerOptions;
   readCollectionIdleTtlMs?: number;
-  searchWaitTimeoutMs?: number;
   runtimeIdleTtlMs?: number;
   resolveEmbeddingSchema?: (reference: string) => CollectionEmbeddingSchema;
   createService?: typeof createZvecGrep;
@@ -65,7 +64,6 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
       modelPool: this.modelPool,
       serviceOptions: options.serviceOptions,
       readCollectionIdleTtlMs: options.readCollectionIdleTtlMs,
-      searchWaitTimeoutMs: options.searchWaitTimeoutMs,
       runtimeIdleTtlMs: options.runtimeIdleTtlMs,
       onRuntimeEvicted: (root) => this.closeWatcher(root),
     });
@@ -281,6 +279,7 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
         rebuild: input.rebuild,
         changedPaths: input.changedPaths,
         onProgress: report,
+        onWriterContext: (context) => runtime.setWriterContext(context),
       });
     } finally {
       try {

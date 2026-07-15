@@ -8,7 +8,6 @@ import type {
 } from "./model-pool.js";
 import { ReadCollectionCache } from "./read-collection-cache.js";
 import type { RootLease } from "./root-lease.js";
-import { DaemonError } from "./errors.js";
 
 
 export type RootRuntimeOptions = {
@@ -18,7 +17,6 @@ export type RootRuntimeOptions = {
   rootLease?: RootLease;
   readCollectionIdleTtlMs?: number;
   openSession?: (lease: ModelLease) => AnonymousReadSession | Promise<AnonymousReadSession>;
-  searchWaitTimeoutMs?: number;
   onActivity?: () => void;
 };
 
@@ -45,6 +43,10 @@ export class RootRuntime {
   private writerPending = false;
   private writerReady?: Promise<void>;
   private writerReadyResolve?: () => void;
+  private writerContext?: (options: ZvecGrepContextOptions) => Promise<ZvecGrepContextResult>;
+  private activeWriterSearches = 0;
+  private writerSearchesDrained?: Promise<void>;
+  private writerSearchesDrainedResolve?: () => void;
   private closed = false;
 
 
@@ -64,8 +66,12 @@ export class RootRuntime {
     if (this.closed) {
       throw new Error("Root runtime is closed.");
     }
+    const writerContext = this.writerContext;
+    if (writerContext) {
+      return await this.withWriterContext(writerContext, options);
+    }
     while (this.writerPending && this.writerReady) {
-      await this.waitForWriter(this.writerReady);
+      await this.writerReady;
     }
     return this.runGenerationSerial(async () => {
       if (this.closed) {
@@ -112,6 +118,25 @@ export class RootRuntime {
       this.writerReadyResolve = undefined;
       this.writerReady = undefined;
     }
+  }
+
+
+  setWriterContext(
+    context: (options: ZvecGrepContextOptions) => Promise<ZvecGrepContextResult>,
+  ): () => Promise<void> {
+    this.writerContext = context;
+    return async () => {
+      if (this.writerContext !== context) {
+        return;
+      }
+      this.writerContext = undefined;
+      if (this.activeWriterSearches > 0) {
+        this.writerSearchesDrained ??= new Promise<void>((resolve) => {
+          this.writerSearchesDrainedResolve = resolve;
+        });
+        await this.writerSearchesDrained;
+      }
+    };
   }
 
 
@@ -201,30 +226,6 @@ export class RootRuntime {
     });
   }
 
-
-  private async waitForWriter(writerReady: Promise<void>): Promise<void> {
-    const timeoutMs = this.options.searchWaitTimeoutMs ?? 2_000;
-    let timeout: ReturnType<typeof setTimeout> | undefined;
-    try {
-      await Promise.race([
-        writerReady,
-        new Promise<never>((_, reject) => {
-          timeout = setTimeout(() => reject(new DaemonError(
-            "INDEX_BUSY",
-            "An index writer is pending for this root.",
-            true,
-          )), timeoutMs);
-          timeout.unref?.();
-        }),
-      ]);
-    } finally {
-      if (timeout) {
-        clearTimeout(timeout);
-      }
-    }
-  }
-
-
   private async openLeasedSession(request: ModelLeaseRequest): Promise<LeasedReadSession> {
     const lease = await this.options.modelPool.acquire(request);
     let session: AnonymousReadSession;
@@ -253,6 +254,29 @@ export class RootRuntime {
         }
       },
     };
+  }
+
+
+  private async withWriterContext(
+    context: (options: ZvecGrepContextOptions) => Promise<ZvecGrepContextResult>,
+    options: ZvecGrepContextOptions,
+  ): Promise<ZvecGrepContextResult> {
+    this.activeWriterSearches += 1;
+    try {
+      return await context({
+        ...options,
+        root: this.canonicalRoot,
+        autoUpdate: false,
+        fallback: "disabled",
+      });
+    } finally {
+      this.activeWriterSearches -= 1;
+      if (this.activeWriterSearches === 0) {
+        this.writerSearchesDrainedResolve?.();
+        this.writerSearchesDrainedResolve = undefined;
+        this.writerSearchesDrained = undefined;
+      }
+    }
   }
 
 

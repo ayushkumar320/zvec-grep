@@ -83,7 +83,6 @@ test("Streamable HTTP serves health, MCP contracts and a real cached index searc
       metric: "cosine",
     }),
     readCollectionIdleTtlMs: 60_000,
-    searchWaitTimeoutMs: 20,
   });
   const server = new DaemonHttpServer({
     host: "127.0.0.1",
@@ -269,18 +268,25 @@ test("Streamable HTTP serves health, MCP contracts and a real cached index searc
   assert.equal(duplicate.structuredContent.reused, true);
   assert.equal(duplicate.structuredContent.job_id, indexed.structuredContent.job_id);
 
-  const busySearch = await clients[0].callTool({
+  let searchSettled = false;
+  const writerSearchPromise = clients[0].callTool({
     name: "zvec_grep_search",
-    arguments: { root: unindexedRoot, query: "newly indexed" },
+    arguments: { root: unindexedRoot, fts: "newlyIndexed" },
+  }).then((result) => {
+    searchSettled = true;
+    return result;
   });
-  assert.equal(busySearch.isError, true);
-  assert.match(busySearch.content[0].text, /INDEX_BUSY/);
 
   const waitedPromise = clients[1].callTool({
     name: "zvec_grep_index",
     arguments: { root: unindexedRoot, wait: true },
   });
   await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(searchSettled, true);
+  const writerSearch = await writerSearchPromise;
+  assert.equal(writerSearch.isError, undefined);
+  assert.equal(writerSearch.structuredContent.freshness, "possibly_stale");
+  assert.equal(writerSearch.structuredContent.update_job_id, indexed.structuredContent.job_id);
   blockEmbedding = false;
   releaseEmbedding();
   const waited = await waitedPromise;
