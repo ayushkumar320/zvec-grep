@@ -10,6 +10,7 @@ import {
   daemonLeasePath,
 } from "../dist/engine/utils/daemon-lease.js";
 import { createZvecGrep } from "../dist/index.js";
+import { printError } from "../dist/cli/errors.js";
 
 
 test("daemon root lease blocks Direct index writes and is removed on release", async () => {
@@ -25,7 +26,25 @@ test("daemon root lease blocks Direct index writes and is removed on release", a
   });
   try {
     await access(daemonLeasePath(root));
-    await assert.rejects(service.index(), /daemon owns index writes/i);
+    let leaseError;
+    await assert.rejects(service.index(), (error) => {
+      leaseError = error;
+      assert.match(error.message, /daemon owns index writes/i);
+      assert.match(error.context, /--mode auto/);
+      assert.match(error.context, /client\.mode to "auto"/);
+      return true;
+    });
+    const output = [];
+    const originalError = console.error;
+    console.error = (...values) => { output.push(values.join(" ")); };
+    try {
+      printError(leaseError, { color: "never" });
+    } finally {
+      console.error = originalError;
+    }
+    const rendered = output.join("\n");
+    assert.match(rendered, /config: Edit .* client\.mode to "auto"/);
+    assert.doesNotMatch(rendered, /^client\.mode:/m);
   } finally {
     await service.close();
     await lease.release();

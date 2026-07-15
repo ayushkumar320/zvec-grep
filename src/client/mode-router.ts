@@ -4,7 +4,7 @@ import { configuredServerUrl } from "../daemon/config.js";
 
 export function resolveClientMode(explicit?: ZvecGrepClientMode): ZvecGrepClientMode {
   const configured = explicit ?? parseMode(process.env.ZVEC_GREP_MODE) ?? readGlobalConfig().client?.mode;
-  return configured ?? "direct";
+  return configured ?? "auto";
 }
 
 

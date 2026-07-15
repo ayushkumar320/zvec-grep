@@ -73,7 +73,7 @@ Options:
   --mcp-token-env <name>          Bearer token environment variable written during install
   --yes                           Use default install choices without prompting
   --force                         Replace an existing agent integration during install
-  --mode <direct|server|auto>     Route index, status and indexed queries (default direct)
+  --mode <direct|server|auto>     Route index, status and indexed queries (default auto)
   --force-direct                  Confirm an explicitly selected Direct write path
   --listen <host:port>            Listen address for zg server on/run (loopback only)
   --token-file <path>             Require/use a token read from this file for server requests

@@ -160,7 +160,12 @@ export function assertDaemonWriteAllowed(
 function daemonLeaseActiveError(root: string, pid: number): EngineError {
   return new EngineError("A zvec-grep daemon owns index writes for this root", {
     code: "ZVEC_GREP.ENGINE.DAEMON_LEASE_ACTIVE",
-    context: `root=${root} pid=${pid}`,
+    context: [
+      `root=${root}`,
+      `pid=${pid}`,
+      "hint=Run with --mode auto so a ready daemon handles indexed operations. If auto is already active, check zg server status and restore or stop the daemon before retrying.",
+      "config=Edit ~/.zvec-grep/config.json and set client.mode to \"auto\" to persist this behavior.",
+    ].join("\n"),
   });
 }
 

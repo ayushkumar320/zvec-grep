@@ -94,8 +94,8 @@ zg install --target codex --yes
 
 Codex MCP tool calls default to a 600-second timeout. Override it during installation with `--mcp-tool-timeout <seconds>`. The local server has no token by default and only listens on loopback. To require Bearer authentication, start it with `zg server on --token-file <path>` (or set `ZVEC_GREP_SERVER_TOKEN`), then install with `zg install --mcp-token-env ZVEC_GREP_SERVER_TOKEN` so the MCP client sends the same token. The installed MCP URL is `http://127.0.0.1:7999/mcp`. Stop the daemon with `zg server off`.
 
-CLI indexed queries and index commands can use `--mode direct`, `--mode server`, or `--mode auto`. The development-preview default remains `direct`; `auto` uses the daemon only when it is ready and otherwise falls back before submitting a request.
-Daemon logs are written as JSON lines to `~/.zvec-grep/daemon/logs/server.log`; credentials and complete query text are not recorded. Server changes are gated by the macOS, Linux, and Windows CI matrix before the default mode can change.
+CLI indexed queries and index commands can use `--mode direct`, `--mode server`, or `--mode auto`. The default is `auto`: it uses the daemon only when it is ready and otherwise falls back before submitting a request.
+Daemon logs are written as JSON lines to `~/.zvec-grep/daemon/logs/server.log`; credentials and complete query text are not recorded.
 
 ### ✅ Requirements
 
