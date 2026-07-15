@@ -104,7 +104,7 @@ Daemon 以 JSON Lines 写日志到 `~/.zvec-grep/daemon/logs/server.log`，不�
 - macOS、Linux 或 Windows
 - 使用索引检索时需要选择一个支持的 embedding 模型
 
-`zg --rg` 不需要 embedding 模型，也不需要索引。
+`zg --rg` 不需要 embedding 模型，也不需要索引。无论当前是 Direct、Server 还是 Auto 模式，它都始终在本地执行，不会停止 daemon，也不会访问索引 writer。
 
 ## <a id="quickstart"></a>⚡ 快速开始
 

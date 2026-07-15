@@ -45,6 +45,8 @@ zg --rg -F "ExactSymbolOrText" src
 zg --rg -i -C 2 -g "*.ts" -g "!dist/**" "needle text" src
 ```
 
+Managed ripgrep always runs locally. It remains available while the daemon is running or an index writer is active; do not stop the daemon or switch client mode before using it.
+
 Use `-e` or `--regexp` when the pattern begins with `-`. Common ripgrep flags include `-n`, `-H`, `-F`, `-i`, `-w`, `-A`, `-B`, `-C`, `-g`, `--hidden`, `--type`, `--type-not`, `--no-ignore`, `--smart-case`, and `--pcre2`.
 
 ## Index only with authorization

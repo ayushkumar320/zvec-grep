@@ -103,7 +103,7 @@ Daemon logs are written as JSON lines to `~/.zvec-grep/daemon/logs/server.log`; 
 - macOS, Linux, or Windows
 - A supported embedding model for indexed search
 
-`zg --rg` works without any embedding model or index.
+`zg --rg` works without any embedding model or index. It always runs locally, regardless of Direct, Server, or Auto mode, and does not stop the daemon or access the index writer.
 
 ## <a id="quickstart"></a>⚡ Quickstart
 

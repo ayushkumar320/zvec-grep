@@ -546,8 +546,6 @@ async function runQuery(parsed: ParsedArgs): Promise<void> {
       ? "zg --rg requires a pattern. Use --help for examples."
       : "zg query requires text or --fts/--vector routes. Use --help for examples.");
   }
-  if (commandOptions.rg) assertDirectOnlyMode(commandOptions, "--rg");
-
   if (!commandOptions.rg && !commandOptions.collection) {
     const mode = resolveClientMode(commandOptions.mode);
     if (mode !== "direct") {
