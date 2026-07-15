@@ -67,6 +67,14 @@ export const EMBEDDING_MODEL_CATALOG = {
     contextSize: 8192,
     maxBatchSize: 8,
   },
+
+  "qwen/text-embedding-v4": {
+    id: "qwen/text-embedding-v4",
+    provider: "qwen",
+    model: "text-embedding-v4",
+    dimension: 1024,
+    metric: "cosine",
+  },
 } as const satisfies Record<string, EmbeddingCatalogEntry>;
 
 

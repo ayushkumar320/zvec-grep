@@ -307,6 +307,89 @@ test("Streamable HTTP serves health, MCP contracts and a real cached index searc
 });
 
 
+test("Streamable HTTP indexes and searches with qwen text-embedding-v4", async (t) => {
+  const temporaryDirectory = await mkdtemp(join(tmpdir(), "zvec-grep-qwen-http-"));
+  const root = join(temporaryDirectory, "repo");
+  const endpoint = "https://qwen.test/embeddings";
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  await mkdir(join(root, "src"), { recursive: true });
+  await writeFile(join(root, "src", "answer.ts"), "export const answer = 42;\n");
+  globalThis.fetch = async (input, init) => {
+    if (String(input) !== endpoint) {
+      return originalFetch(input, init);
+    }
+    const body = JSON.parse(String(init?.body));
+    const texts = Array.isArray(body.input) ? body.input : [];
+    requests.push({ authorization: init?.headers?.Authorization, texts });
+    return new Response(JSON.stringify({
+      data: texts.map((_, index) => ({
+        index,
+        embedding: new Array(1024).fill(0.01),
+      })),
+    }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+
+  const backend = new DaemonBackend({
+    version: "1.0.0",
+    serviceOptions: { apiKey: "qwen-test-key", endpoint },
+  });
+  const server = new DaemonHttpServer({
+    host: "127.0.0.1",
+    port: 0,
+    token,
+    version: "1.0.0",
+    backend,
+  });
+  const address = await server.start();
+  const client = await connectClient(new URL(`http://127.0.0.1:${address.port}/mcp`), "qwen-client");
+  t.after(async () => {
+    await client.close();
+    await server.close();
+    await backend.close();
+    globalThis.fetch = originalFetch;
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  });
+
+  const indexed = await client.callTool({
+    name: "zvec_grep_index",
+    arguments: { root, embedding: "qwen/text-embedding-v4", wait: true },
+  });
+  assert.equal(indexed.isError, undefined);
+  assert.equal(indexed.structuredContent.state, "succeeded");
+  const requestsAfterIndex = requests.length;
+
+  const search = await client.callTool({
+    name: "zvec_grep_search",
+    arguments: { root, query: "where is the answer", freshness: "wait_for_fresh" },
+  });
+  assert.equal(search.isError, undefined);
+  assert.equal(search.structuredContent.freshness, "fresh");
+  assert.ok(search.structuredContent.result.items.length > 0);
+  assert.ok(requests.length > requestsAfterIndex);
+  assert.ok(requests.every((request) => request.authorization === "Bearer qwen-test-key"));
+
+  const unsupportedRoot = join(temporaryDirectory, "unsupported");
+  await mkdir(unsupportedRoot);
+  const unsupported = await client.callTool({
+    name: "zvec_grep_index",
+    arguments: { root: unsupportedRoot, embedding: "qwen/unsupported-embedding", wait: true },
+  });
+  assert.equal(unsupported.isError, undefined);
+  assert.equal(unsupported.structuredContent.state, "failed");
+  const unsupportedStatus = await client.callTool({
+    name: "zvec_grep_index_status",
+    arguments: { root: unsupportedRoot },
+  });
+  assert.equal(unsupportedStatus.structuredContent.indexed, false);
+  assert.equal(unsupportedStatus.structuredContent.runtime.error.code, "MODEL_LOAD_FAILED");
+  await assert.rejects(access(join(unsupportedRoot, ".zvec-grep", "index")));
+});
+
+
 async function connectClient(url, name) {
   const client = new Client({ name, version: "1.0.0" });
   const transport = new StreamableHTTPClientTransport(url, {

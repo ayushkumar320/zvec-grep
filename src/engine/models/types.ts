@@ -54,5 +54,15 @@ export type LlamaCppEmbeddingCatalogEntry = {
 };
 
 
+export type RemoteEmbeddingCatalogEntry = {
+  id: string;
+  provider: "qwen";
+  model: "text-embedding-v4";
+  dimension: number;
+  metric: VectorMetric;
+};
+
+
 export type EmbeddingCatalogEntry =
-  | LlamaCppEmbeddingCatalogEntry;
+  | LlamaCppEmbeddingCatalogEntry
+  | RemoteEmbeddingCatalogEntry;
