@@ -43,3 +43,45 @@ We track two outcomes and one diagnostic:
    complete the task.
 3. **Tool behavior:** whether and how the agent used `zvec-grep`, and how
    quickly it reached relevant information.
+
+## Instructions
+
+### Setup
+
+You need [uv](https://docs.astral.sh/uv/), Docker Engine or Docker Desktop, and
+the credentials required by your chosen Harbor agent and model. From this
+directory, install the pinned environment and check the local setup:
+
+```sh
+uv sync
+uv run zg-bench doctor
+```
+
+### Run the smoke test
+
+Run either baseline smoke task with the same agent and model:
+
+```sh
+uv run zg-bench run swebench-verified \
+  --agent <harbor-agent> --model <provider/model>
+
+uv run zg-bench run terminal-bench-2.1 \
+  --agent <harbor-agent> --model <provider/model>
+```
+
+Add `--dry-run` to inspect the generated Harbor command without starting a
+container. Harbor writes trajectories and evaluator output to `runs/`.
+
+### Run the CI test
+
+The CI tier is not implemented yet. It will run a fixed, representative task
+set for each benchmark suite.
+
+### Run the full benchmark
+
+The Full tier is not implemented yet. It will run the complete task set for a
+benchmark suite and produce the results used in external reports.
+
+Smoke tests can run through Docker on Linux or macOS. On Apple silicon, some
+benchmark images may use emulation; full benchmark reports should use a
+consistent Linux x86-64 environment.

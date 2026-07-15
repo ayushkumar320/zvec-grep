@@ -27,6 +27,10 @@ pnpm-debug.log*
 .zvec-grep/
 .turbo/
 .vite/
+__pycache__/
+*.py[cod]
+benchmarks/.venv/
+benchmarks/runs/
 
 
 # Package manager metadata
