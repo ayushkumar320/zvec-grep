@@ -50,7 +50,7 @@ zg "where query auto update happens"
 - **Managed ripgrep Route**: `zg --rg` supports common `rg` flags and works even before a repository is indexed.
 - **Explicit Model Choice**: The first index build requires a model such as `local/embeddinggemma-300m`, `local/qwen3-embedding-0.6b`, or `qwen/text-embedding-v4`.
 - **Schema Reuse**: Re-running `zg --index` on an existing index reuses the stored embedding schema unless you explicitly change it.
-- **Shared MCP Server**: Run `zg server on` to expose the four indexed search, indexing, index-status, and server-status tools over authenticated Streamable HTTP.
+- **Shared MCP Server**: Run `zg server on` to expose the four indexed search, indexing, index-status, and server-status tools over loopback Streamable HTTP.
 - **Library API**: Use `createZvecGrep()` directly from Node.js tools, agents, or MCP servers.
 
 ## <a id="installation"></a>📦 Installation
@@ -92,8 +92,7 @@ Install the Codex MCP integration:
 zg install --target codex --yes
 ```
 
-Codex MCP tool calls default to a 600-second timeout. Override it during installation with `--mcp-tool-timeout <seconds>`.
-Set `ZVEC_GREP_SERVER_TOKEN` to the contents of `~/.zvec-grep/daemon/token` in the client environment. The installed MCP URL is `http://127.0.0.1:7999/mcp`. Stop the daemon with `zg server off`.
+Codex MCP tool calls default to a 600-second timeout. Override it during installation with `--mcp-tool-timeout <seconds>`. The local server has no token by default and only listens on loopback. To require Bearer authentication, start it with `zg server on --token-file <path>` (or set `ZVEC_GREP_SERVER_TOKEN`), then install with `zg install --mcp-token-env ZVEC_GREP_SERVER_TOKEN` so the MCP client sends the same token. The installed MCP URL is `http://127.0.0.1:7999/mcp`. Stop the daemon with `zg server off`.
 
 CLI indexed queries and index commands can use `--mode direct`, `--mode server`, or `--mode auto`. The development-preview default remains `direct`; `auto` uses the daemon only when it is ready and otherwise falls back before submitting a request.
 Daemon logs are written as JSON lines to `~/.zvec-grep/daemon/logs/server.log`; credentials and complete query text are not recorded. Server changes are gated by the macOS, Linux, and Windows CI matrix before the default mode can change.

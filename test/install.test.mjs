@@ -56,7 +56,7 @@ test("Codex installer removes orphaned managed markers", async (t) => {
   const agents = await readFile(agentsPath, "utf8");
   assert.match(installed, /\[mcp_servers\.other\]/);
   assert.match(installed, /^url = "http:\/\/127\.0\.0\.1:7999\/mcp"$/m);
-  assert.match(installed, /^bearer_token_env_var = "ZVEC_GREP_SERVER_TOKEN"$/m);
+  assert.doesNotMatch(installed, /^bearer_token_env_var\s*=/m);
   assert.doesNotMatch(installed, /^command\s*=\s*"zg"$/m);
   assert.match(agents, /zvec_grep_index/);
   assert.match(agents, /zg server on/);
@@ -66,6 +66,28 @@ test("Codex installer removes orphaned managed markers", async (t) => {
   assert.equal(countOccurrences(installed, "# ZVEC_GREP_START"), 1);
   assert.equal(countOccurrences(installed, "# ZVEC_GREP_END"), 1);
   assert.equal(countOccurrences(installed, "[mcp_servers.zvec_grep]"), 1);
+});
+
+
+test("Codex installer writes an explicit MCP token environment variable", async (t) => {
+  const temporaryDirectory = await mkdtemp(join(tmpdir(), "zvec-grep-install-token-"));
+  const codexHome = join(temporaryDirectory, ".codex");
+  t.after(async () => {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  });
+
+  await execFileAsync(process.execPath, [
+    cliPath,
+    "install",
+    "--target",
+    "codex",
+    "--mcp-token-env",
+    "ZVEC_GREP_SERVER_TOKEN",
+    "--yes",
+  ], { env: { ...process.env, CODEX_HOME: codexHome } });
+
+  const installed = await readFile(join(codexHome, "config.toml"), "utf8");
+  assert.match(installed, /^bearer_token_env_var = "ZVEC_GREP_SERVER_TOKEN"$/m);
 });
 
 

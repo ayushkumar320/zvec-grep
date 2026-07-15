@@ -55,6 +55,7 @@ type AgentInstaller = {
 type InstallAgentOptions = {
   force: boolean;
   mcpToolTimeoutSeconds: number;
+  mcpTokenEnv?: string;
 };
 
 
@@ -128,6 +129,7 @@ async function runInstall(parsed: ParsedArgs): Promise<void> {
       force: parsed.options.force === true,
       mcpToolTimeoutSeconds: parsed.options.installMcpToolTimeoutSeconds
         ?? DEFAULT_MCP_TOOL_TIMEOUT_SECONDS,
+      mcpTokenEnv: parsed.options.installMcpTokenEnv,
     });
     console.log(`Installed ${installer.label}:`);
     for (const file of result.files) {
@@ -151,7 +153,7 @@ async function installCodexIntegration(options: InstallAgentOptions): Promise<In
     path: configPath,
     startMarker: ZVEC_GREP_CONFIG_START,
     endMarker: ZVEC_GREP_CONFIG_END,
-    block: codexConfigBlock(options.mcpToolTimeoutSeconds),
+    block: codexConfigBlock(options.mcpToolTimeoutSeconds, options.mcpTokenEnv),
     force: options.force,
     hasConflict: hasCodexMcpServerConfig,
     conflictMessage: `Existing [mcp_servers.zvec_grep] found in ${configPath}. Re-run with --force after removing or moving that table into the zvec-grep managed block.`,
@@ -327,6 +329,7 @@ async function runServer(parsed: ParsedArgs): Promise<void> {
     const status = await startServer({
       cliPath: process.argv[1]!,
       listen: parsed.options.listen,
+      tokenFile: parsed.options.serverTokenFile,
       home: parsed.options.home,
     });
     printServerControlStatus(status);
@@ -334,7 +337,7 @@ async function runServer(parsed: ParsedArgs): Promise<void> {
   }
   if (parsed.options.serverAction === "off") {
     const { stopServer } = await import("../daemon/server-controller.js");
-    printServerControlStatus(await stopServer(parsed.options.home));
+    printServerControlStatus(await stopServer(parsed.options.home, 30_000, parsed.options.serverTokenFile));
     return;
   }
   if (parsed.options.serverAction === "status") {
@@ -346,6 +349,7 @@ async function runServer(parsed: ParsedArgs): Promise<void> {
   await runDaemonForeground({
     version: readPackageVersion(),
     listen: parsed.options.listen,
+    tokenFile: parsed.options.serverTokenFile,
     home: parsed.options.home,
     serviceOptions: createServiceOptions(parsed.options, process.cwd()),
   });
@@ -579,7 +583,11 @@ async function runServerQuery(
 
 
 function daemonClient(options: CliOptions): DaemonClient {
-  return new DaemonClient({ serverUrl: resolveServerUrl(), home: options.home });
+  return new DaemonClient({
+    serverUrl: resolveServerUrl(),
+    home: options.home,
+    tokenFile: options.serverTokenFile,
+  });
 }
 
 
@@ -961,12 +969,12 @@ function isCodexMcpServerTableName(tableName: string): boolean {
 }
 
 
-function codexConfigBlock(mcpToolTimeoutSeconds: number): string {
+function codexConfigBlock(mcpToolTimeoutSeconds: number, tokenEnv?: string): string {
   return `${ZVEC_GREP_CONFIG_START}
 [mcp_servers.zvec_grep]
 url = "${resolveServerUrl()}"
-bearer_token_env_var = "ZVEC_GREP_SERVER_TOKEN"
-tool_timeout_sec = ${mcpToolTimeoutSeconds}
+${tokenEnv ? `bearer_token_env_var = "${tokenEnv}"
+` : ""}tool_timeout_sec = ${mcpToolTimeoutSeconds}
 default_tools_approval_mode = "auto"
 ${ZVEC_GREP_CONFIG_END}`;
 }

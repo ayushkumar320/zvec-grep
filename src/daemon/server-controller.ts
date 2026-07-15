@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { open, readFile, unlink } from "node:fs/promises";
 import { hostname } from "node:os";
 import { join } from "node:path";
-import { daemonHome, daemonTokenPath } from "./config.js";
+import { daemonHome, resolveClientToken } from "./config.js";
 import { processIsAlive } from "../engine/utils/daemon-lease.js";
 
 
@@ -123,6 +123,7 @@ export async function serverStatus(home?: string): Promise<DaemonControlStatus> 
 export async function startServer(options: {
   cliPath: string;
   listen?: string;
+  tokenFile?: string;
   home?: string;
   timeoutMs?: number;
 }): Promise<DaemonControlStatus> {
@@ -131,6 +132,7 @@ export async function startServer(options: {
   if (current.running) throw new Error(`zvec-grep server process ${current.pid} is running but not ready`);
   const args = [options.cliPath, "server", "run"];
   if (options.listen) args.push("--listen", options.listen);
+  if (options.tokenFile) args.push("--token-file", options.tokenFile);
   if (options.home) args.push("--home", options.home);
   const child = spawn(process.execPath, args, { detached: true, stdio: "ignore", windowsHide: true });
   child.unref();
@@ -138,13 +140,13 @@ export async function startServer(options: {
 }
 
 
-export async function stopServer(home?: string, timeoutMs = 30_000): Promise<DaemonControlStatus> {
+export async function stopServer(home?: string, timeoutMs = 30_000, tokenFile?: string): Promise<DaemonControlStatus> {
   const status = await serverStatus(home);
   if (!status.running) return status;
-  const token = (await readFile(daemonTokenPath(home), "utf8")).trim();
+  const token = await resolveClientToken({ home, tokenFile });
   const response = await fetch(new URL("/control/shutdown", status.serverUrl), {
     method: "POST",
-    headers: { Authorization: `Bearer ${token}` },
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
     signal: AbortSignal.timeout(2_000),
   });
   if (!response.ok) throw new Error(`Server shutdown request failed with HTTP ${response.status}`);

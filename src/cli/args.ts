@@ -110,6 +110,10 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
       options.listen = valueFromLongOption(arg);
     } else if (arg === "--listen") {
       options.listen = readOptionValue(args, ++index, arg);
+    } else if (isLongOptionWithValue(arg, "--token-file")) {
+      options.serverTokenFile = valueFromLongOption(arg);
+    } else if (arg === "--token-file") {
+      options.serverTokenFile = readOptionValue(args, ++index, arg);
     } else if (isLongOptionWithValue(arg, "--target")) {
       options.installTargets = appendInstallTargets(options.installTargets, valueFromLongOption(arg));
     } else if (arg === "--target") {
@@ -121,6 +125,10 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
       );
     } else if (arg === "--mcp-tool-timeout") {
       options.installMcpToolTimeoutSeconds = parsePositiveInteger(readOptionValue(args, ++index, arg), arg);
+    } else if (isLongOptionWithValue(arg, "--mcp-token-env")) {
+      options.installMcpTokenEnv = parseEnvironmentVariable(valueFromLongOption(arg), "--mcp-token-env");
+    } else if (arg === "--mcp-token-env") {
+      options.installMcpTokenEnv = parseEnvironmentVariable(readOptionValue(args, ++index, arg), arg);
     } else if (arg === "--yes") {
       options.yes = true;
     } else if (arg === "--rg") {
@@ -302,6 +310,12 @@ function validateCliShape(options: CliOptions): void {
 
   if (options.listen !== undefined && options.serverAction !== "run" && options.serverAction !== "on") {
     throw new Error("--listen can only be used with zg server on or run");
+  }
+  if (options.serverTokenFile !== undefined && options.serverAction === "status") {
+    throw new Error("--token-file cannot be used with zg server status");
+  }
+  if (options.installMcpTokenEnv !== undefined && !options.install) {
+    throw new Error("--mcp-token-env can only be used with zg install");
   }
 
   if (options.server && (
@@ -699,6 +713,14 @@ function parsePositiveInteger(value: string, option: string): number {
   }
 
   return parsed;
+}
+
+
+function parseEnvironmentVariable(value: string, option: string): string {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
+    throw new Error(`${option} requires a valid environment variable name`);
+  }
+  return value;
 }
 
 

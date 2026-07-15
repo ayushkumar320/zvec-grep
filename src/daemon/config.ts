@@ -1,6 +1,5 @@
-import { randomBytes } from "node:crypto";
-import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { chmod, readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { readGlobalConfig } from "../engine/config.js";
 import { defaultHome } from "../engine/utils/path.js";
 import { DaemonError } from "./errors.js";
@@ -69,32 +68,41 @@ export async function resolveServerToken(options: {
   token?: string;
   tokenFile?: string;
   home?: string;
-} = {}): Promise<{ token: string; tokenFile?: string }> {
+} = {}): Promise<{ token?: string; tokenFile?: string }> {
   const explicit = options.token ?? process.env.ZVEC_GREP_SERVER_TOKEN;
   if (explicit) {
     validateToken(explicit);
     return { token: explicit };
   }
 
-  const tokenFile = options.tokenFile
-    ?? process.env.ZVEC_GREP_SERVER_TOKEN_FILE
-    ?? daemonTokenPath(options.home);
-  try {
-    const existing = (await readFile(tokenFile, "utf8")).trim();
-    validateToken(existing);
-    await chmod(tokenFile, 0o600);
-    return { token: existing, tokenFile };
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      throw error;
-    }
-  }
-
-  const token = randomBytes(32).toString("base64url");
-  await mkdir(dirname(tokenFile), { recursive: true, mode: 0o700 });
-  await writeFile(tokenFile, `${token}\n`, { mode: 0o600, flag: "wx" });
+  const tokenFile = options.tokenFile ?? process.env.ZVEC_GREP_SERVER_TOKEN_FILE;
+  if (!tokenFile) return {};
+  const token = (await readFile(tokenFile, "utf8")).trim();
+  validateToken(token);
   await chmod(tokenFile, 0o600);
   return { token, tokenFile };
+}
+
+
+export async function resolveClientToken(options: {
+  tokenFile?: string;
+  home?: string;
+} = {}): Promise<string | undefined> {
+  const explicit = process.env.ZVEC_GREP_SERVER_TOKEN;
+  if (explicit) {
+    validateToken(explicit);
+    return explicit;
+  }
+  const configuredTokenFile = options.tokenFile ?? process.env.ZVEC_GREP_SERVER_TOKEN_FILE;
+  const tokenFile = configuredTokenFile ?? daemonTokenPath(options.home);
+  try {
+    const token = (await readFile(tokenFile, "utf8")).trim();
+    validateToken(token);
+    return token;
+  } catch (error) {
+    if (!configuredTokenFile) return undefined;
+    throw error;
+  }
 }
 
 

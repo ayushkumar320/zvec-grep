@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import { parseArgs } from "../dist/cli/args.js";
+import { DaemonClient } from "../dist/client/daemon-client.js";
 import { parseListenAddress } from "../dist/daemon/config.js";
 import { DaemonHttpServer } from "../dist/daemon/http-server.js";
 import { readInstanceRecord } from "../dist/daemon/server-controller.js";
@@ -70,11 +71,57 @@ test("server on, status and off are idempotent", async (t) => {
   assert.match(second.stdout, /Server: ready/);
   const status = await execFileAsync(process.execPath, [cliPath, "server", "status", ...args]);
   assert.match(status.stdout, new RegExp(`127\\.0\\.0\\.1:${port}`));
-  assert.ok((await readFile(join(home, "daemon", "token"), "utf8")).trim().length >= 32);
+  const mcpResponse = await fetch(`http://127.0.0.1:${port}/mcp`, {
+    method: "POST",
+    headers: {
+      Accept: "application/json, text/event-stream",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: "2025-06-18",
+        capabilities: {},
+        clientInfo: { name: "server-cli-test", version: "1.0.0" },
+      },
+    }),
+  });
+  assert.equal(mcpResponse.status, 200);
+  await assert.rejects(readFile(join(home, "daemon", "token"), "utf8"), { code: "ENOENT" });
   const stopped = await execFileAsync(process.execPath, [cliPath, "server", "off", ...args]);
   assert.match(stopped.stdout, /Server: stopped/);
   const stoppedAgain = await execFileAsync(process.execPath, [cliPath, "server", "off", ...args]);
   assert.match(stoppedAgain.stdout, /Server: stopped/);
+});
+
+
+test("server token file enables authentication", async (t) => {
+  const home = await mkdtemp(join(tmpdir(), "zvec-grep-server-token-"));
+  const port = await availablePort();
+  const tokenFile = join(home, "server-token");
+  const token = "server-cli-test-token-at-least-32-characters";
+  await writeFile(tokenFile, `${token}\n`);
+  t.after(async () => {
+    await execFileAsync(process.execPath, [cliPath, "server", "off", "--home", home, "--token-file", tokenFile]).catch(() => undefined);
+    await rm(home, { recursive: true, force: true });
+  });
+
+  await execFileAsync(process.execPath, [
+    cliPath, "server", "on", "--listen", `127.0.0.1:${port}`, "--home", home, "--token-file", tokenFile,
+  ]);
+  const response = await fetch(`http://127.0.0.1:${port}/mcp`, { method: "POST", body: "{}" });
+  assert.equal(response.status, 401);
+  const clientStatus = await new DaemonClient({
+    serverUrl: `http://127.0.0.1:${port}/mcp`,
+    tokenFile,
+  }).callTool("zvec_grep_server_status", {});
+  assert.equal(clientStatus.version, "0.1.5");
+  const stopped = await execFileAsync(process.execPath, [
+    cliPath, "server", "off", "--home", home, "--token-file", tokenFile,
+  ]);
+  assert.match(stopped.stdout, /Server: stopped/);
 });
 
 

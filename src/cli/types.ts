@@ -28,10 +28,12 @@ export type CliOptions = {
   server?: boolean;
   serverAction?: "on" | "off" | "status" | "run";
   listen?: string;
+  serverTokenFile?: string;
   mode?: ZvecGrepClientMode;
   forceDirect?: boolean;
   installTargets?: string[];
   installMcpToolTimeoutSeconds?: number;
+  installMcpTokenEnv?: string;
   yes?: boolean;
   collection?: string;
   rg?: boolean;

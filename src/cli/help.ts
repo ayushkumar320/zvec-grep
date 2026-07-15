@@ -14,11 +14,11 @@ Usage:
   zg --index --embedding local/embeddinggemma-300m [root]
   zg --disable-index [root]
   zg --status [root]
-  zg install [--target codex|all|auto] [--mcp-tool-timeout <seconds>] [--yes] [--force]
-  zg server on [--listen 127.0.0.1:7999]
-  zg server off
+  zg install [--target codex|all|auto] [--mcp-tool-timeout <seconds>] [--mcp-token-env <name>] [--yes] [--force]
+  zg server on [--listen 127.0.0.1:7999] [--token-file <path>]
+  zg server off [--token-file <path>]
   zg server status
-  zg server run [--listen 127.0.0.1:7999]
+  zg server run [--listen 127.0.0.1:7999] [--token-file <path>]
   zg --mode <direct|server|auto> <query...>
   zg --collection <name> [options] <query...>
   zg --collections
@@ -69,11 +69,13 @@ Options:
   --collections                   Manage named collections
   --target <agent>                Agent install target; currently codex, all, auto, none
   --mcp-tool-timeout <seconds>    Codex MCP tool timeout written during install (default 600)
+  --mcp-token-env <name>          Bearer token environment variable written during install
   --yes                           Use default install choices without prompting
   --force                         Replace an existing agent integration during install
   --mode <direct|server|auto>     Route index, status and indexed queries (default direct)
   --force-direct                  Confirm an explicitly selected Direct write path
   --listen <host:port>            Listen address for zg server on/run (loopback only)
+  --token-file <path>             Require/use a token read from this file for server requests
   --home <path>                   Named collection registry home
   --embedding <model>             Embedding model, e.g. local/embeddinggemma-300m or qwen/text-embedding-v4
   --model-cache <path>            Local model cache directory

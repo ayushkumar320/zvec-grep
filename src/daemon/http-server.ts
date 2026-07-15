@@ -10,7 +10,7 @@ import { requestId, type DaemonLogger } from "./logger.js";
 const MAX_REQUEST_BYTES = 1024 * 1024;
 
 export type DaemonHttpServerOptions = ServerListenAddress & {
-  token: string;
+  token?: string;
   version: string;
   backend: ZvecGrepDaemonBackend;
   onShutdown?: () => void | Promise<void>;
@@ -109,7 +109,7 @@ export class DaemonHttpServer {
     }
 
     if (url.pathname === "/control/shutdown") {
-      if (!validHost(request.headers.host) || !validBearerToken(request.headers.authorization, this.options.token)) {
+      if (!validHost(request.headers.host) || !validRequestToken(request.headers.authorization, this.options.token)) {
         writeJson(response, 401, { error: "unauthorized" });
         return;
       }
@@ -130,7 +130,7 @@ export class DaemonHttpServer {
       writeJson(response, 403, { error: "forbidden_origin" });
       return;
     }
-    if (!validBearerToken(request.headers.authorization, this.options.token)) {
+    if (!validRequestToken(request.headers.authorization, this.options.token)) {
       response.setHeader("WWW-Authenticate", "Bearer");
       writeJson(response, 401, { error: "unauthorized" });
       return;
@@ -198,6 +198,11 @@ function validBearerToken(header: string | undefined, expected: string): boolean
   const actual = Buffer.from(header.slice("Bearer ".length), "utf8");
   const expectedBuffer = Buffer.from(expected, "utf8");
   return actual.length === expectedBuffer.length && timingSafeEqual(actual, expectedBuffer);
+}
+
+
+function validRequestToken(header: string | undefined, expected: string | undefined): boolean {
+  return expected === undefined || validBearerToken(header, expected);
 }
 
 
