@@ -117,7 +117,7 @@ export function createZvecGrepMcpServer(
       instructions: [
         "Use zvec-grep for indexed repository search.",
         "Every repository operation requires an absolute root path visible to the daemon.",
-        "Call zvec_grep_index before the first zvec_grep_search and poll zvec_grep_index_status for background progress.",
+        "Call zvec_grep_index before the first zvec_grep_search. Its wait parameter defaults to false; poll zvec_grep_index_status for background progress and set wait: true only when completion is required before continuing.",
       ].join(" "),
     },
   );

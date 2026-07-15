@@ -979,7 +979,7 @@ function codexAgentsBlock(): string {
 Use zvec-grep before grep, rg, or broad file reads when you need to understand or locate code.
 
 - **MCP tools**: Use \`zvec_grep_search\` for indexed semantic/lexical code search, \`zvec_grep_index\` to ensure an index, and the two status tools to inspect index or server state.
-- **Indexing and status**: Every repository MCP call uses an absolute root visible to the local daemon. Start it with \`zg server on\`.
+- **Indexing and status**: Every repository MCP call uses an absolute root visible to the local daemon. Start it with \`zg server on\`. For \`zvec_grep_index\`, \`wait\` defaults to false: submit it in the background and poll \`zvec_grep_index_status\`; set \`wait: true\` only when completion is required before continuing.
 - **Shell fallback**: If the MCP server is unavailable, use \`zg --status\`, \`zg "<query>"\`, and \`zg --rg "<pattern>"\`.
 
 Prefer focused include/exclude filters, and exclude dependencies, generated output, caches, build artifacts, and logs unless the task is about those files.

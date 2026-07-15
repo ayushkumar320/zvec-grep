@@ -11,6 +11,8 @@ test("zvec-grep skill keeps native MCP tools ahead of CLI fallback", async () =>
   assert.match(skill, /^description: Use native zvec_grep_\* MCP tools/m);
   assert.match(skill, /Never replace an available MCP tool with the zg shell command/);
   assert.match(skill, /Use native HTTP MCP tools as the primary interface/);
+  assert.match(skill, /`wait` parameter defaults to false/i);
+  assert.match(skill, /zvec_grep_index_status/);
   assert.match(skill, /references\/cli-fallback\.md/);
   assert.doesNotMatch(skill, /Use zvec-grep through the `zg` command/);
   assert.match(metadata, /MCP-first indexed repository search with CLI fallback/);

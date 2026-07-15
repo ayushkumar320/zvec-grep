@@ -117,6 +117,21 @@ test("server contract exposes exactly the four final tools with stable annotatio
 });
 
 
+test("index contract documents background submission as the default", async (t) => {
+  const { client, server } = await connect();
+  t.after(async () => {
+    await client.close();
+    await server.close();
+  });
+
+  const listed = await client.listTools();
+  const index = listed.tools.find((tool) => tool.name === "zvec_grep_index");
+  assert.ok(index);
+  assert.match(index.inputSchema.properties.wait.description, /Defaults to false/);
+  assert.match(index.inputSchema.properties.wait.description, /zvec_grep_index_status/);
+});
+
+
 test("root tools require an absolute root", async (t) => {
   const { client, server } = await connect();
   t.after(async () => {

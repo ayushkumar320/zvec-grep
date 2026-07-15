@@ -72,7 +72,9 @@ export const zvecGrepIndexInputSchema = z.object({
   embedding: z.string().trim().min(1).max(256).optional()
     .describe("Embedding model reference for a new index."),
   rebuild: z.boolean().optional().describe("Explicitly rebuild the existing index."),
-  wait: z.boolean().optional().describe("Wait for the submitted index job to finish."),
+  wait: z.boolean().optional().describe(
+    "Wait for the submitted index job to finish. Defaults to false: submit in the background and poll zvec_grep_index_status.",
+  ),
 });
 
 export const zvecGrepSearchInputSchema = z.object({
