@@ -4,6 +4,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import {
   globalConfigPath,
   readGlobalConfig,
+  resolveEmbeddingRuntimeOptions,
   type ZvecGrepGlobalConfig,
 } from "../config.js";
 import {
@@ -151,7 +152,7 @@ export function createEmbeddingModelForSchema(
 ): EmbeddingModel {
   return createEmbeddingModel(
     { provider: schema.provider, model: schema.model },
-    providerOptions(options, root, registryHome, schema.provider),
+    providerOptions(options, root, registryHome, schema.provider, `${schema.provider}/${schema.model}`),
   );
 }
 
@@ -163,7 +164,7 @@ export function embeddingModelPoolKeyForSchema(
   options: CreateZvecGrepOptions = {},
 ): string {
   const fingerprint = providerOptionsFingerprint(
-    providerOptions(options, root, registryHome, schema.provider),
+    providerOptions(options, root, registryHome, schema.provider, `${schema.provider}/${schema.model}`),
   );
   return [
     schema.provider,
@@ -845,7 +846,14 @@ class ZvecGrepService implements ZvecGrep {
     registryHome: string,
   ): EmbeddingModel {
     const config = readGlobalConfig();
-    const options = providerOptions(this.options, this.root, registryHome, schema.provider, config);
+    const options = providerOptions(
+      this.options,
+      this.root,
+      registryHome,
+      schema.provider,
+      `${schema.provider}/${schema.model}`,
+      config,
+    );
     const key = `${schema.provider}/${schema.model}/${providerOptionsFingerprint(options)}`;
     return this.cachedEmbeddingModel(key, () => createEmbeddingModel({
       provider: schema.provider,
@@ -871,7 +879,7 @@ class ZvecGrepService implements ZvecGrep {
     config: ZvecGrepGlobalConfig = readGlobalConfig(),
   ): EmbeddingModel {
     const provider = providerFromReference(reference);
-    const options = providerOptions(this.options, this.root, registryHome, provider, config);
+    const options = providerOptions(this.options, this.root, registryHome, provider, reference, config);
     const key = `configured/${reference}/${providerOptionsFingerprint(options)}`;
     return this.cachedEmbeddingModel(key, () => createEmbeddingModelFromReference(reference, options));
   }
@@ -1290,9 +1298,11 @@ function providerOptions(
   root: string,
   registryHome?: string,
   provider?: string,
+  reference?: string,
   config: ZvecGrepGlobalConfig = readGlobalConfig(),
 ) {
   const providerConfig = provider ? config.providers?.[provider] : undefined;
+  const runtime = resolveEmbeddingRuntimeOptions(reference, options, config);
   return {
     apiKey: options.apiKey ?? providerConfig?.apiKey ?? "",
     endpoint: options.endpoint ?? providerConfig?.endpoint,
@@ -1300,8 +1310,8 @@ function providerOptions(
       ?? process.env.ZVEC_GREP_MODEL_CACHE
       ?? config.defaults?.modelCacheDir
       ?? modelCacheDir(options, root, registryHome),
-    llamaGpu: options.llamaGpu ?? config.defaults?.llamaGpu,
-    embeddingParallelism: options.embeddingParallelism ?? config.defaults?.embeddingParallelism,
+    llamaGpu: runtime.llamaGpu,
+    embeddingParallelism: runtime.embeddingParallelism,
   };
 }
 

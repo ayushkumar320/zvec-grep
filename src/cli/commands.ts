@@ -309,7 +309,7 @@ async function runDirectIndex(parsed: ParsedArgs, rootPath: RootPath, explicitRo
     progress.finish();
     const info = await zvecGrep.info({ root: rootPath.absolutePath });
     printIndexResult("Indexed anonymous workspace", result, parsed.options, info.collection?.rootPaths);
-    persistExplicitGlobalConfig(parsed.options, info.collection?.embedding?.provider);
+    persistExplicitGlobalConfig(parsed.options, embeddingReference(info.collection?.embedding));
   } catch (error) {
     progress.finish();
     throw error;
@@ -456,7 +456,7 @@ async function runCollections(parsed: ParsedArgs): Promise<void> {
         progress.finish();
         const info = await zvecGrep.collections.info(name);
         printIndexResult(`Indexed collection ${name}`, result, parsed.options, info?.rootPaths);
-        persistExplicitGlobalConfig(parsed.options, info?.embedding?.provider);
+        persistExplicitGlobalConfig(parsed.options, embeddingReference(info?.embedding));
       } catch (error) {
         progress.finish();
         throw error;
@@ -682,14 +682,14 @@ export function createServiceOptions(
     apiKey,
     endpoint,
     modelCacheDir: options.modelCacheDir ?? process.env.ZVEC_GREP_MODEL_CACHE,
-    llamaGpu: options.llamaGpu ?? parseEnvLlamaGpu(process.env.ZVEC_GREP_LLAMA_GPU),
-    embeddingParallelism: options.embeddingParallelism ?? parseEnvPositiveInteger(process.env.ZVEC_GREP_EMBED_PARALLELISM),
+    llamaGpu: options.llamaGpu,
+    embeddingParallelism: options.embeddingParallelism,
   };
 }
 
 
-function persistExplicitGlobalConfig(options: CliOptions, indexedProvider: string | undefined): void {
-  if (!updateGlobalConfigFromExplicitOptions(options, indexedProvider)) {
+function persistExplicitGlobalConfig(options: CliOptions, indexedEmbedding: string | undefined): void {
+  if (!updateGlobalConfigFromExplicitOptions(options, indexedEmbedding)) {
     return;
   }
 
@@ -697,32 +697,8 @@ function persistExplicitGlobalConfig(options: CliOptions, indexedProvider: strin
 }
 
 
-function parseEnvLlamaGpu(value: string | undefined): CreateZvecGrepOptions["llamaGpu"] | undefined {
-  const normalized = value?.trim().toLowerCase() ?? "";
-  if (!normalized) {
-    return undefined;
-  }
-
-  if (normalized === "auto" || normalized === "metal" || normalized === "vulkan" || normalized === "cuda") {
-    return normalized;
-  }
-
-  if (["false", "off", "none", "disable", "disabled", "0"].includes(normalized)) {
-    return false;
-  }
-
-  return undefined;
-}
-
-
-function parseEnvPositiveInteger(value: string | undefined): number | undefined {
-  const normalized = value?.trim() ?? "";
-  if (!normalized) {
-    return undefined;
-  }
-
-  const parsed = Number.parseInt(normalized, 10);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+function embeddingReference(embedding: { provider: string; model: string } | null | undefined): string | undefined {
+  return embedding ? `${embedding.provider}/${embedding.model}` : undefined;
 }
 
 

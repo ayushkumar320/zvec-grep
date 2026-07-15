@@ -20,6 +20,12 @@ export type ZvecGrepProviderConfig = {
 };
 
 
+export type ZvecGrepEmbeddingModelConfig = {
+  llamaGpu?: LlamaGpuMode;
+  embeddingParallelism?: number;
+};
+
+
 export type ZvecGrepClientMode = "direct" | "server" | "auto";
 
 
@@ -39,6 +45,7 @@ export type ZvecGrepGlobalConfig = {
   version: 1;
   defaults?: ZvecGrepGlobalDefaults;
   providers?: Record<string, ZvecGrepProviderConfig>;
+  models?: Record<string, ZvecGrepEmbeddingModelConfig>;
   client?: ZvecGrepClientConfig;
   server?: ZvecGrepServerConfig;
 };
@@ -47,6 +54,7 @@ export type ZvecGrepGlobalConfig = {
 export type ZvecGrepGlobalConfigUpdate = {
   defaults?: ZvecGrepGlobalDefaults;
   providers?: Record<string, ZvecGrepProviderConfig>;
+  models?: Record<string, ZvecGrepEmbeddingModelConfig>;
   client?: ZvecGrepClientConfig;
   server?: ZvecGrepServerConfig;
 };
@@ -56,6 +64,26 @@ export type ZvecGrepExplicitGlobalOptions = ZvecGrepGlobalDefaults & {
   apiKey?: string;
   endpoint?: string;
 };
+
+
+export function resolveEmbeddingRuntimeOptions(
+  reference: string | undefined,
+  explicit: Pick<ZvecGrepEmbeddingModelConfig, "llamaGpu" | "embeddingParallelism">,
+  config: ZvecGrepGlobalConfig,
+): ZvecGrepEmbeddingModelConfig {
+  if (!reference?.startsWith("local/")) return {};
+  const model = config.models?.[reference];
+  return {
+    llamaGpu: explicit.llamaGpu
+      ?? model?.llamaGpu
+      ?? config.defaults?.llamaGpu
+      ?? environmentLlamaGpu(),
+    embeddingParallelism: explicit.embeddingParallelism
+      ?? model?.embeddingParallelism
+      ?? config.defaults?.embeddingParallelism
+      ?? environmentEmbeddingParallelism(),
+  };
+}
 
 
 const GLOBAL_CONFIG_VERSION = 1;
@@ -94,6 +122,7 @@ export function updateGlobalConfig(
         ...update.defaults,
       },
       providers: mergeProviderConfigs(current.providers, update.providers),
+      models: mergeModelConfigs(current.models, update.models),
       client: { ...current.client, ...update.client },
       server: { ...current.server, ...update.server },
     }, path);
@@ -111,18 +140,20 @@ export function updateGlobalConfig(
 
 export function updateGlobalConfigFromExplicitOptions(
   options: ZvecGrepExplicitGlobalOptions,
-  indexedProvider?: string,
+  indexedEmbedding?: string,
   path = globalConfigPath(),
 ): boolean {
+  const modelReference = options.embedding ?? (indexedEmbedding?.includes("/") ? indexedEmbedding : undefined);
+  const localModel = modelReference?.startsWith("local/") ? modelReference : undefined;
   const defaults: ZvecGrepGlobalDefaults = {
     ...(options.embedding !== undefined ? { embedding: options.embedding } : {}),
     ...(options.modelCacheDir !== undefined ? { modelCacheDir: options.modelCacheDir } : {}),
-    ...(options.llamaGpu !== undefined ? { llamaGpu: options.llamaGpu } : {}),
-    ...(options.embeddingParallelism !== undefined
+    ...(!localModel && options.llamaGpu !== undefined ? { llamaGpu: options.llamaGpu } : {}),
+    ...(!localModel && options.embeddingParallelism !== undefined
       ? { embeddingParallelism: options.embeddingParallelism }
       : {}),
   };
-  const provider = providerFromEmbedding(options.embedding) ?? indexedProvider;
+  const provider = providerFromEmbedding(options.embedding) ?? providerFromEmbedding(indexedEmbedding) ?? indexedEmbedding;
   const providerConfig: ZvecGrepProviderConfig = provider && provider !== "local"
     ? {
       ...(options.apiKey !== undefined ? { apiKey: options.apiKey } : {}),
@@ -134,9 +165,21 @@ export function updateGlobalConfigFromExplicitOptions(
     ...(provider && Object.keys(providerConfig).length > 0
       ? { providers: { [provider]: providerConfig } }
       : {}),
+    ...(localModel && (options.llamaGpu !== undefined || options.embeddingParallelism !== undefined)
+      ? {
+        models: {
+          [localModel]: {
+            ...(options.llamaGpu !== undefined ? { llamaGpu: options.llamaGpu } : {}),
+            ...(options.embeddingParallelism !== undefined
+              ? { embeddingParallelism: options.embeddingParallelism }
+              : {}),
+          },
+        },
+      }
+      : {}),
   };
 
-  if (!update.defaults && !update.providers) {
+  if (!update.defaults && !update.providers && !update.models) {
     return false;
   }
 
@@ -166,15 +209,47 @@ function parseGlobalConfig(value: unknown, path: string): ZvecGrepGlobalConfig {
 
   const defaults = parseDefaults(value.defaults, path);
   const providers = parseProviders(value.providers, path);
+  const models = parseModels(value.models, path);
   const client = parseClient(value.client, path);
   const server = parseServer(value.server, path);
   return {
     version: GLOBAL_CONFIG_VERSION,
     ...(defaults ? { defaults } : {}),
     ...(providers ? { providers } : {}),
+    ...(models ? { models } : {}),
     ...(client ? { client } : {}),
     ...(server ? { server } : {}),
   };
+}
+
+
+function parseModels(
+  value: unknown,
+  path: string,
+): Record<string, ZvecGrepEmbeddingModelConfig> | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) throw invalidConfig(path, "models must be an object");
+  const models: Record<string, ZvecGrepEmbeddingModelConfig> = {};
+  for (const [reference, modelValue] of Object.entries(value)) {
+    if (!/^[a-z][a-z0-9_-]*\/[A-Za-z0-9._-]+$/.test(reference) || !isRecord(modelValue)) {
+      throw invalidConfig(path, `models.${reference} must be an object with a valid embedding reference`);
+    }
+    if (!reference.startsWith("local/")) {
+      throw invalidConfig(path, `models.${reference} only supports local embedding models`);
+    }
+    const llamaGpu = optionalLlamaGpu(modelValue.llamaGpu, path, `models.${reference}.llamaGpu`);
+    const embeddingParallelism = optionalPositiveInteger(
+      modelValue.embeddingParallelism,
+      path,
+      `models.${reference}.embeddingParallelism`,
+    );
+    const config: ZvecGrepEmbeddingModelConfig = {
+      ...(llamaGpu !== undefined ? { llamaGpu } : {}),
+      ...(embeddingParallelism !== undefined ? { embeddingParallelism } : {}),
+    };
+    if (Object.keys(config).length > 0) models[reference] = config;
+  }
+  return Object.keys(models).length > 0 ? models : undefined;
 }
 
 
@@ -210,7 +285,7 @@ function parseDefaults(value: unknown, path: string): ZvecGrepGlobalDefaults | u
 
   const embedding = optionalNonEmptyString(value.embedding, path, "defaults.embedding");
   const modelCacheDir = optionalNonEmptyString(value.modelCacheDir, path, "defaults.modelCacheDir");
-  const llamaGpu = optionalLlamaGpu(value.llamaGpu, path);
+  const llamaGpu = optionalLlamaGpu(value.llamaGpu, path, "defaults.llamaGpu");
   const embeddingParallelism = optionalPositiveInteger(
     value.embeddingParallelism,
     path,
@@ -277,6 +352,19 @@ function mergeProviderConfigs(
 }
 
 
+function mergeModelConfigs(
+  current: Record<string, ZvecGrepEmbeddingModelConfig> | undefined,
+  update: Record<string, ZvecGrepEmbeddingModelConfig> | undefined,
+): Record<string, ZvecGrepEmbeddingModelConfig> | undefined {
+  if (!current && !update) return undefined;
+  const merged = { ...current };
+  for (const [reference, config] of Object.entries(update ?? {})) {
+    merged[reference] = { ...merged[reference], ...config };
+  }
+  return merged;
+}
+
+
 function optionalNonEmptyString(
   value: unknown,
   path: string,
@@ -307,14 +395,27 @@ function optionalPositiveInteger(
 }
 
 
-function optionalLlamaGpu(value: unknown, path: string): LlamaGpuMode | undefined {
+function optionalLlamaGpu(value: unknown, path: string, field: string): LlamaGpuMode | undefined {
   if (value === undefined) {
     return undefined;
   }
   if (value === false || value === "auto" || value === "metal" || value === "vulkan" || value === "cuda") {
     return value;
   }
-  throw invalidConfig(path, "defaults.llamaGpu must be auto, metal, vulkan, cuda, or false");
+  throw invalidConfig(path, `${field} must be auto, metal, vulkan, cuda, or false`);
+}
+
+
+function environmentLlamaGpu(): LlamaGpuMode {
+  const normalized = process.env.ZVEC_GREP_LLAMA_GPU?.trim().toLowerCase() ?? "";
+  if (["auto", "metal", "vulkan", "cuda"].includes(normalized)) return normalized as LlamaGpuMode;
+  return false;
+}
+
+
+function environmentEmbeddingParallelism(): number | undefined {
+  const value = Number.parseInt(process.env.ZVEC_GREP_EMBED_PARALLELISM?.trim() ?? "", 10);
+  return Number.isInteger(value) && value > 0 ? value : undefined;
 }
 
 
