@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import { parseArgs } from "../dist/cli/args.js";
+import { resolveServerSearchPolicy } from "../dist/client/search-policy.js";
 import { DaemonClient } from "../dist/client/daemon-client.js";
 import { parseListenAddress } from "../dist/daemon/config.js";
 import { DaemonHttpServer } from "../dist/daemon/http-server.js";
@@ -38,6 +39,27 @@ test("server lifecycle and client mode arguments are parsed", () => {
   assert.equal(parseArgs(["--mode=auto", "query"]).options.mode, "auto");
   assert.throws(() => parseArgs(["--mode", "invalid", "query"]), /direct, server, or auto/i);
   assert.throws(() => parseArgs(["--force-direct", "query"]), /requires --mode direct/i);
+});
+
+
+test("server queries default to eventual freshness and allow explicit fresh reads", () => {
+  assert.deepEqual(resolveServerSearchPolicy({}), {
+    freshness: "eventual",
+    autoUpdate: true,
+  });
+  assert.deepEqual(resolveServerSearchPolicy({ fresh: true }), {
+    freshness: "wait_for_fresh",
+    autoUpdate: true,
+  });
+  assert.deepEqual(resolveServerSearchPolicy({ noAutoUpdate: true }), {
+    freshness: "eventual",
+    autoUpdate: false,
+  });
+  assert.equal(parseArgs(["--fresh", "query"]).options.fresh, true);
+  assert.throws(
+    () => parseArgs(["--fresh", "--no-auto-update", "query"]),
+    /cannot be combined/i,
+  );
 });
 
 

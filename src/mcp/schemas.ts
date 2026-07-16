@@ -82,6 +82,8 @@ export const zvecGrepSearchInputSchema = z.object({
   ...searchFields,
   freshness: z.enum(["eventual", "wait_for_fresh"]).default("eventual")
     .describe("Whether to search immediately or wait for the active index to become fresh."),
+  autoUpdate: z.boolean().default(true)
+    .describe("Whether an eventual search may schedule a background index update."),
 });
 
 export const zvecGrepIndexStatusInputSchema = z.object({

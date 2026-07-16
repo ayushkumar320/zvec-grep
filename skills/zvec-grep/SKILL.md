@@ -22,7 +22,7 @@ Do not infer MCP failure merely because shell execution is available. Do not ret
 Pass the repository's daemon-visible absolute path as `root` on every repository call.
 
 1. Call `zvec_grep_index_status` once at the start of a repository investigation. Reuse that result unless the root changes, an index operation completes, or an index error requires another check.
-2. When an index exists, call `zvec_grep_search` for exploration and exact retrieval. Use hybrid `queries` for concepts, `fts` for exact lexical anchors, and `vector` for semantic-only intent.
+2. When an index exists, call `zvec_grep_search` for exploration and exact retrieval. Search defaults to `freshness: "eventual"`; use `freshness: "wait_for_fresh"` only when the result must include all pending changes. Use hybrid `queries` for concepts, `fts` for exact lexical anchors, and `vector` for semantic-only intent.
 3. Apply focused `include` and `exclude` filters early. Exclude dependencies, generated output, caches, build artifacts, fixtures, and logs unless the task concerns them.
 4. Call `zvec_grep_index` only when the user requests persistent indexing. Never silently create or rebuild an index. Its `wait` parameter defaults to false: submit the job in the background and poll `zvec_grep_index_status`; set `wait: true` only when completion is required before continuing.
 5. Call `zvec_grep_server_status` only for daemon diagnostics, not before ordinary searches.

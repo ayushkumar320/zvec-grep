@@ -38,8 +38,10 @@ export class RootRuntime {
   private dirtyRevision = 0;
   private indexedRevision = 0;
   private reconciliationRequired = true;
+  private initialFreshnessProbe?: Promise<"fresh" | "stale">;
   private watcherActive = false;
   private watcherPending = false;
+  private watcherEpoch = 0;
   private writerPending = false;
   private writerReady?: Promise<void>;
   private writerReadyResolve?: () => void;
@@ -159,12 +161,27 @@ export class RootRuntime {
   }
 
 
+  probeInitialFreshness(
+    probe: () => Promise<boolean>,
+    onResult?: (result: "fresh" | "stale") => void,
+  ): Promise<"fresh" | "stale"> {
+    this.initialFreshnessProbe ??= this.runInitialFreshnessProbe(probe).then((result) => {
+      onResult?.(result);
+      return result;
+    });
+    return this.initialFreshnessProbe;
+  }
+
+
   setWatcherActive(active: boolean): void {
     this.watcherActive = active;
   }
 
 
   setWatcherPending(pending: boolean): void {
+    if (pending) {
+      this.watcherEpoch += 1;
+    }
     this.watcherPending = pending;
     this.options.onActivity?.();
   }
@@ -277,6 +294,29 @@ export class RootRuntime {
         this.writerSearchesDrained = undefined;
       }
     }
+  }
+
+
+  private async runInitialFreshnessProbe(
+    probe: () => Promise<boolean>,
+  ): Promise<"fresh" | "stale"> {
+    const revision = this.dirtyRevision;
+    const watcherEpoch = this.watcherEpoch;
+    let fresh = false;
+    try {
+      fresh = await probe();
+    } catch {
+      return "stale";
+    }
+    if (
+      !fresh
+      || this.dirtyRevision !== revision
+      || this.watcherEpoch !== watcherEpoch
+    ) {
+      return "stale";
+    }
+    this.markIndexed(revision);
+    return "fresh";
   }
 
 

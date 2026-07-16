@@ -39,7 +39,7 @@ Query:
   Without --limit, 1-3 query groups return up to 10 each; more groups share about 30.
   Default indexed queries require an indexed anonymous workspace. Run zg --index first.
   Use --disable-index to remember that this workspace should not be indexed.
-  Existing anonymous indexes are checked and incrementally refreshed before query.
+  Direct queries refresh stale indexes before search. Server queries update in the background by default; use --fresh to wait.
   Indexing skips dependency/third-party/generated/build/cache dirs, hidden paths, nested git repos, .gitignore entries, and files over 1 MB by default.
   New indexes require --embedding <model>, ZVEC_GREP_EMBEDDING, or defaults.embedding in ~/.zvec-grep/config.json; existing indexes reuse stored schema.
   Successful index commands persist explicitly passed global model/provider options to ~/.zvec-grep/config.json.
@@ -64,6 +64,7 @@ Options:
   --disable-index                 Mark this anonymous workspace as no-index
   --fts <query...>                Add exact/lexical search routes
   --vector <query...>             Add semantic/vector search routes
+  --fresh                         Wait for a fresh index before a server query
   --no-auto-update                Do not refresh an existing stale anonymous index before query
   --no-fallback                   Compatibility flag; anonymous queries already require an index
   --collection <name>             Query a named collection

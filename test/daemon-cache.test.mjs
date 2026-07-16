@@ -233,6 +233,47 @@ test("root runtime releases its daemon lease when read cache close fails", async
 });
 
 
+test("root runtime initial probe marks a clean index reconciled", async () => {
+  const pool = new EmbeddingModelPool({
+    createModel: () => ({ dispose: async () => {} }),
+  });
+  const runtime = new RootRuntime({
+    canonicalRoot: "/tmp/repo",
+    modelPool: pool,
+    modelRequest: modelRequest("model-a"),
+  });
+
+  assert.equal(runtime.needsReconciliation(), true);
+  assert.equal(await runtime.probeInitialFreshness(async () => true), "fresh");
+  assert.equal(runtime.needsReconciliation(), false);
+  await runtime.close();
+  await pool.close();
+});
+
+
+test("root runtime initial probe does not hide pending watcher changes", async () => {
+  const pool = new EmbeddingModelPool({
+    createModel: () => ({ dispose: async () => {} }),
+  });
+  const runtime = new RootRuntime({
+    canonicalRoot: "/tmp/repo",
+    modelPool: pool,
+    modelRequest: modelRequest("model-a"),
+  });
+  let finishProbe;
+  const probe = runtime.probeInitialFreshness(() => new Promise((resolve) => {
+    finishProbe = resolve;
+  }));
+  runtime.setWatcherPending(true);
+  finishProbe(true);
+
+  assert.equal(await probe, "stale");
+  assert.equal(runtime.needsReconciliation(), true);
+  await runtime.close();
+  await pool.close();
+});
+
+
 function modelRequest(model) {
   return {
     schema: { provider: "test", model, dimension: 3, metric: "cosine" },

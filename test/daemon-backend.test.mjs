@@ -50,6 +50,7 @@ test("wait_for_fresh reports a failed reconciliation instead of returning stale 
   const service = await createZvecGrep({ root, embeddingModel: new TestEmbeddingModel() });
   await service.index();
   await service.close();
+  await writeFile(join(root, "answer.ts"), "export const changedAnswer = 43;\n");
   const backend = new DaemonBackend({
     version: "1.0.0",
     modelPoolOptions: { createModel: () => new TestEmbeddingModel() },
@@ -65,6 +66,130 @@ test("wait_for_fresh reports a failed reconciliation instead of returning stale 
       freshness: "wait_for_fresh",
       maxContentChars: 1_200,
     }), /reconciliation failed/);
+  } finally {
+    await backend.close();
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+
+test("wait_for_fresh skips reconciliation when the initial probe is fresh", async () => {
+  const temporaryDirectory = await mkdtemp(join(tmpdir(), "zvec-grep-probe-fresh-"));
+  const root = join(temporaryDirectory, "repo");
+  await mkdir(root);
+  await writeFile(join(root, "answer.ts"), "export const answer = 42;\n");
+  const service = await createZvecGrep({ root, embeddingModel: new TestEmbeddingModel() });
+  await service.index();
+  await service.close();
+  const events = [];
+  const backend = new DaemonBackend({
+    version: "1.0.0",
+    modelPoolOptions: { createModel: () => new TestEmbeddingModel() },
+    createService: async () => {
+      throw new Error("fresh indexes must not reconcile");
+    },
+    watchManagerFactory: () => ({
+      start() {},
+      flushPending: async () => {},
+      close: async () => {},
+    }),
+    logger: {
+      event: (name, fields) => events.push({ name, fields }),
+      flush: async () => {},
+    },
+  });
+  try {
+    const result = await backend.search(searchInput(root, "answer", "wait_for_fresh"));
+    assert.equal(result.freshness, "fresh");
+    assert.ok(events.some((event) => event.name === "runtime.initial_probe_fresh"));
+    assert.equal(backend.scheduler.getByRoot(await realpath(root)), undefined);
+  } finally {
+    await backend.close();
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+
+test("eventual search can skip background reconciliation", async () => {
+  const temporaryDirectory = await mkdtemp(join(tmpdir(), "zvec-grep-no-update-"));
+  const root = join(temporaryDirectory, "repo");
+  await mkdir(root);
+  await writeFile(join(root, "answer.ts"), "export const answer = 42;\n");
+  const service = await createZvecGrep({ root, embeddingModel: new TestEmbeddingModel() });
+  await service.index();
+  await service.close();
+  await writeFile(join(root, "answer.ts"), "export const changedAnswer = 43;\n");
+  const backend = new DaemonBackend({
+    version: "1.0.0",
+    modelPoolOptions: { createModel: () => new TestEmbeddingModel() },
+    createService: async () => {
+      throw new Error("background reconciliation must stay disabled");
+    },
+  });
+  try {
+    const result = await backend.search({
+      ...searchInput(root, "answer", "eventual"),
+      autoUpdate: false,
+    });
+    assert.equal(result.freshness, "possibly_stale");
+    assert.equal(result.updateJobId, undefined);
+    assert.equal(backend.scheduler.getByRoot(await realpath(root)), undefined);
+  } finally {
+    await backend.close();
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+
+test("wait_for_fresh queues a full reconciliation behind a running watch job", async () => {
+  const temporaryDirectory = await mkdtemp(join(tmpdir(), "zvec-grep-fresh-followup-"));
+  const root = join(temporaryDirectory, "repo");
+  await mkdir(root);
+  const source = join(root, "answer.ts");
+  await writeFile(source, "export const answer = 42;\n");
+  const service = await createZvecGrep({ root, embeddingModel: new TestEmbeddingModel() });
+  await service.index();
+  await service.close();
+  const backend = new DaemonBackend({
+    version: "1.0.0",
+    modelPoolOptions: { createModel: () => new TestEmbeddingModel() },
+    watchManagerFactory: () => ({
+      start() {},
+      flushPending: async () => {},
+      close: async () => {},
+    }),
+  });
+  try {
+    await backend.search(searchInput(root, "answer", "eventual"));
+    const canonicalRoot = await realpath(root);
+    const runtime = backend.runtimeManager.getByCanonicalRoot(canonicalRoot);
+    await writeFile(source, "export const changedAnswer = 43;\n");
+    const watchRevision = runtime.markDirty();
+    let releaseWatch;
+    const watchJob = backend.scheduler.submit({
+      canonicalRoot,
+      reason: "watch",
+      run: () => new Promise((resolve) => {
+        releaseWatch = () => {
+          runtime.markIndexed(watchRevision);
+          resolve();
+        };
+      }),
+    });
+    await waitFor(() => releaseWatch !== undefined);
+    const search = backend.search({
+      ...searchInput(root, "changedAnswer", "wait_for_fresh"),
+      queries: undefined,
+      routes: [{ mode: "fts", query: "changedAnswer" }],
+    });
+    await waitFor(() => runtime.snapshot().writerPending);
+    releaseWatch();
+
+    const result = await search;
+    assert.equal(result.freshness, "fresh");
+    assert.match(result.result.items[0].content, /changedAnswer/);
+    assert.notEqual(backend.scheduler.getByRoot(canonicalRoot).id, watchJob.job.id);
+    assert.equal(backend.scheduler.getByRoot(canonicalRoot).reason, "fresh_query");
   } finally {
     await backend.close();
     await rm(temporaryDirectory, { recursive: true, force: true });
@@ -167,8 +292,8 @@ test("watch changes use the path-level index pipeline and advance revisions", as
     assert.deepEqual(indexedPathBatches, [[source]]);
     const status = await backend.indexStatus({ root });
     assert.equal(status.runtime.watcherActive, true);
-    assert.equal(status.runtime.dirtyRevision, 3);
-    assert.equal(status.runtime.indexedRevision, 3);
+    assert.equal(status.runtime.dirtyRevision, 2);
+    assert.equal(status.runtime.indexedRevision, 2);
     await waitFor(() => watcherCloses === 1);
     assert.equal((await backend.serverStatus()).activeRuntimes, 0);
   } finally {
@@ -233,6 +358,7 @@ function searchInput(root, query, freshness) {
     queries: [query],
     routes: [],
     freshness,
+    autoUpdate: true,
     maxContentChars: 1_200,
   };
 }

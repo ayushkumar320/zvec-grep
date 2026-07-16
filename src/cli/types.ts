@@ -61,6 +61,7 @@ export type CliOptions = {
   resetPaths?: boolean;
   noFallback?: boolean;
   noAutoUpdate?: boolean;
+  fresh?: boolean;
   preferSymbol?: boolean;
   includePaths?: string[];
   excludePaths?: string[];

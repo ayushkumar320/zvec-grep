@@ -190,6 +190,30 @@ test("search normalizes query, path and time inputs before calling the backend",
   assert.deepEqual(received.excludePaths, ["dist/**", "coverage/**"]);
   assert.equal(received.modifiedAfter, Date.parse("2025-01-01T00:00:00.000Z"));
   assert.equal(received.freshness, "eventual");
+  assert.equal(received.autoUpdate, true);
+});
+
+
+test("search can return the current index without scheduling an update", async (t) => {
+  let received;
+  const backend = createBackend();
+  backend.search = async (input) => {
+    received = input;
+    return createBackend().search(input);
+  };
+  const { client, server } = await connect(backend);
+  t.after(async () => {
+    await client.close();
+    await server.close();
+  });
+
+  await client.callTool({
+    name: "zvec_grep_search",
+    arguments: { root, query: "query", autoUpdate: false },
+  });
+
+  assert.equal(received.freshness, "eventual");
+  assert.equal(received.autoUpdate, false);
 });
 
 

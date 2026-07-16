@@ -31,9 +31,10 @@ Start with indexed hybrid search, then add exact or semantic routes as needed:
 zg --mode server "request validation" "error handling" --include "src/**" --exclude "tests/**,dist/**" --limit 10 --preview short
 zg --mode server "authentication flow" --fts "AuthService" "ForbiddenError" --include "src/**"
 zg --mode server --vector "where incoming requests are authorized" --include "src/**"
+zg --mode server --fresh "changes that must be indexed before search"
 ```
 
-Use `--preview none` for broad candidate scans, `--preview short` for a small deterministic window, and `--preview full` only after narrowing.
+Server queries return the current index and refresh stale data in the background by default. Add `--fresh` only when the query must wait for pending index changes. Use `--preview none` for broad candidate scans, `--preview short` for a small deterministic window, and `--preview full` only after narrowing.
 
 ## Search without an index
 

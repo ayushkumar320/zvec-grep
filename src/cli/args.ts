@@ -165,6 +165,8 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
       options.noFallback = true;
     } else if (arg === "--no-auto-update") {
       options.noAutoUpdate = true;
+    } else if (arg === "--fresh") {
+      options.fresh = true;
     } else if (arg === "--prefer-symbol") {
       options.preferSymbol = true;
     } else if (arg === "--collection") {
@@ -431,6 +433,14 @@ function validateCliShape(options: CliOptions): void {
 
   if (hasUtilityCommand && options.noAutoUpdate) {
     throw new Error("--no-auto-update can only be used with query commands");
+  }
+
+  if (hasUtilityCommand && options.fresh) {
+    throw new Error("--fresh can only be used with query commands");
+  }
+
+  if (options.fresh && options.noAutoUpdate) {
+    throw new Error("--fresh cannot be combined with --no-auto-update");
   }
 
   if (options.rg && hasExplicitRoutes(options)) {

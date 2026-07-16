@@ -29,6 +29,7 @@ import {
   updateGlobalConfigFromExplicitOptions,
 } from "../engine/config.js";
 import { DaemonClient } from "../client/daemon-client.js";
+import { resolveServerSearchPolicy } from "../client/search-policy.js";
 import { resolveClientMode, resolveServerUrl, routeByMode } from "../client/mode-router.js";
 import { serverStatus } from "../daemon/server-controller.js";
 import { findNearestAnonymousWorkspace } from "../engine/service/root.js";
@@ -600,6 +601,7 @@ async function runServerQuery(
   queries: readonly string[],
   routes: readonly ZvecGrepContextRoute[],
 ): Promise<void> {
+  const searchPolicy = resolveServerSearchPolicy(options);
   const fts = routes.filter((route) => route.mode === "fts").map((route) => route.query);
   const vector = routes.filter((route) => route.mode === "vector").map((route) => route.query);
   const response = await daemonClient(options).callTool("zvec_grep_search", {
@@ -615,7 +617,8 @@ async function runServerQuery(
     exclude: options.excludePaths,
     modifiedAfter: options.modifiedAfter,
     modifiedBefore: options.modifiedBefore,
-    freshness: options.noAutoUpdate ? "eventual" : "wait_for_fresh",
+    freshness: searchPolicy.freshness,
+    autoUpdate: searchPolicy.autoUpdate,
   });
   const result = response.result as ZvecGrepContextResult;
   if (options.human) printHumanContextResult(result, options);

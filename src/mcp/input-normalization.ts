@@ -19,6 +19,7 @@ export type NormalizedSearchInput = {
   routes: Array<{ mode: "fts" | "vector"; query: string }>;
   limit?: number;
   freshness: "eventual" | "wait_for_fresh";
+  autoUpdate: boolean;
   preferSymbol?: boolean;
   symbolTypes?: CodeSymbolType[];
   includePaths?: string[];
@@ -36,6 +37,7 @@ export function normalizeSearchInput(input: ZvecGrepSearchInput): NormalizedSear
     root: input.root,
     ...common,
     freshness: input.freshness,
+    autoUpdate: input.autoUpdate,
     maxContentChars: input.maxContentChars,
   };
 }

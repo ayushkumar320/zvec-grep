@@ -132,6 +132,15 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
     const startedAt = Date.now();
     const runtime = await this.runtimeManager.activate(input.root);
     this.ensureWatcher(runtime);
+    await runtime.probeInitialFreshness(async () => {
+      const info = await inspectRoot(runtime.canonicalRoot, this.options.serviceOptions);
+      this.statusCache.set(runtime.canonicalRoot, info);
+      return indexStatusIsFresh(info);
+    }, (initialFreshness) => {
+      this.options.logger?.event(`runtime.initial_probe_${initialFreshness}`, {
+        root_id: rootIdentity(runtime.canonicalRoot),
+      });
+    });
     let updateJob: IndexJobSnapshot | undefined;
     if (runtime.needsReconciliation() && input.freshness === "wait_for_fresh") {
       updateJob = await this.submitIndex(runtime, { root: runtime.canonicalRoot }, "fresh_query", true);
@@ -156,13 +165,20 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
       autoUpdate: false,
       fallback: "disabled",
     });
-    if (runtime.needsReconciliation()) {
-      updateJob = await this.submitIndex(runtime, { root: runtime.canonicalRoot }, "reconcile", false);
+    if (runtime.needsReconciliation() && input.autoUpdate) {
+      updateJob = await this.submitIndex(
+        runtime,
+        { root: runtime.canonicalRoot },
+        "background_reconcile",
+        false,
+      );
     }
     const job = updateJob ?? this.scheduler.getByRoot(runtime.canonicalRoot);
     const response: ZvecGrepSearchResult = {
       root: runtime.canonicalRoot,
-      freshness: job && job.state !== "succeeded" ? "possibly_stale" : "fresh",
+      freshness: runtime.needsReconciliation() || (job && job.state !== "succeeded")
+        ? "possibly_stale"
+        : "fresh",
       updateJobId: job && (job.state === "queued" || job.state === "running") ? job.id : undefined,
       result,
     };
@@ -311,18 +327,19 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
   private async submitIndex(
     runtime: RootRuntime,
     input: DaemonIndexInput,
-    reason: "manual" | "reconcile" | "fresh_query",
+    reason: "background_reconcile" | "fresh_query",
     wait: boolean,
   ): Promise<IndexJobSnapshot> {
     const createsWork = !this.scheduler.hasActiveRoot(runtime.canonicalRoot) || input.rebuild === true;
     const targetRevision = createsWork ? runtime.markDirty() : runtime.snapshot().dirtyRevision;
+    const followsNarrowWatch = this.scheduler.getByRoot(runtime.canonicalRoot)?.reason === "watch";
     runtime.setWriterPending(true);
     let submitted;
     try {
       submitted = this.scheduler.submit({
         canonicalRoot: runtime.canonicalRoot,
         reason,
-        followupIfRunning: input.rebuild === true,
+        followupIfRunning: followsNarrowWatch,
         run: (report) => runtime.withWrite(async () => {
           await this.runIndex(runtime, input, report);
           runtime.markIndexed(targetRevision);
@@ -426,6 +443,18 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
     }
     return (this.options.resolveEmbeddingSchema ?? resolveCatalogEmbeddingSchema)(reference);
   }
+}
+
+
+function indexStatusIsFresh(info: ZvecGrepInfoResult): boolean {
+  const status = info.status;
+  return status !== null
+    && status !== undefined
+    && status.filesAdded === 0
+    && status.filesModified === 0
+    && status.filesDeleted === 0
+    && status.filesPending === 0
+    && status.filesFailed === 0;
 }
 
 

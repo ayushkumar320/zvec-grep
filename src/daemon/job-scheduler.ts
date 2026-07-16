@@ -5,7 +5,7 @@ import { rootIdentity, type DaemonLogger } from "./logger.js";
 
 
 export type JobState = "queued" | "running" | "succeeded" | "failed" | "cancelled";
-export type JobReason = "watch" | "reconcile" | "manual" | "fresh_query";
+export type JobReason = "watch" | "reconcile" | "background_reconcile" | "manual" | "fresh_query";
 
 export type IndexJobSnapshot = {
   id: string;
@@ -304,6 +304,7 @@ function priority(reason: JobReason): number {
     case "manual": return 4;
     case "fresh_query": return 3;
     case "watch": return 2;
+    case "background_reconcile": return 1;
     case "reconcile": return 1;
   }
 }
