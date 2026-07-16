@@ -36,4 +36,4 @@ Use multiple queries when comparing related concepts.
 
 ## Use CLI fallback
 
-Read [references/cli-fallback.md](references/cli-fallback.md) only after a fallback condition above is satisfied. Keep the selected transport consistent for the investigation unless its availability changes.
+Read [references/cli-fallback.md](references/cli-fallback.md) only after a fallback condition above is satisfied. Leave CLI mode unset for ordinary status, search, and authorized indexing commands so the default Auto mode can select Server or Direct; do not probe forced Server mode and then retry forced Direct mode. Keep the selected transport consistent for the investigation unless its availability changes.

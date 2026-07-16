@@ -27,6 +27,11 @@ test("zvec-grep skill triggers by task and selects the available transport", asy
     /Use native HTTP MCP tools as the primary interface when the matching `zvec_grep_\*` tool is present/,
   );
   assert.match(skill, /required MCP tool is absent from the current task/);
+  assert.match(skill, /default Auto mode can select Server or Direct/);
+  assert.match(
+    skill,
+    /do not probe forced Server mode and then retry forced Direct mode/,
+  );
   assert.match(skill, /`wait` parameter defaults to false/i);
   assert.match(skill, /Poll `zvec_grep_index_status` only when completion/);
   assert.match(skill, /server default is known; never guess a model/);
@@ -43,8 +48,26 @@ test("zvec-grep skill triggers by task and selects the available transport", asy
     /Use \$zvec-grep to investigate this repository before raw grep or rg/,
   );
   assert.doesNotMatch(metadata, /zvec_grep_rg/);
-  assert.match(fallback, /zg status --mode server/);
+  assert.match(fallback, /Leave `--mode` unset/);
+  assert.match(fallback, /zg status\n/);
+  assert.doesNotMatch(fallback, /zg status --mode (?:server|direct)/);
+  assert.doesNotMatch(fallback, /zg query[^\n]*--mode (?:server|direct)/);
   assert.match(fallback, /zg query "request validation"/);
+  assert.match(fallback, /already attempts CPU fallback/);
+  assert.match(
+    fallback,
+    /Do not repeat the query with an explicit CPU override/,
+  );
+  assert.doesNotMatch(fallback, /--no-gpu --embedding-parallelism 1/);
+  assert.match(
+    fallback,
+    /embedding context remains unavailable and exact anchors are available[\s\S]*existing indexed FTS route/,
+  );
+  assert.match(
+    fallback,
+    /Do not switch to managed ripgrep merely because semantic search is unavailable/,
+  );
   assert.match(fallback, /server default model is known/);
-  assert.match(fallback, /zg index --mode server/);
+  assert.match(fallback, /zg index\n/);
+  assert.doesNotMatch(fallback, /zg index[^\n]*--mode (?:server|direct)/);
 });

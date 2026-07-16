@@ -4,21 +4,21 @@ Use these commands only when the native MCP tools are unavailable or when an exp
 
 ## Choose the route
 
-When the daemon is reachable but native MCP tools are unavailable in the current task, keep daemon ownership by using Server mode:
+Leave `--mode` unset for ordinary status and query commands. The default Auto mode uses the daemon when reachable and Direct mode otherwise:
 
 ```bash
-zg status --mode server
-zg query "authentication flow" --fts "AuthService" -g "src/**" -g "!tests/**" -g "!dist/**" --mode server
+zg status
+zg query "authentication flow" --fts "AuthService" -g "src/**" -g "!tests/**" -g "!dist/**"
 ```
 
-Use Direct mode only when the daemon is unavailable or deliberately stopped. Do not perform Direct writes while a daemon lease is active.
+Do not probe with `--mode server` and then retry with `--mode direct`. Use an explicit mode only when diagnosing routing or when the user requests one. Do not force Direct writes while a daemon lease is active.
 
 ## Check index state
 
 Check status once per repository investigation and reuse it:
 
 ```bash
-zg status --mode server
+zg status
 ```
 
 If the index is missing, do not build it automatically. Mention `zg index` and wait for the user to authorize persistent indexing.
@@ -28,17 +28,29 @@ If the index is missing, do not build it automatically. Mention `zg index` and w
 Start with indexed hybrid search, then add exact or semantic routes as needed:
 
 ```bash
-zg query "request validation" "error handling" -g "src/**" -g "!tests/**" -g "!dist/**" --limit 10 --preview short --mode server
-zg query "authentication flow" --fts "AuthService" --fts "ForbiddenError" -g "src/**" --mode server
-zg query --vector "where incoming requests are authorized" -g "src/**" --mode server
-zg query "changes that must be indexed before search" --fresh --mode server
+zg query "request validation" "error handling" -g "src/**" -g "!tests/**" -g "!dist/**" --limit 10 --preview short
+zg query "authentication flow" --fts "AuthService" --fts "ForbiddenError" -g "src/**"
+zg query --vector "where incoming requests are authorized" -g "src/**"
+zg query "changes that must be indexed before search" --fresh
 ```
 
-Server queries return the current index and refresh stale data in the background by default. Add `--fresh` only when the query must wait for pending index changes. Use `--preview none` for broad candidate scans, `--preview short` for a small deterministic window, and `--preview full` only after narrowing.
+When Auto selects Server, queries return the current index and refresh stale data in the background by default. Add `--fresh` only when the query must wait for pending index changes. Use `--preview none` for broad candidate scans, `--preview short` for a small deterministic window, and `--preview full` only after narrowing.
 
-## Search without an index
+## Recover from a Direct model failure
 
-Use managed ripgrep only for exhaustive literal or regex matching:
+Direct mode already attempts CPU fallback when local GPU initialization fails. Do not repeat the query with an explicit CPU override.
+
+If the local model or embedding context remains unavailable and exact anchors are available, remove positional hybrid and vector queries and search those anchors through the existing indexed FTS route. Indexed FTS does not require an embedding model:
+
+```bash
+zg query --fts "AuthService" --fts "ForbiddenError" -g "src/**" --limit 20 --preview short
+```
+
+Do not switch to managed ripgrep merely because semantic search is unavailable. Use it only when the task requires exhaustive literal or regex matching, or when no index exists and the user has not authorized creating one.
+
+## Search exhaustively with managed ripgrep
+
+Use managed ripgrep only for exhaustive literal or regex matching; it does not require an index:
 
 ```bash
 zg query --rg "SymbolName|LogMessage"
@@ -52,22 +64,22 @@ Use `-e` or `--regexp` when the pattern begins with `-`. Common ripgrep flags in
 
 ## Index only with authorization
 
-When the daemon is reachable and a server default model is known, submit the index through Server mode without repeating the model:
+When a server default model is known, let Auto submit the index without repeating the model:
 
 ```bash
-zg index --mode server
+zg index
 ```
 
 Otherwise, use the embedding model selected by the user:
 
 ```bash
-zg index --embedding local/embeddinggemma-300m --mode server
+zg index --embedding local/embeddinggemma-300m
 ```
 
-When the daemon is deliberately stopped, Direct mode can create a focused index:
+Use focused path filters for a new index:
 
 ```bash
-zg index --embedding local/embeddinggemma-300m -g "src/**" -g "docs/**" -g "test/**" -g "!dist/**" -g "!node_modules/**" -g "!coverage/**" --mode direct
+zg index --embedding local/embeddinggemma-300m -g "src/**" -g "docs/**" -g "test/**" -g "!dist/**" -g "!node_modules/**" -g "!coverage/**"
 ```
 
 Rebuild only when an incompatible embedding schema or index version requires it. Existing indexes reuse their stored embedding schema unless the user intentionally changes it.
