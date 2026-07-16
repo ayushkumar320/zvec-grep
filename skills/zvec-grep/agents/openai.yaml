@@ -1,4 +1,4 @@
 interface:
   display_name: "zvec-grep"
-  short_description: "MCP-first indexed repository search with CLI fallback"
-  default_prompt: "Use $zvec-grep before grep or rg for repository search: prefer native zvec_grep_* MCP tools when available, and use the zg CLI only after MCP failure or for explicit no-index lexical search."
+  short_description: "Repository search, indexing, and daemon diagnostics"
+  default_prompt: "Use $zvec-grep to investigate this repository before raw grep or rg, selecting an available native MCP tool first and falling back to the zg CLI when needed."

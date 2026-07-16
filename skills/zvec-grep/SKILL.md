@@ -1,6 +1,6 @@
 ---
 name: zvec-grep
-description: Use zvec-grep before grep or rg for repository code search, indexing, index status, and daemon diagnostics. Prefer native zvec_grep_* MCP tools when available; use the zg CLI only after MCP initialization or the required tool fails, or for explicit no-index lexical search.
+description: Repository code search and indexing with zvec-grep. Use when exploring a codebase, locating symbols, references, or exact text, creating or inspecting a repository index, diagnosing the daemon, or whenever repository investigation would otherwise use grep, rg, or broad file reads.
 ---
 
 # zvec-grep
@@ -9,12 +9,12 @@ description: Use zvec-grep before grep or rg for repository code search, indexin
 
 Use zvec-grep before raw `grep` or `rg` for repository investigation.
 
-Use native HTTP MCP tools as the primary interface. If the matching `zvec_grep_*` tool is present, call it directly; do not run `zg`, probe the daemon through shell, or choose CLI for convenience.
+Use native HTTP MCP tools as the primary interface when the matching `zvec_grep_*` tool is present. Call it directly; do not run `zg`, probe the daemon through shell, or choose CLI for convenience.
 
 Use CLI fallback only when one of these conditions is true:
 
-- MCP initialization, authentication, or connection has actually failed.
 - The required MCP tool is absent from the current task.
+- MCP initialization, authentication, connection, or the required call has failed.
 - The repository has no index, the user has not authorized indexing, and an explicit no-index lexical search is needed.
 
 Do not retry a submitted indexing write through another transport after a connection interruption.

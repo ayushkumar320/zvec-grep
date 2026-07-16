@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-test("zvec-grep skill keeps native MCP tools ahead of CLI fallback", async () => {
+test("zvec-grep skill triggers by task and selects the available transport", async () => {
   const skill = await readFile("skills/zvec-grep/SKILL.md", "utf8");
   const metadata = await readFile(
     "skills/zvec-grep/agents/openai.yaml",
@@ -13,9 +13,20 @@ test("zvec-grep skill keeps native MCP tools ahead of CLI fallback", async () =>
     "utf8",
   );
 
-  assert.match(skill, /^description: Use zvec-grep before grep or rg/m);
+  assert.match(
+    skill,
+    /^description: Repository code search and indexing with zvec-grep/m,
+  );
+  assert.match(
+    skill,
+    /repository investigation would otherwise use grep, rg, or broad file reads/,
+  );
   assert.match(skill, /Use zvec-grep before raw `grep` or `rg`/);
-  assert.match(skill, /Use native HTTP MCP tools as the primary interface/);
+  assert.match(
+    skill,
+    /Use native HTTP MCP tools as the primary interface when the matching `zvec_grep_\*` tool is present/,
+  );
+  assert.match(skill, /required MCP tool is absent from the current task/);
   assert.match(skill, /`wait` parameter defaults to false/i);
   assert.match(skill, /Poll `zvec_grep_index_status` only when completion/);
   assert.match(skill, /server default is known; never guess a model/);
@@ -23,16 +34,15 @@ test("zvec-grep skill keeps native MCP tools ahead of CLI fallback", async () =>
   assert.match(skill, /Call `zvec_grep_search` first/);
   assert.match(skill, /`freshness` and `indexing`/);
   assert.doesNotMatch(skill, /Call `zvec_grep_index_status` once at the start/);
+  assert.doesNotMatch(skill, /zvec_grep_rg/);
   assert.match(skill, /references\/cli-fallback\.md/);
   assert.doesNotMatch(skill, /Use zvec-grep through the `zg` command/);
+  assert.match(metadata, /Repository search, indexing, and daemon diagnostics/);
   assert.match(
     metadata,
-    /MCP-first indexed repository search with CLI fallback/,
+    /Use \$zvec-grep to investigate this repository before raw grep or rg/,
   );
-  assert.match(
-    metadata,
-    /Use \$zvec-grep before grep or rg for repository search/,
-  );
+  assert.doesNotMatch(metadata, /zvec_grep_rg/);
   assert.match(fallback, /zg status --mode server/);
   assert.match(fallback, /zg query "request validation"/);
   assert.match(fallback, /server default model is known/);
