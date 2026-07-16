@@ -9,10 +9,15 @@ export type IndexCoordinatorOptions = {
   run: (
     changes: ChangeSetSnapshot,
     report: (progress: IndexProgress) => void,
-  ) => Promise<void>;
+  ) => Promise<IndexReconciliationProof | void>;
   getIndexedFileCount?: () => number | undefined;
   fullReconcileRatio?: number;
   minRatioChangedPaths?: number;
+};
+
+export type IndexReconciliationProof = {
+  reconciled: boolean;
+  reconciliationEpoch: number;
 };
 
 export class IndexCoordinator {
@@ -36,6 +41,9 @@ export class IndexCoordinator {
       changedPathCount / indexedFiles > (this.options.fullReconcileRatio ?? 0.2)
     ) {
       changes = { ...changes, forceFullReconcile: true };
+    }
+    if (changes.forceFullReconcile) {
+      this.options.runtime.requireFullReconciliation();
     }
     this.pending.merge(changes);
     this.targetRevision = this.options.runtime.markDirty();
@@ -62,8 +70,19 @@ export class IndexCoordinator {
             this.options.runtime.markIndexed(jobRevision);
             return;
           }
-          await this.options.run(jobChanges, report);
-          this.options.runtime.markIndexed(jobRevision);
+          const proof = await this.options.run(jobChanges, report);
+          if (jobChanges.forceFullReconcile) {
+            if (proof?.reconciled === true) {
+              this.options.runtime.markReconciled(
+                jobRevision,
+                proof.reconciliationEpoch,
+              );
+            } else {
+              this.options.runtime.markIndexed(jobRevision);
+            }
+          } else {
+            this.options.runtime.markIndexed(jobRevision);
+          }
         }),
     });
     if (!submitted.reused) {

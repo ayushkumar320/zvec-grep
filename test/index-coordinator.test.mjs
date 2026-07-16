@@ -82,6 +82,42 @@ test("a retry reuses the same change snapshot", async () => {
   await scheduler.close();
 });
 
+test("a full reconciliation without proof remains unconfirmed", async () => {
+  const scheduler = new JobScheduler({ concurrency: 1 });
+  let dirtyRevision = 0;
+  let indexedRevision = 0;
+  let reconciledRevision = 0;
+  const coordinator = new IndexCoordinator({
+    runtime: {
+      canonicalRoot: "/repo",
+      requireFullReconciliation: () => {},
+      markDirty: () => ++dirtyRevision,
+      markIndexed: (revision) => {
+        indexedRevision = revision;
+      },
+      markReconciled: (revision) => {
+        reconciledRevision = revision;
+      },
+      setWriterPending: () => {},
+      withWrite: (operation) => operation(),
+    },
+    scheduler,
+    run: async () => undefined,
+  });
+
+  const job = coordinator.enqueue({
+    touchedFiles: [],
+    rescanDirectories: [],
+    deletedPrefixes: [],
+    forceFullReconcile: true,
+  });
+
+  assert.equal((await scheduler.wait(job.id)).state, "succeeded");
+  assert.equal(indexedRevision, 1);
+  assert.equal(reconciledRevision, 0);
+  await scheduler.close();
+});
+
 function change(path) {
   return {
     touchedFiles: [path],

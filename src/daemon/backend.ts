@@ -31,7 +31,10 @@ import {
   EmbeddingModelPool,
   type EmbeddingModelPoolOptions,
 } from "./model-pool.js";
-import { IndexCoordinator } from "./index-coordinator.js";
+import {
+  IndexCoordinator,
+  type IndexReconciliationProof,
+} from "./index-coordinator.js";
 import {
   inspectRoot,
   resolveRequestedRoot,
@@ -114,8 +117,12 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
         followupIfRunning: input.rebuild === true || followsNarrowJob,
         run: (report) =>
           runtime.withWrite(async () => {
-            await this.runIndex(runtime, input, report);
-            runtime.markIndexed(targetRevision);
+            const proof = await this.runIndex(runtime, input, report);
+            if (proof.reconciled) {
+              runtime.markReconciled(targetRevision, proof.reconciliationEpoch);
+            } else {
+              runtime.markIndexed(targetRevision);
+            }
           }),
       });
     } catch (error) {
@@ -132,8 +139,7 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
       ? await this.scheduler.wait(submitted.job.id)
       : submitted.job;
     if (input.wait) {
-      await this.watchers.get(runtime.canonicalRoot)?.flushPending();
-      await this.scheduler.waitForRootIdle(runtime.canonicalRoot);
+      await this.settleKnownChanges(runtime);
       runtime.setWriterPending(false);
     }
     this.options.logger?.event("job.submitted", {
@@ -174,46 +180,71 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
       },
     );
     let updateJob: IndexJobSnapshot | undefined;
-    if (runtime.needsReconciliation() && input.freshness === "wait_for_fresh") {
-      updateJob = await this.submitIndex(
-        runtime,
-        { root: runtime.canonicalRoot },
-        "fresh_query",
-        true,
-      );
-      if (updateJob.state !== "succeeded") {
-        throw new DaemonError(
-          updateJob.error?.code ?? "INDEX_FAILED",
-          updateJob.error?.message ??
-            "Index reconciliation did not complete successfully.",
+    const executeSearch = () =>
+      runtime.search({
+        queries: input.queries,
+        routes: input.routes,
+        limit: input.limit,
+        trace: input.trace,
+        preferSymbol: input.preferSymbol,
+        symbolTypes: input.symbolTypes,
+        includePaths: input.includePaths,
+        excludePaths: input.excludePaths,
+        modifiedAfter: input.modifiedAfter,
+        modifiedBefore: input.modifiedBefore,
+        autoUpdate: false,
+        fallback: "disabled",
+      });
+    let result;
+    if (input.freshness === "wait_for_fresh") {
+      while (true) {
+        updateJob = (await this.waitForFresh(runtime)) ?? updateJob;
+        const beforeSearch = runtime.snapshot();
+        result = await executeSearch();
+        const afterSearch = runtime.snapshot();
+        if (
+          !afterSearch.watcherPending &&
+          afterSearch.watcherEpoch === beforeSearch.watcherEpoch &&
+          !runtime.needsReconciliation()
+        ) {
+          break;
+        }
+      }
+    } else {
+      result = await executeSearch();
+    }
+    if (
+      runtime.needsReconciliation() &&
+      input.autoUpdate &&
+      (runtime.requiresFullReconciliation() ||
+        !this.scheduler.hasActiveRoot(runtime.canonicalRoot))
+    ) {
+      if (
+        !runtime.requiresFullReconciliation() ||
+        runtime.canProbeFullReconciliation()
+      ) {
+        await this.probeCurrentFreshness(runtime);
+      }
+      const currentJob = this.scheduler.getByRoot(runtime.canonicalRoot);
+      const terminalKnownPathJob =
+        !runtime.requiresFullReconciliation() &&
+        (currentJob?.state === "failed" || currentJob?.state === "cancelled");
+      if (runtime.needsReconciliation() && !terminalKnownPathJob) {
+        updateJob = await this.submitIndex(
+          runtime,
+          { root: runtime.canonicalRoot },
+          "background_reconcile",
+          false,
         );
       }
     }
-    const result = await runtime.search({
-      queries: input.queries,
-      routes: input.routes,
-      limit: input.limit,
-      trace: input.trace,
-      preferSymbol: input.preferSymbol,
-      symbolTypes: input.symbolTypes,
-      includePaths: input.includePaths,
-      excludePaths: input.excludePaths,
-      modifiedAfter: input.modifiedAfter,
-      modifiedBefore: input.modifiedBefore,
-      autoUpdate: false,
-      fallback: "disabled",
-    });
-    if (runtime.needsReconciliation() && input.autoUpdate) {
-      updateJob = await this.submitIndex(
-        runtime,
-        { root: runtime.canonicalRoot },
-        "background_reconcile",
-        false,
-      );
-    }
     const job = updateJob ?? this.scheduler.getByRoot(runtime.canonicalRoot);
+    const runtimeSnapshot = runtime.snapshot();
     const freshness =
-      runtime.needsReconciliation() || (job && job.state !== "succeeded")
+      runtime.needsReconciliation() ||
+      runtimeSnapshot.watcherPending ||
+      job?.state === "queued" ||
+      job?.state === "running"
         ? "possibly_stale"
         : "fresh";
     const response: ZvecGrepSearchResult = {
@@ -320,7 +351,7 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
     runtime: RootRuntime,
     input: DaemonIndexInput,
     report: (progress: IndexProgress) => void,
-  ): Promise<void> {
+  ): Promise<IndexReconciliationProof> {
     const startedAt = Date.now();
     const includeStatus = !input.changedPaths;
     const before = await inspectRoot(
@@ -359,6 +390,10 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
       }
     }
 
+    if (includeStatus) {
+      await this.watchers.get(runtime.canonicalRoot)?.flushPending();
+    }
+    const proofReconciliationEpoch = runtime.reconciliationEpoch();
     const after = await inspectRoot(
       runtime.canonicalRoot,
       this.options.serviceOptions,
@@ -382,6 +417,14 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
       scope: input.changedPaths ? "paths" : "reconcile",
       changed_paths: input.changedPaths?.length,
     });
+    const reconciled = includeStatus && indexStatusIsFresh(after);
+    if (includeStatus && !reconciled) {
+      runtime.requireFullReconciliation(true);
+    }
+    return {
+      reconciled,
+      reconciliationEpoch: proofReconciliationEpoch,
+    };
   }
 
   private async submitIndex(
@@ -407,8 +450,12 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
         followupIfRunning: followsNarrowWatch,
         run: (report) =>
           runtime.withWrite(async () => {
-            await this.runIndex(runtime, input, report);
-            runtime.markIndexed(targetRevision);
+            const proof = await this.runIndex(runtime, input, report);
+            if (proof.reconciled) {
+              runtime.markReconciled(targetRevision, proof.reconciliationEpoch);
+            } else {
+              runtime.markIndexed(targetRevision);
+            }
           }),
       });
     } catch (error) {
@@ -445,7 +492,7 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
         if (!changes.forceFullReconcile && changedPaths.length === 0) {
           return;
         }
-        await this.runIndex(
+        return await this.runIndex(
           runtime,
           {
             root: runtime.canonicalRoot,
@@ -465,14 +512,12 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
           changes.touchedFiles.length +
           changes.rescanDirectories.length +
           changes.deletedPrefixes.length;
-        if (
-          changes.forceFullReconcile &&
-          pathCount === 0 &&
-          this.scheduler.hasActiveRoot(runtime.canonicalRoot)
-        ) {
-          this.options.logger?.event("watcher.overflow_deferred", {
+        if (changes.forceFullReconcile && pathCount === 0) {
+          runtime.requireFullReconciliation(true);
+          this.options.logger?.event("watcher.reconciliation_probe_requested", {
             root_id: rootIdentity(runtime.canonicalRoot),
             reason,
+            active_job: this.scheduler.hasActiveRoot(runtime.canonicalRoot),
           });
           return;
         }
@@ -494,6 +539,87 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
     this.indexCoordinators.set(runtime.canonicalRoot, coordinator);
     this.watchers.set(runtime.canonicalRoot, watcher);
     runtime.setWatcherActive(true);
+  }
+
+  private async settleKnownChanges(runtime: RootRuntime): Promise<void> {
+    const watcher = this.watchers.get(runtime.canonicalRoot);
+    while (true) {
+      await watcher?.flushPending();
+      await this.scheduler.waitForRootIdle(runtime.canonicalRoot);
+      const job = this.scheduler.getByRoot(runtime.canonicalRoot);
+      const snapshot = runtime.snapshot();
+      if (
+        job?.state === "failed" ||
+        job?.state === "cancelled" ||
+        !snapshot.watcherPending
+      ) {
+        return;
+      }
+    }
+  }
+
+  private async waitForFresh(
+    runtime: RootRuntime,
+  ): Promise<IndexJobSnapshot | undefined> {
+    let updateJob: IndexJobSnapshot | undefined;
+    while (true) {
+      await this.settleKnownChanges(runtime);
+      if (!runtime.needsReconciliation()) {
+        return updateJob;
+      }
+      if (
+        !runtime.requiresFullReconciliation() ||
+        runtime.canProbeFullReconciliation() ||
+        this.scheduler.getByRoot(runtime.canonicalRoot)?.state === "failed" ||
+        this.scheduler.getByRoot(runtime.canonicalRoot)?.state === "cancelled"
+      ) {
+        const freshness = await this.probeCurrentFreshness(runtime);
+        if (freshness === "fresh") {
+          return updateJob;
+        }
+      }
+      const currentJob = this.scheduler.getByRoot(runtime.canonicalRoot);
+      if (
+        !runtime.requiresFullReconciliation() &&
+        (currentJob?.state === "failed" || currentJob?.state === "cancelled")
+      ) {
+        throw new DaemonError(
+          currentJob.error?.code ?? "INDEX_FAILED",
+          currentJob.error?.message ??
+            "Known index changes did not complete successfully.",
+        );
+      }
+      updateJob = await this.submitIndex(
+        runtime,
+        { root: runtime.canonicalRoot },
+        "fresh_query",
+        true,
+      );
+      if (updateJob.state !== "succeeded") {
+        throw new DaemonError(
+          updateJob.error?.code ?? "INDEX_FAILED",
+          updateJob.error?.message ??
+            "Index reconciliation did not complete successfully.",
+        );
+      }
+    }
+  }
+
+  private async probeCurrentFreshness(
+    runtime: RootRuntime,
+  ): Promise<"fresh" | "stale"> {
+    const freshness = await runtime.probeFreshness(async () => {
+      const info = await inspectRoot(
+        runtime.canonicalRoot,
+        this.options.serviceOptions,
+      );
+      this.statusCache.set(runtime.canonicalRoot, info);
+      return indexStatusIsFresh(info);
+    });
+    this.options.logger?.event(`runtime.recovery_probe_${freshness}`, {
+      root_id: rootIdentity(runtime.canonicalRoot),
+    });
+    return freshness;
   }
 
   private async closeWatcher(canonicalRoot: string): Promise<void> {

@@ -338,8 +338,11 @@ test("Streamable HTTP serves health, MCP contracts and a real cached index searc
   assert.equal(indexStatus.isError, undefined);
   assert.equal(indexStatus.structuredContent.indexed, true);
   assert.equal(indexStatus.structuredContent.runtime.job_state, "succeeded");
-  assert.equal(indexStatus.structuredContent.runtime.dirty_revision, 1);
-  assert.equal(indexStatus.structuredContent.runtime.indexed_revision, 1);
+  assert.ok(indexStatus.structuredContent.runtime.dirty_revision >= 1);
+  assert.equal(
+    indexStatus.structuredContent.runtime.indexed_revision,
+    indexStatus.structuredContent.runtime.dirty_revision,
+  );
 
   const newSearch = await clients[0].callTool({
     name: "zvec_grep_search",

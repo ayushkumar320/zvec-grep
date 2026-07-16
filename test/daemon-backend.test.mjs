@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,6 +7,12 @@ import test from "node:test";
 import { DaemonBackend } from "../dist/daemon/backend.js";
 import { EmbeddingModel } from "../dist/engine/models/embeddings.js";
 import { createZvecGrep } from "../dist/index.js";
+
+const noopWatchManagerFactory = () => ({
+  start() {},
+  flushPending: async () => {},
+  close: async () => {},
+});
 
 test("index releases its model lease when service creation fails", async () => {
   const temporaryDirectory = await mkdtemp(
@@ -15,6 +22,7 @@ test("index releases its model lease when service creation fails", async () => {
   await mkdir(root);
   const backend = new DaemonBackend({
     version: "1.0.0",
+    watchManagerFactory: noopWatchManagerFactory,
     modelPoolOptions: {
       createModel: () => ({ dispose: async () => {} }),
     },
@@ -62,6 +70,7 @@ test("wait_for_fresh reports a failed reconciliation instead of returning stale 
   const backend = new DaemonBackend({
     version: "1.0.0",
     modelPoolOptions: { createModel: () => new TestEmbeddingModel() },
+    watchManagerFactory: noopWatchManagerFactory,
     createService: async () => {
       throw new Error("reconciliation failed");
     },
@@ -100,14 +109,10 @@ test("wait_for_fresh skips reconciliation when the initial probe is fresh", asyn
   const backend = new DaemonBackend({
     version: "1.0.0",
     modelPoolOptions: { createModel: () => new TestEmbeddingModel() },
+    watchManagerFactory: noopWatchManagerFactory,
     createService: async () => {
       throw new Error("fresh indexes must not reconcile");
     },
-    watchManagerFactory: () => ({
-      start() {},
-      flushPending: async () => {},
-      close: async () => {},
-    }),
     logger: {
       event: (name, fields) => events.push({ name, fields }),
       flush: async () => {},
@@ -183,6 +188,7 @@ test("eventual search reports active indexing progress", async () => {
   const backend = new DaemonBackend({
     version: "1.0.0",
     modelPoolOptions: { createModel: () => new TestEmbeddingModel() },
+    watchManagerFactory: noopWatchManagerFactory,
   });
   let releaseIndexing = () => {};
   let jobId;
@@ -227,7 +233,7 @@ test("eventual search reports active indexing progress", async () => {
   }
 });
 
-test("wait_for_fresh queues a full reconciliation behind a running watch job", async () => {
+test("wait_for_fresh consumes a running watch job without a full reconciliation", async () => {
   const temporaryDirectory = await mkdtemp(
     join(tmpdir(), "zvec-grep-fresh-followup-"),
   );
@@ -241,52 +247,657 @@ test("wait_for_fresh queues a full reconciliation behind a running watch job", a
   });
   await service.index();
   await service.close();
+  let watcherOptions;
+  let markWatchStarted;
+  let releaseWatch = () => {};
+  const watchStarted = new Promise((resolve) => {
+    markWatchStarted = resolve;
+  });
+  const watchReleased = new Promise((resolve) => {
+    releaseWatch = resolve;
+  });
+  let blockWatchEmbedding = false;
   const backend = new DaemonBackend({
     version: "1.0.0",
-    modelPoolOptions: { createModel: () => new TestEmbeddingModel() },
-    watchManagerFactory: () => ({
-      start() {},
-      flushPending: async () => {},
-      close: async () => {},
-    }),
+    modelPoolOptions: {
+      createModel: () =>
+        new TestEmbeddingModel(async (contents) => {
+          if (
+            blockWatchEmbedding &&
+            contents.some(
+              (content) =>
+                content.kind === "text" &&
+                content.text.includes("changedAnswer"),
+            )
+          ) {
+            markWatchStarted();
+            await watchReleased;
+          }
+        }),
+    },
+    createService: async (options) => {
+      const created = await createZvecGrep(options);
+      return {
+        ...created,
+        root: created.root,
+        collections: created.collections,
+        index: (indexOptions) => created.index(indexOptions),
+        disableIndex: (infoOptions) => created.disableIndex(infoOptions),
+        info: (infoOptions) => created.info(infoOptions),
+        context: (contextOptions) => created.context(contextOptions),
+        close: () => created.close(),
+      };
+    },
+    watchManagerFactory: (options) => {
+      watcherOptions = options;
+      return {
+        start() {},
+        flushPending: async () => {},
+        close: async () => {},
+      };
+    },
   });
   try {
     await backend.search(searchInput(root, "answer", "eventual"));
     const canonicalRoot = await realpath(root);
-    const runtime = backend.runtimeManager.getByCanonicalRoot(canonicalRoot);
     await writeFile(source, "export const changedAnswer = 43;\n");
-    const watchRevision = runtime.markDirty();
-    let releaseWatch;
-    const watchJob = backend.scheduler.submit({
-      canonicalRoot,
-      reason: "watch",
-      run: () =>
-        new Promise((resolve) => {
-          releaseWatch = () => {
-            runtime.markIndexed(watchRevision);
-            resolve();
-          };
-        }),
+    blockWatchEmbedding = true;
+    await watcherOptions.onChanges(
+      {
+        touchedFiles: [source],
+        rescanDirectories: [],
+        deletedPrefixes: [],
+        forceFullReconcile: false,
+      },
+      "watch",
+    );
+    await watchStarted;
+    const watchJob = backend.scheduler.getByRoot(canonicalRoot);
+    assert.equal(watchJob.reason, "watch");
+    const eventualResult = await backend.search({
+      ...searchInput(root, "answer", "eventual"),
+      autoUpdate: true,
     });
-    await waitFor(() => releaseWatch !== undefined);
-    const search = backend.search({
-      ...searchInput(root, "changedAnswer", "wait_for_fresh"),
-      queries: undefined,
-      routes: [{ mode: "fts", query: "changedAnswer" }],
-    });
-    await waitFor(() => runtime.snapshot().writerPending);
+    assert.equal(eventualResult.freshness, "possibly_stale");
+    assert.equal(backend.scheduler.getByRoot(canonicalRoot).id, watchJob.id);
+    let searchSettled = false;
+    const search = backend
+      .search({
+        ...searchInput(root, "changedAnswer", "wait_for_fresh"),
+        queries: undefined,
+        routes: [{ mode: "fts", query: "changedAnswer" }],
+      })
+      .then((result) => {
+        searchSettled = true;
+        return result;
+      });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(searchSettled, false);
+    blockWatchEmbedding = false;
     releaseWatch();
 
     const result = await search;
     assert.equal(result.freshness, "fresh");
     assert.match(result.result.items[0].content, /changedAnswer/);
-    assert.notEqual(
-      backend.scheduler.getByRoot(canonicalRoot).id,
-      watchJob.job.id,
+    assert.equal(backend.scheduler.getByRoot(canonicalRoot).id, watchJob.id);
+    assert.equal(backend.scheduler.getByRoot(canonicalRoot).reason, "watch");
+  } finally {
+    releaseWatch();
+    await backend.close();
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("wait_for_fresh flushes watcher changes until revisions are caught up", async () => {
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-fresh-pending-"),
+  );
+  const root = join(temporaryDirectory, "repo");
+  await mkdir(root);
+  const source = join(root, "answer.ts");
+  await writeFile(source, "export const answer = 42;\n");
+  const service = await createZvecGrep({
+    root,
+    embeddingModel: new TestEmbeddingModel(),
+  });
+  await service.index();
+  await service.close();
+  let flushes = 0;
+  const backend = new DaemonBackend({
+    version: "1.0.0",
+    modelPoolOptions: { createModel: () => new TestEmbeddingModel() },
+    watchManagerFactory: (options) => {
+      return {
+        start() {},
+        flushPending: async () => {
+          flushes += 1;
+          if (flushes === 1) {
+            options.onPendingChange(true);
+            return;
+          }
+          if (flushes === 2) {
+            await options.onChanges(
+              {
+                touchedFiles: [source],
+                rescanDirectories: [],
+                deletedPrefixes: [],
+                forceFullReconcile: false,
+              },
+              "watch",
+            );
+            options.onPendingChange(false);
+          }
+        },
+        close: async () => {},
+      };
+    },
+  });
+  try {
+    await backend.search(searchInput(root, "answer", "eventual"));
+    await writeFile(source, "export const changedAnswer = 43;\n");
+
+    const result = await backend.search({
+      ...searchInput(root, "changedAnswer", "wait_for_fresh"),
+      queries: undefined,
+      routes: [{ mode: "fts", query: "changedAnswer" }],
+    });
+
+    assert.equal(flushes, 2);
+    assert.equal(result.freshness, "fresh");
+    assert.match(result.result.items[0].content, /changedAnswer/);
+    const status = await backend.indexStatus({ root });
+    assert.equal(status.runtime.dirtyRevision, status.runtime.indexedRevision);
+  } finally {
+    await backend.close();
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("wait_for_fresh repeats a search when watcher changes arrive during it", async () => {
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-fresh-during-search-"),
+  );
+  const root = join(temporaryDirectory, "repo");
+  await mkdir(root);
+  const source = join(root, "answer.ts");
+  await writeFile(source, "export const answer = 42;\n");
+  const service = await createZvecGrep({
+    root,
+    embeddingModel: new TestEmbeddingModel(),
+  });
+  await service.index();
+  await service.close();
+  let watcherOptions;
+  let queuedChange = false;
+  let blockQuery = false;
+  let queryEmbeddings = 0;
+  let markQueryStarted;
+  let releaseQuery = () => {};
+  const queryStarted = new Promise((resolve) => {
+    markQueryStarted = resolve;
+  });
+  const queryReleased = new Promise((resolve) => {
+    releaseQuery = resolve;
+  });
+  const backend = new DaemonBackend({
+    version: "1.0.0",
+    modelPoolOptions: {
+      createModel: () =>
+        new TestEmbeddingModel(async (contents) => {
+          const embedsQuery = contents.some(
+            (content) => content.kind === "text" && content.text === "answer",
+          );
+          if (!embedsQuery) {
+            return;
+          }
+          queryEmbeddings += 1;
+          if (blockQuery) {
+            markQueryStarted();
+            await queryReleased;
+          }
+        }),
+    },
+    watchManagerFactory: (options) => {
+      watcherOptions = options;
+      return {
+        start() {},
+        flushPending: async () => {
+          if (!queuedChange) {
+            return;
+          }
+          queuedChange = false;
+          await options.onChanges(
+            {
+              touchedFiles: [source],
+              rescanDirectories: [],
+              deletedPrefixes: [],
+              forceFullReconcile: false,
+            },
+            "watch",
+          );
+          options.onPendingChange(false);
+        },
+        close: async () => {},
+      };
+    },
+  });
+  try {
+    await backend.search(searchInput(root, "answer", "wait_for_fresh"));
+    const initialQueryEmbeddings = queryEmbeddings;
+    blockQuery = true;
+    const search = backend.search(
+      searchInput(root, "answer", "wait_for_fresh"),
     );
+    await queryStarted;
+    await writeFile(source, "export const changedAnswer = 43;\n");
+    queuedChange = true;
+    watcherOptions.onPendingChange(true);
+    blockQuery = false;
+    releaseQuery();
+
+    const result = await search;
+
+    assert.equal(result.freshness, "fresh");
+    assert.ok(queryEmbeddings >= initialQueryEmbeddings + 2);
+    assert.match(result.result.items[0].content, /changedAnswer/);
+  } finally {
+    releaseQuery();
+    await backend.close();
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("known watcher changes do not clear unknown initial drift", async () => {
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-fresh-unknown-"),
+  );
+  const root = join(temporaryDirectory, "repo");
+  await mkdir(root);
+  const source = join(root, "answer.ts");
+  await writeFile(source, "export const answer = 42;\n");
+  const service = await createZvecGrep({
+    root,
+    embeddingModel: new TestEmbeddingModel(),
+  });
+  await service.index();
+  await service.close();
+  await writeFile(source, "export const changedAnswer = 43;\n");
+  const scopes = [];
+  let flushed = false;
+  const backend = new DaemonBackend({
+    version: "1.0.0",
+    modelPoolOptions: { createModel: () => new TestEmbeddingModel() },
+    createService: async (options) => {
+      const created = await createZvecGrep(options);
+      return {
+        ...created,
+        root: created.root,
+        collections: created.collections,
+        index: async (indexOptions) => {
+          scopes.push(indexOptions.changedPaths ? "paths" : "full");
+          return created.index(indexOptions);
+        },
+        disableIndex: (infoOptions) => created.disableIndex(infoOptions),
+        info: (infoOptions) => created.info(infoOptions),
+        context: (contextOptions) => created.context(contextOptions),
+        close: () => created.close(),
+      };
+    },
+    watchManagerFactory: (options) => ({
+      start() {},
+      flushPending: async () => {
+        if (flushed) {
+          return;
+        }
+        flushed = true;
+        await options.onChanges(
+          {
+            touchedFiles: [source],
+            rescanDirectories: [],
+            deletedPrefixes: [],
+            forceFullReconcile: false,
+          },
+          "watch",
+        );
+      },
+      close: async () => {},
+    }),
+  });
+  try {
+    const result = await backend.search({
+      ...searchInput(root, "changedAnswer", "wait_for_fresh"),
+      queries: undefined,
+      routes: [{ mode: "fts", query: "changedAnswer" }],
+    });
+
+    assert.deepEqual(scopes, ["paths", "full"]);
+    assert.equal(result.freshness, "fresh");
+  } finally {
+    await backend.close();
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("unknown drift during a manual job survives until a full follow-up", async () => {
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-fresh-deferred-full-"),
+  );
+  const root = join(temporaryDirectory, "repo");
+  await mkdir(root);
+  const source = join(root, "answer.ts");
+  await writeFile(source, "export const answer = 42;\n");
+  const service = await createZvecGrep({
+    root,
+    embeddingModel: new TestEmbeddingModel(),
+  });
+  await service.index();
+  await service.close();
+  let watcherOptions;
+  let blockManual = false;
+  let markManualIndexed;
+  let releaseManual = () => {};
+  const manualIndexed = new Promise((resolve) => {
+    markManualIndexed = resolve;
+  });
+  const manualReleased = new Promise((resolve) => {
+    releaseManual = resolve;
+  });
+  const scopes = [];
+  const backend = new DaemonBackend({
+    version: "1.0.0",
+    modelPoolOptions: { createModel: () => new TestEmbeddingModel() },
+    createService: async (options) => {
+      const created = await createZvecGrep(options);
+      return {
+        ...created,
+        root: created.root,
+        collections: created.collections,
+        index: async (indexOptions) => {
+          scopes.push(indexOptions.changedPaths ? "paths" : "full");
+          const result = await created.index(indexOptions);
+          if (blockManual && !indexOptions.changedPaths) {
+            markManualIndexed();
+            await manualReleased;
+          }
+          return result;
+        },
+        disableIndex: (infoOptions) => created.disableIndex(infoOptions),
+        info: (infoOptions) => created.info(infoOptions),
+        context: (contextOptions) => created.context(contextOptions),
+        close: () => created.close(),
+      };
+    },
+    watchManagerFactory: (options) => {
+      watcherOptions = options;
+      return {
+        start() {},
+        flushPending: async () => {},
+        close: async () => {},
+      };
+    },
+  });
+  try {
+    await backend.search(searchInput(root, "answer", "wait_for_fresh"));
+    blockManual = true;
+    const manual = backend.index({ root, wait: true });
+    await manualIndexed;
+    await writeFile(source, "export const changedAnswer = 43;\n");
+    watcherOptions.onPendingChange(true);
+    await watcherOptions.onChanges(
+      {
+        touchedFiles: [],
+        rescanDirectories: [],
+        deletedPrefixes: [],
+        forceFullReconcile: true,
+      },
+      "reconcile",
+    );
+    watcherOptions.onPendingChange(false);
+    blockManual = false;
+    releaseManual();
+    assert.equal((await manual).state, "succeeded");
+
+    const result = await backend.search({
+      ...searchInput(root, "changedAnswer", "wait_for_fresh"),
+      queries: undefined,
+      routes: [{ mode: "fts", query: "changedAnswer" }],
+    });
+
+    assert.deepEqual(scopes, ["full", "full"]);
+    assert.equal(result.freshness, "fresh");
+    assert.match(result.result.items[0].content, /changedAnswer/);
+  } finally {
+    releaseManual();
+    await backend.close();
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("unknown drift after a full proof is preserved for a follow-up", async () => {
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-fresh-after-proof-"),
+  );
+  const root = join(temporaryDirectory, "repo");
+  await mkdir(root);
+  const source = join(root, "answer.ts");
+  await writeFile(source, "export const answer = 42;\n");
+  const service = await createZvecGrep({
+    root,
+    embeddingModel: new TestEmbeddingModel(),
+  });
+  await service.index();
+  await service.close();
+  let watcherOptions;
+  let injectAfterProof = false;
+  const scopes = [];
+  const backend = new DaemonBackend({
+    version: "1.0.0",
+    modelPoolOptions: { createModel: () => new TestEmbeddingModel() },
+    createService: async (options) => {
+      const created = await createZvecGrep(options);
+      return {
+        ...created,
+        root: created.root,
+        collections: created.collections,
+        index: async (indexOptions) => {
+          scopes.push(indexOptions.changedPaths ? "paths" : "full");
+          return created.index(indexOptions);
+        },
+        disableIndex: (infoOptions) => created.disableIndex(infoOptions),
+        info: (infoOptions) => created.info(infoOptions),
+        context: (contextOptions) => created.context(contextOptions),
+        close: () => created.close(),
+      };
+    },
+    watchManagerFactory: (options) => {
+      watcherOptions = options;
+      return {
+        start() {},
+        flushPending: async () => {},
+        close: async () => {},
+      };
+    },
+    logger: {
+      event: (name) => {
+        if (name !== "index.completed" || !injectAfterProof) {
+          return;
+        }
+        injectAfterProof = false;
+        writeFileSync(source, "export const changedAnswer = 43;\n");
+        watcherOptions.onPendingChange(true);
+        watcherOptions.onChanges(
+          {
+            touchedFiles: [],
+            rescanDirectories: [],
+            deletedPrefixes: [],
+            forceFullReconcile: true,
+          },
+          "reconcile",
+        );
+        watcherOptions.onPendingChange(false);
+      },
+      flush: async () => {},
+    },
+  });
+  try {
+    await backend.search(searchInput(root, "answer", "wait_for_fresh"));
+    injectAfterProof = true;
+    assert.equal(
+      (await backend.index({ root, wait: true })).state,
+      "succeeded",
+    );
+
+    const result = await backend.search({
+      ...searchInput(root, "changedAnswer", "wait_for_fresh"),
+      queries: undefined,
+      routes: [{ mode: "fts", query: "changedAnswer" }],
+    });
+
+    assert.deepEqual(scopes, ["full", "full"]);
+    assert.equal(result.freshness, "fresh");
+    assert.match(result.result.items[0].content, /changedAnswer/);
+  } finally {
+    await backend.close();
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("wait_for_fresh does not replace a failed path update with a full scan", async () => {
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-fresh-path-failure-"),
+  );
+  const root = join(temporaryDirectory, "repo");
+  await mkdir(root);
+  const source = join(root, "answer.ts");
+  await writeFile(source, "export const answer = 42;\n");
+  const service = await createZvecGrep({
+    root,
+    embeddingModel: new TestEmbeddingModel(),
+  });
+  await service.index();
+  await service.close();
+  let watcherOptions;
+  const scopes = [];
+  const backend = new DaemonBackend({
+    version: "1.0.0",
+    modelPoolOptions: { createModel: () => new TestEmbeddingModel() },
+    createService: async (options) => {
+      const created = await createZvecGrep(options);
+      return {
+        ...created,
+        root: created.root,
+        collections: created.collections,
+        index: async (indexOptions) => {
+          scopes.push(indexOptions.changedPaths ? "paths" : "full");
+          if (indexOptions.changedPaths) {
+            throw new Error("path update failed");
+          }
+          return created.index(indexOptions);
+        },
+        disableIndex: (infoOptions) => created.disableIndex(infoOptions),
+        info: (infoOptions) => created.info(infoOptions),
+        context: (contextOptions) => created.context(contextOptions),
+        close: () => created.close(),
+      };
+    },
+    watchManagerFactory: (options) => {
+      watcherOptions = options;
+      return {
+        start() {},
+        flushPending: async () => {},
+        close: async () => {},
+      };
+    },
+  });
+  try {
+    await backend.search(searchInput(root, "answer", "wait_for_fresh"));
+    await writeFile(source, "export const changedAnswer = 43;\n");
+    await watcherOptions.onChanges(
+      {
+        touchedFiles: [source],
+        rescanDirectories: [],
+        deletedPrefixes: [],
+        forceFullReconcile: false,
+      },
+      "watch",
+    );
+    const canonicalRoot = await realpath(root);
+    await backend.scheduler.waitForRootIdle(canonicalRoot);
+    const failedJob = backend.scheduler.getByRoot(canonicalRoot);
+
+    const eventual = await backend.search({
+      ...searchInput(root, "answer", "eventual"),
+      autoUpdate: true,
+    });
+    assert.equal(eventual.freshness, "possibly_stale");
+    assert.equal(eventual.indexing.state, "failed");
+    assert.equal(backend.scheduler.getByRoot(canonicalRoot).id, failedJob.id);
+    assert.deepEqual(scopes, ["paths"]);
+
+    await assert.rejects(
+      backend.search(searchInput(root, "answer", "wait_for_fresh")),
+      /path update failed/,
+    );
+    assert.deepEqual(scopes, ["paths"]);
+  } finally {
+    await backend.close();
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("wait_for_fresh probes before retrying a failed full reconciliation", async () => {
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-fresh-recovery-"),
+  );
+  const root = join(temporaryDirectory, "repo");
+  await mkdir(root);
+  const source = join(root, "answer.ts");
+  await writeFile(source, "export const answer = 42;\n");
+  const service = await createZvecGrep({
+    root,
+    embeddingModel: new TestEmbeddingModel(),
+  });
+  await service.index();
+  await service.close();
+  let watcherOptions;
+  const backend = new DaemonBackend({
+    version: "1.0.0",
+    modelPoolOptions: { createModel: () => new TestEmbeddingModel() },
+    createService: async () => {
+      throw new Error("path update failed");
+    },
+    watchManagerFactory: (options) => {
+      watcherOptions = options;
+      return {
+        start() {},
+        flushPending: async () => {},
+        close: async () => {},
+      };
+    },
+  });
+  try {
+    await backend.search(searchInput(root, "answer", "wait_for_fresh"));
+    await watcherOptions.onChanges(
+      {
+        touchedFiles: [source],
+        rescanDirectories: [],
+        deletedPrefixes: [],
+        forceFullReconcile: true,
+      },
+      "reconcile",
+    );
+    const canonicalRoot = await realpath(root);
+    await backend.scheduler.waitForRootIdle(canonicalRoot);
+    assert.equal(backend.scheduler.getByRoot(canonicalRoot).state, "failed");
+
+    const result = await backend.search(
+      searchInput(root, "answer", "wait_for_fresh"),
+    );
+
+    assert.equal(result.freshness, "fresh");
     assert.equal(
       backend.scheduler.getByRoot(canonicalRoot).reason,
-      "fresh_query",
+      "reconcile",
     );
   } finally {
     await backend.close();
@@ -430,6 +1041,7 @@ test("daemon restart forgets runtimes and jobs but preserves index discovery", a
   const options = {
     version: "1.0.0",
     modelPoolOptions: { createModel: () => new TestEmbeddingModel() },
+    watchManagerFactory: noopWatchManagerFactory,
   };
   const first = new DaemonBackend(options);
   try {
@@ -461,7 +1073,13 @@ class TestEmbeddingModel extends EmbeddingModel {
   supportedContentKinds = ["text"];
   limits = { maxBatchSize: 64 };
 
+  constructor(beforeEmbed = async () => {}) {
+    super();
+    this.beforeEmbed = beforeEmbed;
+  }
+
   async doEmbed(contents) {
+    await this.beforeEmbed(contents);
     return contents.map(() => [1, 0, 0, 0, 0, 0, 0, 0]);
   }
 }

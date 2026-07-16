@@ -40,7 +40,9 @@ export class RootRuntime {
   private modelRequest?: ModelLeaseRequest;
   private dirtyRevision = 0;
   private indexedRevision = 0;
-  private reconciliationRequired = true;
+  private fullReconciliationEpoch = 0;
+  private reconciledFullEpoch = -1;
+  private nonProbeableFullEpoch = 0;
   private initialFreshnessProbe?: Promise<"fresh" | "stale">;
   private watcherActive = false;
   private watcherPending = false;
@@ -156,14 +158,42 @@ export class RootRuntime {
 
   markIndexed(revision = this.dirtyRevision): void {
     this.indexedRevision = Math.max(this.indexedRevision, revision);
-    if (this.indexedRevision >= this.dirtyRevision) {
-      this.reconciliationRequired = false;
+  }
+
+  requireFullReconciliation(probeAllowed = false): void {
+    this.fullReconciliationEpoch += 1;
+    if (!probeAllowed) {
+      this.nonProbeableFullEpoch = this.fullReconciliationEpoch;
     }
+  }
+
+  reconciliationEpoch(): number {
+    return this.fullReconciliationEpoch;
+  }
+
+  markReconciled(
+    revision = this.dirtyRevision,
+    reconciliationEpoch = this.fullReconciliationEpoch,
+  ): void {
+    this.markIndexed(revision);
+    this.reconciledFullEpoch = Math.max(
+      this.reconciledFullEpoch,
+      reconciliationEpoch,
+    );
+  }
+
+  requiresFullReconciliation(): boolean {
+    return this.reconciledFullEpoch < this.fullReconciliationEpoch;
+  }
+
+  canProbeFullReconciliation(): boolean {
+    return this.nonProbeableFullEpoch <= this.reconciledFullEpoch;
   }
 
   needsReconciliation(): boolean {
     return (
-      this.reconciliationRequired || this.indexedRevision < this.dirtyRevision
+      this.requiresFullReconciliation() ||
+      this.indexedRevision < this.dirtyRevision
     );
   }
 
@@ -171,13 +201,15 @@ export class RootRuntime {
     probe: () => Promise<boolean>,
     onResult?: (result: "fresh" | "stale") => void,
   ): Promise<"fresh" | "stale"> {
-    this.initialFreshnessProbe ??= this.runInitialFreshnessProbe(probe).then(
-      (result) => {
-        onResult?.(result);
-        return result;
-      },
-    );
+    this.initialFreshnessProbe ??= this.probeFreshness(probe).then((result) => {
+      onResult?.(result);
+      return result;
+    });
     return this.initialFreshnessProbe;
+  }
+
+  probeFreshness(probe: () => Promise<boolean>): Promise<"fresh" | "stale"> {
+    return this.runFreshnessProbe(probe);
   }
 
   setWatcherActive(active: boolean): void {
@@ -214,6 +246,7 @@ export class RootRuntime {
     indexedRevision: number;
     watcherActive: boolean;
     watcherPending: boolean;
+    watcherEpoch: number;
   } {
     const read = this.generation?.cache.snapshot();
     return {
@@ -224,6 +257,7 @@ export class RootRuntime {
       indexedRevision: this.indexedRevision,
       watcherActive: this.watcherActive,
       watcherPending: this.watcherPending,
+      watcherEpoch: this.watcherEpoch,
     };
   }
 
@@ -302,11 +336,12 @@ export class RootRuntime {
     }
   }
 
-  private async runInitialFreshnessProbe(
+  private async runFreshnessProbe(
     probe: () => Promise<boolean>,
   ): Promise<"fresh" | "stale"> {
     const revision = this.dirtyRevision;
     const watcherEpoch = this.watcherEpoch;
+    const reconciliationEpoch = this.fullReconciliationEpoch;
     let fresh = false;
     try {
       fresh = await probe();
@@ -316,11 +351,12 @@ export class RootRuntime {
     if (
       !fresh ||
       this.dirtyRevision !== revision ||
-      this.watcherEpoch !== watcherEpoch
+      this.watcherEpoch !== watcherEpoch ||
+      this.fullReconciliationEpoch !== reconciliationEpoch
     ) {
       return "stale";
     }
-    this.markIndexed(revision);
+    this.markReconciled(revision, reconciliationEpoch);
     return "fresh";
   }
 
