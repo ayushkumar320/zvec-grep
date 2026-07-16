@@ -118,6 +118,7 @@ test("wait_for_fresh skips reconciliation when the initial probe is fresh", asyn
       searchInput(root, "answer", "wait_for_fresh"),
     );
     assert.equal(result.freshness, "fresh");
+    assert.equal(result.indexing, undefined);
     assert.ok(
       events.some((event) => event.name === "runtime.initial_probe_fresh"),
     );
@@ -158,9 +159,69 @@ test("eventual search can skip background reconciliation", async () => {
       autoUpdate: false,
     });
     assert.equal(result.freshness, "possibly_stale");
-    assert.equal(result.updateJobId, undefined);
+    assert.deepEqual(result.indexing, { state: "idle" });
     assert.equal(backend.scheduler.getByRoot(await realpath(root)), undefined);
   } finally {
+    await backend.close();
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("eventual search reports active indexing progress", async () => {
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-search-progress-"),
+  );
+  const root = join(temporaryDirectory, "repo");
+  await mkdir(root);
+  await writeFile(join(root, "answer.ts"), "export const answer = 42;\n");
+  const service = await createZvecGrep({
+    root,
+    embeddingModel: new TestEmbeddingModel(),
+  });
+  await service.index();
+  await service.close();
+  const backend = new DaemonBackend({
+    version: "1.0.0",
+    modelPoolOptions: { createModel: () => new TestEmbeddingModel() },
+  });
+  let releaseIndexing = () => {};
+  let jobId;
+  try {
+    await backend.search(searchInput(root, "answer", "wait_for_fresh"));
+    const canonicalRoot = await realpath(root);
+    let markIndexingStarted;
+    const indexingStarted = new Promise((resolve) => {
+      markIndexingStarted = resolve;
+    });
+    const indexingReleased = new Promise((resolve) => {
+      releaseIndexing = resolve;
+    });
+    jobId = backend.scheduler.submit({
+      canonicalRoot,
+      reason: "watch",
+      run: async (report) => {
+        report({ phase: "indexing", filesIndexed: 4, filesTotal: 10 });
+        markIndexingStarted();
+        await indexingReleased;
+      },
+    }).job.id;
+    await indexingStarted;
+
+    const result = await backend.search({
+      ...searchInput(root, "answer", "eventual"),
+      autoUpdate: false,
+    });
+    assert.equal(result.freshness, "possibly_stale");
+    assert.deepEqual(result.indexing, {
+      state: "running",
+      completed: 4,
+      total: 10,
+    });
+  } finally {
+    releaseIndexing();
+    if (jobId) {
+      await backend.scheduler.wait(jobId);
+    }
     await backend.close();
     await rm(temporaryDirectory, { recursive: true, force: true });
   }

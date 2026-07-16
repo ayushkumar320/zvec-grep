@@ -257,10 +257,34 @@ export const zvecGrepIndexOutputSchema = z.object({
   reused: z.boolean(),
 });
 
+export const zvecGrepSearchIndexingSchema = z
+  .object({
+    state: z
+      .enum(["idle", "queued", "running", "failed", "cancelled"])
+      .describe("Current background indexing state."),
+    completed: z
+      .number()
+      .int()
+      .nonnegative()
+      .optional()
+      .describe("Files completed by the current indexing job."),
+    total: z
+      .number()
+      .int()
+      .nonnegative()
+      .optional()
+      .describe("Files expected in the current indexing job."),
+  })
+  .describe("Compact indexing snapshot included with possibly stale results.");
+
+export type ZvecGrepSearchIndexing = z.infer<
+  typeof zvecGrepSearchIndexingSchema
+>;
+
 export const zvecGrepSearchOutputSchema = z.object({
   root: z.string(),
   freshness: z.enum(["fresh", "possibly_stale"]),
-  update_job_id: z.string().optional(),
+  indexing: zvecGrepSearchIndexingSchema.optional(),
   result: searchResultSchema,
 });
 

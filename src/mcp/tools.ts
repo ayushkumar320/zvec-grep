@@ -15,6 +15,7 @@ import {
   zvecGrepServerStatusOutputSchema,
   type ZvecGrepIndexInput,
   type ZvecGrepIndexStatusInput,
+  type ZvecGrepSearchIndexing,
 } from "./schemas.js";
 import {
   contextText,
@@ -35,7 +36,7 @@ export type ZvecGrepIndexResult = {
 export type ZvecGrepSearchResult = {
   root: string;
   freshness: "fresh" | "possibly_stale";
-  updateJobId?: string;
+  indexing?: ZvecGrepSearchIndexing;
   result: ZvecGrepContextResult;
 };
 
@@ -125,7 +126,8 @@ export function createZvecGrepMcpServer(
       instructions: [
         "Use zvec-grep for indexed repository search.",
         "Every repository operation requires an absolute root path visible to the daemon.",
-        "Call zvec_grep_index before the first zvec_grep_search. Its wait parameter defaults to false; poll zvec_grep_index_status for background progress and set wait: true only when completion is required before continuing.",
+        "Call zvec_grep_search first. Use its freshness and indexing fields without a status preflight; call zvec_grep_index_status only for a missing index, failed or cancelled indexing, diagnostics, or explicit progress monitoring.",
+        "Call zvec_grep_index only when indexing is requested. Its wait parameter defaults to false; poll zvec_grep_index_status for background progress and set wait: true only when completion is required before continuing.",
       ].join(" "),
     },
   );
@@ -172,7 +174,7 @@ export function registerZvecGrepTools(
     {
       title: "Search with zvec-grep",
       description:
-        "Search an existing repository index and report whether results may be stale.",
+        "Search an existing repository index and report freshness plus a compact indexing snapshot when results may be stale.",
       inputSchema: zvecGrepSearchInputSchema.shape,
       outputSchema: zvecGrepSearchOutputSchema.shape,
       annotations: {
@@ -188,7 +190,7 @@ export function registerZvecGrepTools(
       const structuredContent = {
         root: response.root,
         freshness: response.freshness,
-        update_job_id: response.updateJobId,
+        indexing: response.indexing,
         result: simplifyContextResult(
           response.result,
           normalized.maxContentChars,
@@ -196,8 +198,8 @@ export function registerZvecGrepTools(
       };
       const statusLines = [
         `freshness: ${response.freshness}`,
-        ...(response.updateJobId
-          ? [`update_job_id: ${response.updateJobId}`]
+        ...(response.indexing
+          ? [`indexing: ${formatSearchIndexing(response.indexing)}`]
           : []),
       ];
       return toolResult(
@@ -267,6 +269,15 @@ export function registerZvecGrepTools(
       );
     },
   );
+}
+
+function formatSearchIndexing(
+  indexing: NonNullable<ZvecGrepSearchResult["indexing"]>,
+): string {
+  if (indexing.completed === undefined || indexing.total === undefined) {
+    return indexing.state;
+  }
+  return `${indexing.state} (${indexing.completed}/${indexing.total})`;
 }
 
 function formatIndexStatus(

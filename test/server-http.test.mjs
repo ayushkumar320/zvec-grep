@@ -315,9 +315,15 @@ test("Streamable HTTP serves health, MCP contracts and a real cached index searc
   const writerSearch = await writerSearchPromise;
   assert.equal(writerSearch.isError, undefined);
   assert.equal(writerSearch.structuredContent.freshness, "possibly_stale");
+  assert.equal(writerSearch.structuredContent.indexing.state, "running");
   assert.equal(
-    writerSearch.structuredContent.update_job_id,
-    indexed.structuredContent.job_id,
+    typeof writerSearch.structuredContent.indexing.completed,
+    "number",
+  );
+  assert.equal(typeof writerSearch.structuredContent.indexing.total, "number");
+  assert.ok(
+    writerSearch.structuredContent.indexing.completed <=
+      writerSearch.structuredContent.indexing.total,
   );
   blockEmbedding = false;
   releaseEmbedding();

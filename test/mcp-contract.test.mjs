@@ -18,7 +18,11 @@ function createBackend() {
     search: async (input) => ({
       root: input.root,
       freshness: "possibly_stale",
-      updateJobId: "job-2",
+      indexing: {
+        state: "running",
+        completed: 12,
+        total: 20,
+      },
       result: {
         query:
           input.queries?.join(" ") ??
@@ -119,6 +123,17 @@ test("server contract exposes exactly the four final tools with stable annotatio
   assert.equal(annotations.zvec_grep_search.readOnlyHint, false);
   assert.equal(annotations.zvec_grep_index_status.readOnlyHint, true);
   assert.equal(annotations.zvec_grep_server_status.readOnlyHint, true);
+  const search = tools.find((tool) => tool.name === "zvec_grep_search");
+  assert.match(search.description, /compact indexing snapshot/);
+  assert.match(
+    search.outputSchema.properties.indexing.description,
+    /possibly stale results/,
+  );
+  assert.ok(
+    search.outputSchema.properties.indexing.properties.state.enum.includes(
+      "cancelled",
+    ),
+  );
   for (const tool of tools) {
     assert.ok(tool.outputSchema, `${tool.name} must declare structured output`);
   }
@@ -316,5 +331,11 @@ test("all tools return output-schema-compatible structured content", async (t) =
     search.structuredContent.result.items[0].content,
     /truncated 80 chars/,
   );
-  assert.equal(search.structuredContent.update_job_id, "job-2");
+  assert.deepEqual(search.structuredContent.indexing, {
+    state: "running",
+    completed: 12,
+    total: 20,
+  });
+  assert.equal(search.structuredContent.update_job_id, undefined);
+  assert.match(search.content[0].text, /indexing: running \(12\/20\)/);
 });

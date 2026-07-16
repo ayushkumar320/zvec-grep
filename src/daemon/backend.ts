@@ -212,15 +212,16 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
       );
     }
     const job = updateJob ?? this.scheduler.getByRoot(runtime.canonicalRoot);
+    const freshness =
+      runtime.needsReconciliation() || (job && job.state !== "succeeded")
+        ? "possibly_stale"
+        : "fresh";
     const response: ZvecGrepSearchResult = {
       root: runtime.canonicalRoot,
-      freshness:
-        runtime.needsReconciliation() || (job && job.state !== "succeeded")
-          ? "possibly_stale"
-          : "fresh",
-      updateJobId:
-        job && (job.state === "queued" || job.state === "running")
-          ? job.id
+      freshness,
+      indexing:
+        freshness === "possibly_stale"
+          ? searchIndexingSnapshot(job)
           : undefined,
       result,
     };
@@ -609,5 +610,18 @@ function formatProgress(
     files_indexed: progress.filesIndexed,
     files_failed: progress.filesFailed,
     detail: progress.detail,
+  };
+}
+
+function searchIndexingSnapshot(
+  job: IndexJobSnapshot | undefined,
+): NonNullable<ZvecGrepSearchResult["indexing"]> {
+  const state = !job || job.state === "succeeded" ? "idle" : job.state;
+  const completed = job?.progress?.filesIndexed;
+  const total = job?.progress?.filesTotal;
+  return {
+    state,
+    ...(completed === undefined ? {} : { completed }),
+    ...(total === undefined ? {} : { total }),
   };
 }

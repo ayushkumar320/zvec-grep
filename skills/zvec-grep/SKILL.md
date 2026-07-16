@@ -21,11 +21,12 @@ Do not infer MCP failure merely because shell execution is available. Do not ret
 
 Pass the repository's daemon-visible absolute path as `root` on every repository call.
 
-1. Call `zvec_grep_index_status` once at the start of a repository investigation. Reuse that result unless the root changes, an index operation completes, or an index error requires another check.
-2. When an index exists, call `zvec_grep_search` for exploration and exact retrieval. Search defaults to `freshness: "eventual"`; use `freshness: "wait_for_fresh"` only when the result must include all pending changes. Use hybrid `queries` for concepts, `fts` for exact lexical anchors, and `vector` for semantic-only intent.
-3. Apply focused `include` and `exclude` filters early. Exclude dependencies, generated output, caches, build artifacts, fixtures, and logs unless the task concerns them.
-4. Call `zvec_grep_index` only when the user requests persistent indexing. Never silently create or rebuild an index. Its `wait` parameter defaults to false: submit the job in the background and poll `zvec_grep_index_status`; set `wait: true` only when completion is required before continuing.
-5. Call `zvec_grep_server_status` only for daemon diagnostics, not before ordinary searches.
+1. Call `zvec_grep_search` first for repository investigation. Search defaults to `freshness: "eventual"`; use `freshness: "wait_for_fresh"` only when the result must include all pending changes. Use hybrid `queries` for concepts, `fts` for exact lexical anchors, and `vector` for semantic-only intent.
+2. Read the search response's `freshness` and `indexing` fields. Use `possibly_stale` results immediately when they are sufficient; `indexing.state` reports whether background indexing is idle, queued, running, failed, or cancelled, and may include completed and total file counts. Do not call status merely because indexing is still running.
+3. Call `zvec_grep_index_status` only when search reports a missing index, indexing failed or was cancelled, or explicit progress monitoring and diagnostics are required.
+4. Apply focused `include` and `exclude` filters early. Exclude dependencies, generated output, caches, build artifacts, fixtures, and logs unless the task concerns them.
+5. Call `zvec_grep_index` only when the user requests persistent indexing. Never silently create or rebuild an index. Its `wait` parameter defaults to false: submit the job in the background and poll `zvec_grep_index_status`; set `wait: true` only when completion is required before continuing.
+6. Call `zvec_grep_server_status` only for daemon diagnostics, not before ordinary searches.
 
 If the index is missing, explain that indexed search requires an index. Ask before creating one. For exhaustive literal or regex search without an index, use the CLI fallback documented in [references/cli-fallback.md](references/cli-fallback.md).
 
