@@ -51,8 +51,8 @@ import {
   resolveZvecGrepRoot,
   type AnonymousIndexLocation,
 } from "./root.js";
-import { runLexicalFallback, runRgSearch } from "./lexical.js";
-import { defaultHome } from "../utils/path.js";
+import { runRgSearch } from "./lexical.js";
+import { defaultHome, normalizePath } from "../utils/path.js";
 import {
   acquireReadWriteLock,
   assertNoWriteLock,
@@ -138,7 +138,7 @@ export function openAnonymousReadSession(
             request,
             collection,
             anonymous: true,
-            options: { ...options, autoUpdate: false, fallback: "disabled" },
+            options: { ...options, autoUpdate: false },
             timings,
           }),
         ),
@@ -256,6 +256,16 @@ class ZvecGrepService implements ZvecGrep {
                   resetPaths: options.resetPaths === true,
                   includePaths: options.includePaths,
                   excludePaths: options.excludePaths,
+                  globs: options.globs,
+                  insensitiveGlobs: options.insensitiveGlobs,
+                  fileTypes: options.fileTypes,
+                  excludedFileTypes: options.excludedFileTypes,
+                  hidden: options.hidden,
+                  noIgnore: options.noIgnore,
+                  ignoreFiles: options.ignoreFiles,
+                  maxDepth: options.maxDepth,
+                  maxFileSizeBytes: options.maxFileSizeBytes,
+                  follow: options.follow,
                 },
               );
 
@@ -270,7 +280,7 @@ class ZvecGrepService implements ZvecGrep {
                 assertCollectionEmbeddingMatchesCurrentModel(
                   existingAfterRebuild,
                   embeddingModel,
-                  "zg --index --rebuild",
+                  "zg index --rebuild",
                 );
               }
               registry.prepareIndex(
@@ -304,6 +314,32 @@ class ZvecGrepService implements ZvecGrep {
           },
         ),
       );
+    } finally {
+      daemonWritePermit?.release();
+    }
+  }
+
+  async dropIndex(options: ZvecGrepInfoOptions = {}): Promise<boolean> {
+    this.ensureOpen();
+    const root = resolveZvecGrepRoot(options.root ?? this.root);
+    const daemonWritePermit = assertDaemonWriteAllowed(
+      root,
+      this.options.daemonInstanceToken,
+    );
+    const location = anonymousIndexLocation(root);
+    try {
+      if (!readCollectionInfo(location.home, ANONYMOUS_COLLECTION_NAME)) {
+        return false;
+      }
+
+      return await withHomeWriteLock(location.home, "index.drop", async () => {
+        const registry = new CollectionRegistry(location.home, undefined);
+        try {
+          return registry.remove(ANONYMOUS_COLLECTION_NAME);
+        } finally {
+          registry.close();
+        }
+      });
     } finally {
       daemonWritePermit?.release();
     }
@@ -410,7 +446,7 @@ class ZvecGrepService implements ZvecGrep {
         home: location.home,
         indexPath: location.collectionPath,
         source: "unindexed",
-        suggestion: "zg --index or zg --rg",
+        suggestion: "zg index or zg query --rg",
       };
     }
 
@@ -548,6 +584,16 @@ class ZvecGrepService implements ZvecGrep {
                 resetPaths: options.resetPaths === true,
                 includePaths: options.includePaths,
                 excludePaths: options.excludePaths,
+                globs: options.globs,
+                insensitiveGlobs: options.insensitiveGlobs,
+                fileTypes: options.fileTypes,
+                excludedFileTypes: options.excludedFileTypes,
+                hidden: options.hidden,
+                noIgnore: options.noIgnore,
+                ignoreFiles: options.ignoreFiles,
+                maxDepth: options.maxDepth,
+                maxFileSizeBytes: options.maxFileSizeBytes,
+                follow: options.follow,
               },
             );
 
@@ -560,7 +606,7 @@ class ZvecGrepService implements ZvecGrep {
               assertCollectionEmbeddingMatchesCurrentModel(
                 existingAfterRebuild,
                 embeddingModel,
-                "zg --collections index <name> --rebuild",
+                "zg collections index <name> --rebuild",
               );
             }
             registry.prepareIndex(name, rootPaths);
@@ -687,7 +733,7 @@ class ZvecGrepService implements ZvecGrep {
           assertCollectionEmbeddingMatchesCurrentModel(
             existing,
             embeddingModel,
-            "zg --index --rebuild",
+            "zg index --rebuild",
           );
 
           const registry = new CollectionRegistry(
@@ -749,7 +795,6 @@ class ZvecGrepService implements ZvecGrep {
               anonymous: false,
               options: {
                 ...options,
-                fallback: "disabled",
               },
               timings,
             });
@@ -788,57 +833,12 @@ class ZvecGrepService implements ZvecGrep {
           request,
           collection,
           anonymous: true,
-          options: { ...options, autoUpdate: false, fallback: "disabled" },
+          options: { ...options, autoUpdate: false },
           timings,
         }),
       );
       return withContextTimings(result, timings);
     });
-  }
-
-  private async contextFromLexicalFallback(
-    root: string,
-    request: NormalizedContextRequest,
-    options: ZvecGrepContextOptions,
-    timings: TimingCollector,
-  ): Promise<ZvecGrepContextResult> {
-    const fallbackResults = [];
-    const limit = contextGroupLimit(options.limit, request.groups.length);
-    for (const query of request.fallbackQueries) {
-      fallbackResults.push(
-        await timings.time("fallback_search", () =>
-          runLexicalFallback({
-            root,
-            query,
-            limit,
-            includePaths: options.includePaths,
-            excludePaths: options.excludePaths,
-            modifiedAfter: options.modifiedAfter,
-            modifiedBefore: options.modifiedBefore,
-            rgOptions: options.rgOptions,
-          }),
-        ),
-      );
-    }
-
-    const items = dedupeAndRerankContextItems(
-      fallbackResults.flatMap((fallback) => fallback.items),
-    );
-    const diagnostics = mergeFallbackDiagnostics(fallbackResults);
-
-    return {
-      query: request.displayQuery,
-      root,
-      source: "lexical_fallback",
-      coverage: diagnostics.truncated
-        ? "lexical_truncated"
-        : "lexical_exhaustive",
-      items,
-      diagnostics: {
-        emptyReason: items.length === 0 ? "no_matches" : undefined,
-        fallback: diagnostics,
-      },
-    };
   }
 
   private async contextFromRg(
@@ -852,11 +852,21 @@ class ZvecGrepService implements ZvecGrep {
       rgResult = await timings.time("rg_search", () =>
         runRgSearch({
           root,
-          patterns: request.fallbackQueries,
+          patterns: request.rgPatterns,
           paths: options.rgPaths,
           limit: options.limit,
           includePaths: options.includePaths,
           excludePaths: options.excludePaths,
+          globs: options.globs,
+          insensitiveGlobs: options.insensitiveGlobs,
+          fileTypes: options.fileTypes,
+          excludedFileTypes: options.excludedFileTypes,
+          hidden: options.hidden,
+          noIgnore: options.noIgnore,
+          ignoreFiles: options.ignoreFiles,
+          maxDepth: options.maxDepth,
+          maxFileSizeBytes: options.maxFileSizeBytes,
+          follow: options.follow,
           modifiedAfter: options.modifiedAfter,
           modifiedBefore: options.modifiedBefore,
           rgOptions: options.rgOptions,
@@ -883,12 +893,12 @@ class ZvecGrepService implements ZvecGrep {
       root,
       source: "rg",
       coverage: rgResult.diagnostics.truncated
-        ? "lexical_truncated"
-        : "lexical_exhaustive",
+        ? "rg_truncated"
+        : "rg_exhaustive",
       items,
       diagnostics: {
         emptyReason,
-        fallback: rgResult.diagnostics,
+        rg: rgResult.diagnostics,
         structure: structuralEnrichment.diagnostics,
       },
     };
@@ -1083,7 +1093,7 @@ class ZvecGrepService implements ZvecGrep {
           detail("operation", operation),
           detail(
             "hint",
-            `Pass "--embedding <model>", set ZVEC_GREP_EMBEDDING, or configure defaults.embedding in ${globalConfigPath()}. Existing indexes can rerun --index without --embedding to reuse the stored schema.`,
+            `Pass "--embedding <model>", set ZVEC_GREP_EMBEDDING, or configure defaults.embedding in ${globalConfigPath()}. Existing indexes can run "zg index" without --embedding to reuse the stored schema.`,
           ),
           detail(
             "examples",
@@ -1114,12 +1124,12 @@ async function contextFromOpenCollection(input: {
   timings: TimingCollector;
 }): Promise<ZvecGrepContextResult> {
   const searches: SearchPlanResult[] = [];
-  const limit = contextGroupLimit(
-    input.options.limit,
-    input.request.groups.length,
-  );
+  const groups = input.options.fuse
+    ? [{ routes: input.request.routes }]
+    : input.request.groups;
+  const limit = contextGroupLimit(input.options.limit, groups.length);
 
-  for (const group of input.request.groups) {
+  for (const group of groups) {
     const search = await input.collection.searchPlan({
       routes: group.routes,
       limit,
@@ -1128,6 +1138,10 @@ async function contextFromOpenCollection(input: {
       symbolTypes: input.options.symbolTypes,
       includePaths: input.options.includePaths,
       excludePaths: input.options.excludePaths,
+      globs: input.options.globs,
+      insensitiveGlobs: input.options.insensitiveGlobs,
+      fileTypes: input.options.fileTypes,
+      excludedFileTypes: input.options.excludedFileTypes,
       modifiedAfter: input.options.modifiedAfter,
       modifiedBefore: input.options.modifiedBefore,
     });
@@ -1309,15 +1323,15 @@ function anonymousInfoSuggestion(
   collection: CollectionInfo | null,
 ): string | undefined {
   if (!collection) {
-    return "zg --index or zg --rg";
+    return "zg index or zg query --rg";
   }
 
   if (collection.indexPolicy === "disabled") {
-    return "zg --rg";
+    return "zg query --rg";
   }
 
   if (!isCollectionIndexed(collection)) {
-    return "zg --index";
+    return "zg index";
   }
 
   return undefined;
@@ -1337,14 +1351,14 @@ function anonymousIndexMissingError(
         detail(
           "hint",
           policy === "undecided"
-            ? "Ask the user whether to build an index with zg --index, or use zg --rg for no-index search."
-            : "Run zg --index to build the enabled workspace index, or use zg --rg for no-index search.",
+            ? "Ask the user whether to build an index with zg index, or use zg query --rg for no-index search."
+            : "Run zg index to build the enabled workspace index, or use zg query --rg for no-index search.",
         ),
         detail(
           "agent_prompt",
           policy === "undecided"
-            ? "Ask the user whether this workspace should be indexed. If yes, run zg --index --embedding <model> with appropriate include/exclude filters; if no, run zg --disable-index. For immediate no-index search, use zg --rg."
-            : "This workspace is marked index-enabled but has no built index. Ask before running zg --index if an embedding model or cost is involved; otherwise use zg --rg for immediate no-index search.",
+            ? "Ask the user whether this workspace should be indexed. If yes, run zg index --embedding <model> with appropriate -g/--glob and -t/--type filters; otherwise use zg query --rg for immediate no-index search."
+            : "This workspace is marked index-enabled but has no built index. Ask before running zg index if an embedding model or cost is involved; otherwise use zg query --rg for immediate no-index search.",
         ),
       ]),
     },
@@ -1361,7 +1375,7 @@ function anonymousIndexDisabledError(root: string): EngineError {
         detail("policy", "disabled"),
         detail(
           "hint",
-          "Use zg --rg for no-index search. Run zg --index only if the user explicitly decides to index this workspace.",
+          "Use zg query --rg for no-index search. Run zg index only if the user explicitly decides to index this workspace.",
         ),
         detail("agent_action", "do_not_build_index"),
       ]),
@@ -1377,9 +1391,21 @@ function resolveIndexRootPaths(
     resetPaths: boolean;
     includePaths?: readonly string[];
     excludePaths?: readonly string[];
+    globs?: readonly string[];
+    insensitiveGlobs?: readonly string[];
+    fileTypes?: readonly string[];
+    excludedFileTypes?: readonly string[];
+    hidden?: boolean;
+    noIgnore?: boolean;
+    ignoreFiles?: readonly string[];
+    maxDepth?: number;
+    maxFileSizeBytes?: number;
+    follow?: boolean;
   },
 ): readonly (string | RootPath)[] {
-  let rootPaths = requested ?? existing?.rootPaths ?? [fallbackRoot];
+  let rootPaths = requested
+    ? inheritRequestedRootPathSettings(requested, existing?.rootPaths)
+    : (existing?.rootPaths ?? [fallbackRoot]);
 
   if (options.resetPaths) {
     rootPaths = rootPaths.map(resetRootPathFilters);
@@ -1387,18 +1413,68 @@ function resolveIndexRootPaths(
 
   if (
     options.includePaths !== undefined ||
-    options.excludePaths !== undefined
+    options.excludePaths !== undefined ||
+    options.globs !== undefined ||
+    options.insensitiveGlobs !== undefined ||
+    options.fileTypes !== undefined ||
+    options.excludedFileTypes !== undefined ||
+    options.hidden !== undefined ||
+    options.noIgnore !== undefined ||
+    options.ignoreFiles !== undefined ||
+    options.maxDepth !== undefined ||
+    options.maxFileSizeBytes !== undefined ||
+    options.follow !== undefined
   ) {
     rootPaths = rootPaths.map((rootPath) =>
-      applyRootPathFilterOverrides(
-        rootPath,
-        options.includePaths,
-        options.excludePaths,
-      ),
+      applyRootPathOverrides(rootPath, options),
     );
   }
 
   return rootPaths;
+}
+
+function inheritRequestedRootPathSettings(
+  requested: readonly (string | RootPath)[],
+  existing: readonly RootPath[] | undefined,
+): readonly (string | RootPath)[] {
+  if (!existing?.length) {
+    return requested;
+  }
+
+  return requested.map((rootPath) => {
+    const absolutePath = normalizePath(
+      typeof rootPath === "string" ? rootPath : rootPath.absolutePath,
+    );
+    const inherited = existing.find(
+      (candidate) => normalizePath(candidate.absolutePath) === absolutePath,
+    );
+    if (!inherited) {
+      return rootPath;
+    }
+
+    if (typeof rootPath === "string") {
+      return { ...inherited, absolutePath };
+    }
+
+    return {
+      ...inherited,
+      ...rootPath,
+      absolutePath,
+      include: rootPath.include ?? inherited.include,
+      exclude: rootPath.exclude ?? inherited.exclude,
+      globs: rootPath.globs ?? inherited.globs,
+      insensitiveGlobs: rootPath.insensitiveGlobs ?? inherited.insensitiveGlobs,
+      fileTypes: rootPath.fileTypes ?? inherited.fileTypes,
+      excludedFileTypes:
+        rootPath.excludedFileTypes ?? inherited.excludedFileTypes,
+      hidden: rootPath.hidden ?? inherited.hidden,
+      noIgnore: rootPath.noIgnore ?? inherited.noIgnore,
+      ignoreFiles: rootPath.ignoreFiles ?? inherited.ignoreFiles,
+      maxDepth: rootPath.maxDepth ?? inherited.maxDepth,
+      maxFileSizeBytes: rootPath.maxFileSizeBytes ?? inherited.maxFileSizeBytes,
+      follow: rootPath.follow ?? inherited.follow,
+    };
+  });
 }
 
 function resetRootPathFilters(rootPath: string | RootPath): string | RootPath {
@@ -1412,10 +1488,22 @@ function resetRootPathFilters(rootPath: string | RootPath): string | RootPath {
   };
 }
 
-function applyRootPathFilterOverrides(
+function applyRootPathOverrides(
   rootPath: string | RootPath,
-  include: readonly string[] | undefined,
-  exclude: readonly string[] | undefined,
+  options: {
+    includePaths?: readonly string[];
+    excludePaths?: readonly string[];
+    globs?: readonly string[];
+    insensitiveGlobs?: readonly string[];
+    fileTypes?: readonly string[];
+    excludedFileTypes?: readonly string[];
+    hidden?: boolean;
+    noIgnore?: boolean;
+    ignoreFiles?: readonly string[];
+    maxDepth?: number;
+    maxFileSizeBytes?: number;
+    follow?: boolean;
+  },
 ): RootPath {
   const normalized =
     typeof rootPath === "string"
@@ -1427,8 +1515,19 @@ function applyRootPathFilterOverrides(
 
   return {
     ...normalized,
-    include: include ?? normalized.include,
-    exclude: exclude ?? normalized.exclude,
+    include: options.includePaths ?? normalized.include,
+    exclude: options.excludePaths ?? normalized.exclude,
+    globs: options.globs ?? normalized.globs,
+    insensitiveGlobs: options.insensitiveGlobs ?? normalized.insensitiveGlobs,
+    fileTypes: options.fileTypes ?? normalized.fileTypes,
+    excludedFileTypes:
+      options.excludedFileTypes ?? normalized.excludedFileTypes,
+    hidden: options.hidden ?? normalized.hidden,
+    noIgnore: options.noIgnore ?? normalized.noIgnore,
+    ignoreFiles: options.ignoreFiles ?? normalized.ignoreFiles,
+    maxDepth: options.maxDepth ?? normalized.maxDepth,
+    maxFileSizeBytes: options.maxFileSizeBytes ?? normalized.maxFileSizeBytes,
+    follow: options.follow ?? normalized.follow,
   };
 }
 
@@ -1452,7 +1551,7 @@ function indexedEmbeddingSchema(
     code: "ZVEC_GREP.ENGINE.SERVICE.INDEX_MISSING",
     context: errorDetails([
       collectionDetail(info.name),
-      detail("hint", "Run zg --index to build this index."),
+      detail("hint", "Run zg index to build this index."),
     ]),
   });
 }
@@ -1614,14 +1713,13 @@ function contextGroupLimit(
 
 type NormalizedContextRequest = {
   displayQuery: string;
-  fallbackQueries: string[];
+  rgPatterns: string[];
   routes: SearchPlan["routes"];
   groups: NormalizedContextGroup[];
 };
 
 type NormalizedContextGroup = {
   routes: SearchPlan["routes"];
-  fallbackQuery: string;
 };
 
 function normalizeContextRequest(
@@ -1633,7 +1731,13 @@ function normalizeContextRequest(
   );
   const extraRoutes = normalizeContextRoutes(options.routes ?? []);
 
-  if (primaryQueries.length === 0 && extraRoutes.length === 0) {
+  const hasPatternFiles =
+    options.rg === true && (options.rgOptions?.patternFiles?.length ?? 0) > 0;
+  if (
+    primaryQueries.length === 0 &&
+    extraRoutes.length === 0 &&
+    !hasPatternFiles
+  ) {
     throw new EngineError(
       "zvec-grep context requires a non-empty query or route",
       {
@@ -1644,15 +1748,22 @@ function normalizeContextRequest(
 
   const groups = contextGroups(primaryQueries, extraRoutes);
   const routes = groups.flatMap((group) => group.routes);
-  const fallbackQueries = groups.map((group) => group.fallbackQuery);
+  const rgPatterns = [
+    ...primaryQueries,
+    ...extraRoutes.map((route) => route.query),
+  ];
   const displayQuery =
     primaryQueries.length > 0
       ? primaryQueries.join(" | ")
-      : extraRoutes.map((route) => route.query).join(" | ");
+      : extraRoutes.length > 0
+        ? extraRoutes.map((route) => route.query).join(" | ")
+        : options
+            .rgOptions!.patternFiles!.map((path) => `@${path}`)
+            .join(" | ");
 
   return {
     displayQuery,
-    fallbackQueries,
+    rgPatterns,
     routes,
     groups,
   };
@@ -1712,11 +1823,9 @@ function contextGroups(
         { mode: "fts" as const, query },
         { mode: "vector" as const, query },
       ],
-      fallbackQuery: query,
     })),
     ...extraRoutes.map((route) => ({
       routes: [route],
-      fallbackQuery: route.query,
     })),
   ];
 }
@@ -1782,25 +1891,6 @@ function contextItemDedupeKey(item: ZvecGrepContextItem): string {
   return ["range", item.file.absolutePath, JSON.stringify(item.range)].join(
     ":",
   );
-}
-
-function mergeFallbackDiagnostics(
-  results: readonly Awaited<ReturnType<typeof runLexicalFallback>>[],
-) {
-  const [first] = results;
-  if (!first) {
-    throw new EngineError(
-      "zvec-grep lexical fallback requires at least one query",
-      {
-        code: "ZVEC_GREP.ENGINE.SERVICE.EMPTY_QUERY",
-      },
-    );
-  }
-
-  return {
-    ...first.diagnostics,
-    truncated: results.some((result) => result.diagnostics.truncated),
-  };
 }
 
 type ContextItemTarget = {

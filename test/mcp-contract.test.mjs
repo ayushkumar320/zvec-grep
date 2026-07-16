@@ -209,6 +209,18 @@ test("search normalizes query, path and time inputs before calling the backend",
       fts: ["  ModelLease  "],
       include: "src/**, test/**",
       exclude: ["dist/**", " coverage/** "],
+      globs: ["!*.ts", "keep.ts"],
+      insensitiveGlobs: ["README*"],
+      fileTypes: ["ts"],
+      excludedFileTypes: ["json"],
+      fuse: true,
+      hidden: true,
+      noIgnore: true,
+      ignoreFiles: [".ignore-extra"],
+      maxDepth: 3,
+      maxFileSizeBytes: 4096,
+      follow: true,
+      embeddingConcurrency: 2,
       modifiedAfter: "2025-01-01T00:00:00.000Z",
     },
   });
@@ -217,6 +229,18 @@ test("search normalizes query, path and time inputs before calling the backend",
   assert.deepEqual(received.routes, [{ mode: "fts", query: "ModelLease" }]);
   assert.deepEqual(received.includePaths, ["src/**", "test/**"]);
   assert.deepEqual(received.excludePaths, ["dist/**", "coverage/**"]);
+  assert.deepEqual(received.globs, ["!*.ts", "keep.ts"]);
+  assert.deepEqual(received.insensitiveGlobs, ["README*"]);
+  assert.deepEqual(received.fileTypes, ["ts"]);
+  assert.deepEqual(received.excludedFileTypes, ["json"]);
+  assert.equal(received.fuse, true);
+  assert.equal(received.hidden, true);
+  assert.equal(received.noIgnore, true);
+  assert.deepEqual(received.ignoreFiles, [".ignore-extra"]);
+  assert.equal(received.maxDepth, 3);
+  assert.equal(received.maxFileSizeBytes, 4096);
+  assert.equal(received.follow, true);
+  assert.equal(received.embeddingConcurrency, 2);
   assert.equal(received.modifiedAfter, Date.parse("2025-01-01T00:00:00.000Z"));
   assert.equal(received.freshness, "eventual");
   assert.equal(received.autoUpdate, true);

@@ -22,7 +22,7 @@ test("managed rg runs locally when indexed operations use server mode", async (t
 
   const result = await execFileAsync(
     process.execPath,
-    [cliPath, "--rg", "-n", "exactNeedle", "src"],
+    [cliPath, "query", "--rg", "-n", "exactNeedle", "src"],
     {
       cwd: root,
       env: { ...process.env, ZVEC_GREP_MODE: "server" },

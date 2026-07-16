@@ -15,6 +15,7 @@ import {
   printCollectionRemoveResult,
   printIndexPathFilterTip,
   printIndexResult,
+  printServerIndexInfo,
 } from "../../dist/cli/format/status.js";
 import { EngineError } from "../../dist/engine/errors/index.js";
 
@@ -68,6 +69,7 @@ function collection(overrides = {}) {
         recursive: true,
         include: ["src/**"],
         exclude: ["**/*.test.ts"],
+        ignoreFiles: [".rgignore"],
       },
     ],
     indexPolicy: "enabled",
@@ -210,7 +212,7 @@ function contextResult(overrides = {}) {
           { id: "semantic", mode: "vector", query: "query expanded" },
         ],
       },
-      fallback: {
+      rg: {
         backend: "bundled-rg",
         command: "/path with spaces/rg",
         args: ["--json", "query value"],
@@ -262,20 +264,15 @@ test("context formatters render indexed, lexical, metadata, preview, trace, and 
     "warning: skipped missing paths: missing one, missing-two",
   ]);
 
-  for (const reason of [
-    "no_matches",
-    "no_searchable_files",
-    "index_unavailable",
-    "search_failed",
-  ]) {
+  for (const reason of ["no_matches", "no_searchable_files"]) {
     const empty = contextResult({
-      source: "lexical_fallback",
-      coverage: "lexical_exhaustive",
+      source: "rg",
+      coverage: "rg_exhaustive",
       collection: undefined,
       items: [],
       diagnostics: {
         emptyReason: reason,
-        fallback: {
+        rg: {
           backend: "rg",
           command: "rg",
           args: [],
@@ -303,18 +300,18 @@ test("debug formatter reports every diagnostic and trace availability state", as
   );
   const text = full.errors.join("\n");
   assert.match(text, /collection=docs/);
-  assert.match(text, /fallback_command=/);
+  assert.match(text, /rg_command=/);
   assert.match(text, /structural_enrichment=full/);
   assert.match(text, /timings=search:12ms\(2x\)/);
   assert.match(text, /trace=inline/);
 
-  const fallback = await captureConsole(() =>
+  const rg = await captureConsole(() =>
     printDebug(
       contextResult({ source: "rg", collection: undefined, items: [] }),
       { trace: true },
     ),
   );
-  assert.match(fallback.errors.join("\n"), /trace=unavailable source=/);
+  assert.match(rg.errors.join("\n"), /trace=unavailable source=rg/);
 
   const noTrace = await captureConsole(() =>
     printDebug(contextResult({ items: [{ ...contextResult().items[1] }] }), {
@@ -393,10 +390,53 @@ test("status formatters cover collections, anonymous states, failures, filters, 
     printIndexPathFilterTip({ color: "never", includePaths: [] });
     printCollectionRemoveResult("docs", true, { color: "never" });
     printCollectionRemoveResult("missing", false, { color: "never" });
+    printServerIndexInfo(
+      {
+        root: "/repo",
+        indexed: true,
+        index_policy: "enabled",
+        source: "index",
+        persistent: {
+          home: "/repo/.zvec-grep",
+          index_path: "/repo/.zvec-grep/index",
+          collection: {
+            root_paths: [
+              {
+                absolute_path: "/repo",
+                recursive: true,
+                globs: ["src/**"],
+                file_types: ["ts"],
+              },
+            ],
+            embedding: {
+              provider: "qwen",
+              model: "text-embedding-v4",
+              dimension: 16,
+              metric: "cosine",
+            },
+          },
+          files: {
+            stored: 4,
+            indexed: 3,
+            pending: 1,
+            failed: 0,
+            entities: 7,
+          },
+          suggestion: "zg index",
+        },
+        runtime: {
+          job_state: "running",
+          progress: { files_indexed: 3, files_total: 4 },
+        },
+      },
+      { color: "never" },
+    );
   });
   assert.match(output.logs.join("\n"), /failed_reasons/);
   assert.match(output.logs.join("\n"), /1m 5s/);
+  assert.match(output.logs.join("\n"), /ignore-file=\.rgignore/);
   assert.match(output.logs.join("\n"), /Default indexing skips/);
+  assert.match(output.logs.join("\n"), /progress\s+3\/4/);
 
   for (const stateInfo of [
     {
@@ -440,12 +480,12 @@ test("status formatters cover collections, anonymous states, failures, filters, 
       root: "/repo",
       indexed: stateInfo.indexed,
       indexPolicy: stateInfo.indexPolicy,
-      source: stateInfo.indexed ? "index" : "lexical_fallback",
+      source: stateInfo.indexed ? "index" : "unindexed",
       home: "/repo/.zvec-grep",
       indexPath: "/repo/.zvec-grep/index",
       collection: stateInfo.collection,
       status: stateInfo.status,
-      suggestion: "zg --index",
+      suggestion: "zg index",
     };
     const rendered = await captureConsole(() =>
       printAnonymousInfo(anonymous, { color: "never" }),

@@ -29,8 +29,12 @@ import {
   normalizePathForMatch,
   normalizePathPattern,
   pathPatternMatches,
+  pathPatternMatchesCaseInsensitive,
   pathPatternMightMatchDescendant,
+  ripgrepGlobMatches,
+  ripgrepGlobMatchesCaseInsensitive,
 } from "../../dist/engine/utils/glob.js";
+import { matchesFileSelection } from "../../dist/engine/utils/file-selection.js";
 import {
   isPathInside,
   normalizePath,
@@ -43,6 +47,7 @@ import {
 
 test("CLI argument parser handles command, provider, path, and rg options", () => {
   const parsed = parseArgs([
+    "query",
     "--human",
     "--trace",
     "--preview",
@@ -55,13 +60,15 @@ test("CLI argument parser handles command, provider, path, and rg options", () =
     "secret",
     "--endpoint",
     "https://example.test/embeddings",
-    "--include",
-    "src/**,test/**",
-    "--exclude=dist/**",
+    "-g",
+    "src/**",
+    "-gtest/**",
+    "--glob=!dist/**",
     "--modified-after",
     "2026-01-01",
     "query text",
   ]);
+  assert.equal(parsed.command, "query");
   assert.deepEqual(parsed.positionals, ["query text"]);
   assert.equal(parsed.options.human, true);
   assert.equal(parsed.options.trace, true);
@@ -69,11 +76,11 @@ test("CLI argument parser handles command, provider, path, and rg options", () =
   assert.equal(parsed.options.limit, 7);
   assert.equal(parsed.options.embedding, "qwen/text-embedding-v4");
   assert.equal(parsed.options.endpoint, "https://example.test/embeddings");
-  assert.deepEqual(parsed.options.includePaths, ["src/**", "test/**"]);
-  assert.deepEqual(parsed.options.excludePaths, ["dist/**"]);
+  assert.deepEqual(parsed.options.globs, ["src/**", "test/**", "!dist/**"]);
   assert.equal(typeof parsed.options.modifiedAfter, "number");
 
   const rg = parseArgs([
+    "query",
     "--rg",
     "-F",
     "-i",
@@ -86,11 +93,10 @@ test("CLI argument parser handles command, provider, path, and rg options", () =
   ]);
   assert.equal(rg.options.rg, true);
   assert.deepEqual(rg.positionals, ["needle", "src"]);
-  assert.equal(rg.options.rgOptions?.fixedStrings, true);
-  assert.equal(rg.options.rgOptions?.ignoreCase, true);
+  assert.deepEqual(rg.options.rgOptions?.extraArgs, ["-F", "-i"]);
   assert.equal(rg.options.rgOptions?.beforeContext, 2);
   assert.equal(rg.options.rgOptions?.afterContext, 2);
-  assert.deepEqual(rg.options.includePaths, ["*.ts"]);
+  assert.deepEqual(rg.options.globs, ["*.ts"]);
 });
 
 test("CLI parsers reject invalid values and normalize supported values", () => {
@@ -106,13 +112,20 @@ test("CLI parsers reject invalid values and normalize supported values", () => {
     1700000000000,
   );
   assert.throws(() => parseLlamaGpu("magic"), /Unsupported llama GPU mode/);
-  assert.throws(() => parseArgs(["--limit", "0", "query"]), /positive integer/);
   assert.throws(
-    () => parseArgs(["--preview", "huge", "query"]),
+    () => parseArgs(["query", "--limit", "0", "query"]),
+    /positive integer/,
+  );
+  assert.throws(
+    () => parseArgs(["query", "--limit", "2x", "query"]),
+    /positive integer/,
+  );
+  assert.throws(
+    () => parseArgs(["query", "--preview", "huge", "query"]),
     /Unsupported preview mode/,
   );
-  assert.throws(() => parseArgs(["--json", "query"]), /removed/);
-  assert.throws(() => parseArgs(["--unknown"]), /Unknown option/);
+  assert.throws(() => parseArgs(["query", "--json", "query"]), /removed/);
+  assert.throws(() => parseArgs(["--unknown"]), /Unknown command/);
 });
 
 test("CLI parser covers utility commands, provider controls, routes, and equals syntax", () => {
@@ -124,7 +137,7 @@ test("CLI parser covers utility commands, provider controls, routes, and equals 
     "--mcp-tool-timeout=30",
     "--yes",
   ]);
-  assert.equal(install.options.install, true);
+  assert.equal(install.command, "install");
   assert.deepEqual(install.options.installTargets, [
     "codex",
     "claude",
@@ -133,19 +146,24 @@ test("CLI parser covers utility commands, provider controls, routes, and equals 
   assert.equal(install.options.installMcpToolTimeoutSeconds, 30);
 
   assert.throws(() => parseArgs(["serve", "--mcp"]), /removed/i);
-  assert.equal(parseArgs(["-h"]).options.help, true);
-  assert.equal(parseArgs(["-v"]).options.version, true);
-  assert.equal(parseArgs(["--disable-index"]).options.disableIndex, true);
-  assert.equal(parseArgs(["--status"]).options.status, true);
-  assert.equal(parseArgs(["--collections"]).options.collections, true);
+  assert.equal(parseArgs(["-h"]).command, "help");
+  assert.equal(parseArgs(["help", "query"]).helpTopic, "query");
+  assert.equal(parseArgs(["-v"]).command, "version");
+  assert.equal(parseArgs(["version", "-v"]).command, "version");
+  assert.equal(parseArgs(["version", "--version"]).command, "version");
+  assert.deepEqual(
+    parseArgs(["query", "--rg", "-v", "needle"]).options.rgOptions?.extraArgs,
+    ["-v"],
+  );
+  assert.equal(parseArgs(["index", "--drop", "--yes"]).options.drop, true);
+  assert.equal(parseArgs(["status"]).command, "status");
+  assert.equal(parseArgs(["collections"]).command, "collections");
 
   const query = parseArgs([
+    "query",
     "--debug",
     "--human",
     "--preview=full",
-    "--rebuild",
-    "--force",
-    "--no-fallback",
     "--no-auto-update",
     "--prefer-symbol",
     "--collection",
@@ -162,18 +180,23 @@ test("CLI parser covers utility commands, provider controls, routes, and equals 
     "3",
     "--embedding-concurrency",
     "4",
+    "--hybrid",
+    "zero",
     "--fts",
     "one",
+    "--fts",
     "two",
     "--vector",
     "three",
     "--color",
     "auto",
-    "--include=src/**",
-    "--include",
+    "--glob=src/**",
+    "--glob",
     "docs/**",
-    "--exclude",
-    "dist/**",
+    "--glob",
+    "!dist/**",
+    "--type",
+    "ts",
     "--modified-before",
     "2026-01-01T00:00:00Z",
     "--symbol-type",
@@ -184,17 +207,21 @@ test("CLI parser covers utility commands, provider controls, routes, and equals 
   assert.equal(query.options.debug, true);
   assert.equal(query.options.llamaGpu, "vulkan");
   assert.equal(query.options.embeddingParallelism, 3);
+  assert.deepEqual(query.options.hybridQueries, ["zero"]);
   assert.deepEqual(query.options.routes, [
     { mode: "fts", query: "one" },
     { mode: "fts", query: "two" },
     { mode: "vector", query: "three" },
   ]);
   assert.deepEqual(query.options.symbolTypes, ["class"]);
+  assert.deepEqual(query.options.globs, ["src/**", "docs/**", "!dist/**"]);
+  assert.deepEqual(query.options.fileTypes, ["ts"]);
   assert.deepEqual(query.positionals, ["-literal-query"]);
 });
 
 test("CLI parser covers managed rg long and short compatibility options", () => {
   const long = parseArgs([
+    "query",
     "--rg",
     "--ignore-case",
     "--word-regexp",
@@ -217,88 +244,125 @@ test("CLI parser covers managed rg long and short compatibility options", () => 
     "--glob=*.ts",
     "--glob",
     "!*.test.ts",
+    "--iglob=*.MD",
+    "--type=ts",
+    "--type-not",
+    "json",
+    "--ignore-file=.rgignore",
+    "--max-depth=4",
+    "--max-filesize",
+    "2M",
+    "--follow",
+    "--file=patterns.txt",
+    "--line-regexp",
+    "--invert-match",
+    "--max-count=3",
+    "--modified-after",
+    "2026-01-01",
     "needle",
   ]);
   assert.deepEqual(long.options.rgOptions?.patterns, ["first", "second"]);
   assert.equal(long.options.rgOptions?.beforeContext, 3);
   assert.equal(long.options.rgOptions?.afterContext, 4);
-  assert.deepEqual(long.options.includePaths, ["*.ts"]);
-  assert.deepEqual(long.options.excludePaths, ["*.test.ts"]);
+  assert.deepEqual(long.options.globs, ["*.ts", "!*.test.ts"]);
+  assert.deepEqual(long.options.insensitiveGlobs, ["*.MD"]);
+  assert.deepEqual(long.options.fileTypes, ["ts"]);
+  assert.deepEqual(long.options.excludedFileTypes, ["json"]);
+  assert.equal(long.options.hidden, true);
+  assert.equal(long.options.noIgnore, true);
+  assert.deepEqual(long.options.ignoreFiles, [".rgignore"]);
+  assert.equal(long.options.maxDepth, 4);
+  assert.equal(long.options.maxFileSizeBytes, 2 * 1024 * 1024);
+  assert.equal(long.options.follow, true);
+  assert.equal(long.options.modifiedAfter, new Date(2026, 0, 1).getTime());
+  assert.deepEqual(long.options.rgOptions?.patternFiles, ["patterns.txt"]);
   assert.ok(long.options.rgOptions?.extraArgs?.includes("--encoding"));
+  assert.ok(long.options.rgOptions?.extraArgs?.includes("--fixed-strings"));
+  assert.ok(long.options.rgOptions?.extraArgs?.includes("--ignore-case"));
+  assert.ok(long.options.rgOptions?.extraArgs?.includes("--word-regexp"));
 
   const short = parseArgs([
+    "query",
     "--rg",
-    "-nHFiwPSsuUz",
+    "-nHFiwPSsuvxUzL",
     "-einline",
     "-g*.js",
     "-tts",
     "-T",
     "json",
     "-Eutf8",
+    "-m2",
+    "-j1",
     "-A2",
     "-B",
     "3",
     "-C4",
     "needle",
   ]);
-  assert.equal(short.options.rgOptions?.fixedStrings, true);
-  assert.equal(short.options.rgOptions?.ignoreCase, true);
-  assert.equal(short.options.rgOptions?.wordRegexp, true);
+  assert.ok(short.options.rgOptions?.extraArgs?.includes("-F"));
+  assert.ok(short.options.rgOptions?.extraArgs?.includes("-i"));
+  assert.ok(short.options.rgOptions?.extraArgs?.includes("-w"));
   assert.deepEqual(short.options.rgOptions?.patterns, ["inline"]);
   assert.equal(short.options.rgOptions?.beforeContext, 4);
   assert.equal(short.options.rgOptions?.afterContext, 4);
-  assert.deepEqual(short.options.includePaths, ["*.js"]);
+  assert.deepEqual(short.options.globs, ["*.js"]);
+  assert.deepEqual(short.options.fileTypes, ["ts"]);
+  assert.deepEqual(short.options.excludedFileTypes, ["json"]);
+  assert.equal(short.options.follow, true);
 });
 
 test("CLI shape validation rejects every incompatible command family", () => {
   const invalid = [
-    [["--index", "--collections"], /cannot be used together/],
-    [["install", "--index"], /cannot be combined/],
-    [["serve", "--mcp", "--status"], /removed/i],
     [["serve"], /removed/i],
-    [["--mcp"], /unknown option/i],
-    [["--disable-index", "--collections"], /cannot be used together/],
-    [["--disable-index", "--index"], /cannot be used together/],
-    [["--disable-index", "--status"], /cannot be used together/],
-    [["--status", "--collections"], /cannot be used together/],
-    [["--status", "--index"], /cannot be used together/],
-    [["--status", "--collection", "docs"], /does not accept/],
-    [["--index", "--collection", "docs"], /does not accept/],
-    [["--disable-index", "--collection", "docs"], /does not accept/],
-    [["--rg", "--collection", "docs"], /does not accept/],
-    [["--collections", "--collection", "docs"], /cannot be used together/],
-    [["install", "--collection", "docs"], /does not accept/],
-    [["--mcp-tool-timeout", "10"], /only be used with zg install/],
-    [["serve", "--mcp", "--collection", "docs"], /removed/i],
-    [["--index", "--fts", "query"], /only be used with query/],
-    [["--status", "--rg"], /only be used with query/],
-    [["--collections", "--preview", "short"], /only be used with query/],
-    [["--index", "--no-auto-update"], /only be used with query/],
-    [["--rg", "--fts", "query"], /cannot be combined/],
-    [["--rg", "--preview", "short"], /not supported with --rg/],
-    [["--rg", "--no-fallback"], /cannot be combined/],
-    [["--rg", "--trace"], /cannot be combined/],
-    [["--rg", "--prefer-symbol"], /indexed symbol options/],
-    [["--reset-paths"], /only be used with --index/],
-    [["--ignore-case"], /only be used with --rg/],
     [["serve", "--mcp", "--fts", "query"], /removed/i],
+    [["query", "--mcp", "query"], /Unknown option/],
+    [["status", "--collection", "docs"], /only be used with zg query/],
+    [["index", "--fts", "query"], /only be used with zg query/],
+    [["status", "--rg", "query"], /only be used with zg query/],
+    [["collections", "--preview", "short"], /only be used with zg query/],
+    [["index", "--no-auto-update"], /only be used with zg query/],
+    [["query", "--rg", "query", "--fts", "query"], /cannot be combined/],
+    [["query", "--rg", "query", "--hybrid", "query"], /cannot be combined/],
+    [["query", "--rg", "query", "--fuse"], /cannot be combined/],
+    [
+      ["query", "--rg", "query", "--preview", "short"],
+      /not supported with --rg/,
+    ],
+    [["query", "--rg", "query", "--trace"], /cannot be combined/],
+    [["query", "--rg", "query", "--prefer-symbol"], /indexed symbol options/],
+    [["query", "--rg", "query", "--no-auto-update"], /indexed refresh options/],
+    [
+      ["query", "--rg", "query", "--embedding-concurrency", "2"],
+      /indexed refresh options/,
+    ],
+    [["query", "--reset-paths", "query"], /only be used with zg index/],
+    [["query", "--ignore-case", "query"], /only be used with --rg/],
+    [["query", "--hidden", "query"], /index commands or zg query --rg/],
+    [["install", "-g", "src/**"], /query or index commands/],
+    [["query", "--drop", "query"], /only be used with zg index/],
+    [["index", "--drop", "--rebuild"], /cannot be combined/],
+    [["index", "--drop", "-g", "src/**"], /cannot be combined/],
+    [["uninstall", "--force"], /only be used with zg install/],
+    [["status", "--target", "codex"], /only be used with zg install/],
   ];
   for (const [args, message] of invalid) {
     assert.throws(() => parseArgs(args), message, args.join(" "));
   }
 
   for (const args of [
-    ["--color", "sometimes"],
-    ["--symbol-type", "method"],
-    ["--modified-after", "not-a-date"],
-    ["--modified-after", "999999999999999999999"],
-    ["--modified-after", "2026-13-40"],
-    ["--context", "-1"],
-    ["--count"],
-    ["--rg", "-l"],
-    ["--rg", "-q"],
-    ["--fts"],
-    ["--target"],
+    ["query", "--color", "sometimes", "query"],
+    ["query", "--symbol-type", "method", "query"],
+    ["query", "--modified-after", "not-a-date", "query"],
+    ["query", "--modified-after", "999999999999999999999", "query"],
+    ["query", "--modified-after", "2026-13-40", "query"],
+    ["query", "--rg", "--context", "-1", "query"],
+    ["query", "--count", "query"],
+    ["query", "--rg", "-l", "query"],
+    ["query", "--rg", "-q", "query"],
+    ["query", "--rg", "--stats", "query"],
+    ["query", "--include", "src/**", "query"],
+    ["query", "--fts"],
+    ["install", "--target"],
   ]) {
     assert.throws(() => parseArgs(args), undefined, args.join(" "));
   }
@@ -395,8 +459,34 @@ test("glob and path helpers cover literal, wildcard, and descendant matching", (
   assert.equal(hasPathGlob("src/**"), true);
   assert.equal(pathPatternMatches("src/**", "src/nested/file.ts"), true);
   assert.equal(pathPatternMatches("*.ts", "src/file.ts"), true);
+  assert.equal(pathPatternMatches("*.[chH]", "src/file.H"), true);
+  assert.equal(
+    pathPatternMatchesCaseInsensitive("*.md", "docs/README.MD"),
+    true,
+  );
   assert.equal(pathPatternMatches("src", "src/nested/file.ts"), true);
   assert.equal(pathPatternMatches("", "src/file.ts"), false);
+  assert.equal(ripgrepGlobMatches("README.md", "docs/README.md"), true);
+  assert.equal(ripgrepGlobMatches("*.{ts,md}", "docs/README.md"), true);
+  assert.equal(ripgrepGlobMatches("*.{ts,md}", "src/main.ts"), true);
+  assert.equal(ripgrepGlobMatches("*.{ts,md}", "src/main.js"), false);
+  assert.equal(
+    ripgrepGlobMatches("src/{generated,{api,core}}/**", "src/core/main.ts"),
+    true,
+  );
+  assert.equal(ripgrepGlobMatches("src", "src/nested/file.ts"), false);
+  assert.equal(
+    ripgrepGlobMatchesCaseInsensitive("README.MD", "docs/readme.md"),
+    true,
+  );
+  assert.equal(
+    matchesFileSelection(
+      "src/main.ts",
+      { globs: ["!*.ts", "main.ts"] },
+      { include: [], exclude: [] },
+    ),
+    true,
+  );
   assert.equal(
     pathPatternMightMatchDescendant("src/generated/**", "src"),
     true,

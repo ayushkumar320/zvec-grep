@@ -18,7 +18,7 @@ const cliPath = resolve("dist/cli/index.js");
 
 test("server run parses a loopback listen address", () => {
   const parsed = parseArgs(["server", "run", "--listen", "127.0.0.1:8123"]);
-  assert.equal(parsed.options.server, true);
+  assert.equal(parsed.command, "server");
   assert.equal(parsed.options.serverAction, "run");
   assert.equal(parsed.options.listen, "127.0.0.1:8123");
   assert.deepEqual(parseListenAddress(parsed.options.listen), {
@@ -32,14 +32,20 @@ test("server lifecycle and client mode arguments are parsed", () => {
     const parsed = parseArgs(["server", action]);
     assert.equal(parsed.options.serverAction, action);
   }
-  assert.equal(parseArgs(["--mode", "server", "query"]).options.mode, "server");
-  assert.equal(parseArgs(["--mode=auto", "query"]).options.mode, "auto");
+  assert.equal(
+    parseArgs(["query", "--mode", "server", "query"]).options.mode,
+    "server",
+  );
+  assert.equal(
+    parseArgs(["query", "--mode=auto", "query"]).options.mode,
+    "auto",
+  );
   assert.throws(
-    () => parseArgs(["--mode", "invalid", "query"]),
+    () => parseArgs(["query", "--mode", "invalid", "query"]),
     /direct, server, or auto/i,
   );
   assert.throws(
-    () => parseArgs(["--force-direct", "query"]),
+    () => parseArgs(["query", "--force-direct", "query"]),
     /requires --mode direct/i,
   );
 });
@@ -57,9 +63,9 @@ test("server queries default to eventual freshness and allow explicit fresh read
     freshness: "eventual",
     autoUpdate: false,
   });
-  assert.equal(parseArgs(["--fresh", "query"]).options.fresh, true);
+  assert.equal(parseArgs(["query", "--fresh", "query"]).options.fresh, true);
   assert.throws(
-    () => parseArgs(["--fresh", "--no-auto-update", "query"]),
+    () => parseArgs(["query", "--fresh", "--no-auto-update", "query"]),
     /cannot be combined/i,
   );
 });
@@ -78,7 +84,7 @@ test("server run rejects non-loopback addresses and unrelated listen flags", () 
     /loopback/i,
   );
   assert.throws(
-    () => parseArgs(["--listen", "127.0.0.1:7999", "query"]),
+    () => parseArgs(["query", "--listen", "127.0.0.1:7999", "query"]),
     /zg server on or run/i,
   );
 });

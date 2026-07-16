@@ -88,6 +88,39 @@ test("service indexes, searches, refreshes, and manages named collections", asyn
   assert.equal((await service.collections.status("docs"))?.filesIndexed, 1);
   assert.equal(await service.collections.remove("docs"), true);
   assert.equal(await service.collections.remove("docs"), false);
+
+  assert.equal(await service.dropIndex(), true);
+  assert.equal(await service.dropIndex(), false);
+  assert.equal((await service.info()).indexed, false);
+});
+
+test("service optionally fuses independent query groups into one result list", async (t) => {
+  const temporaryDirectory = await createTemporaryDirectory(
+    t,
+    "zvec-grep-fused-context-",
+  );
+  const root = join(temporaryDirectory, "repo");
+  await mkdir(root, { recursive: true });
+  await writeFile(join(root, "alpha.ts"), "export const AlphaNeedle = 1;\n");
+  await writeFile(join(root, "beta.ts"), "export const BetaNeedle = 2;\n");
+
+  const service = await createZvecGrep({
+    root,
+    embeddingModel: new FakeEmbeddingModel(),
+  });
+  t.after(() => service.close());
+  await service.index();
+
+  const routes = [
+    { mode: "fts", query: "AlphaNeedle" },
+    { mode: "fts", query: "BetaNeedle" },
+  ];
+  const grouped = await service.context({ routes, limit: 1 });
+  const fused = await service.context({ routes, limit: 1, fuse: true });
+
+  assert.equal(grouped.items.length, 2);
+  assert.equal(fused.items.length, 1);
+  assert.equal(fused.diagnostics.index?.routes.length, 2);
 });
 
 test("service records failed files, retries them, deletes stale records, and rebuilds", async (t) => {

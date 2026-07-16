@@ -96,6 +96,49 @@ test("path scanners do not follow symlinks outside the indexed root", async (t) 
   }
 });
 
+test("path scanners follow configured symlinks during incremental updates", async (t) => {
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-path-follow-"),
+  );
+  const root = join(temporaryDirectory, "repo");
+  const source = join(root, "source");
+  await mkdir(source, { recursive: true });
+  await writeFile(join(source, "target.ts"), "export const target = true;\n");
+  try {
+    await symlink(join(source, "target.ts"), join(root, "linked.ts"));
+    await symlink(source, join(root, "linked-directory"), "dir");
+  } catch (error) {
+    if (error.code === "EPERM") {
+      t.skip("symlink creation is not permitted");
+      return;
+    }
+    throw error;
+  }
+  const rootPaths = [{ absolutePath: root, recursive: true, follow: true }];
+  try {
+    const file = await scanFilePath(
+      "collection",
+      rootPaths,
+      join(root, "linked.ts"),
+    );
+    assert.deepEqual(
+      file.files.map((item) => item.relativePath),
+      ["linked.ts"],
+    );
+    const directory = await scanDirectoryPath(
+      "collection",
+      rootPaths,
+      join(root, "linked-directory"),
+    );
+    assert.deepEqual(
+      directory.files.map((item) => item.relativePath),
+      ["linked-directory/target.ts"],
+    );
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
 test("changedPaths indexes and deletes only the affected paths", async () => {
   const temporaryDirectory = await mkdtemp(
     join(tmpdir(), "zvec-grep-path-index-"),

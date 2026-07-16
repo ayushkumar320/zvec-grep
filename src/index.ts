@@ -16,13 +16,12 @@ export type {
   ZvecGrepContextResult,
   ZvecGrepContextRoute,
   ZvecGrepContextSource,
-  ZvecGrepFallbackPolicy,
   ZvecGrepStructureEnrichmentDiagnostics,
   ZvecGrepIndexDiagnostics,
   ZvecGrepInfoOptions,
   ZvecGrepInfoResult,
   ZvecGrepIndexOptions,
-  ZvecGrepLexicalFallbackDiagnostics,
+  ZvecGrepRgDiagnostics,
   ZvecGrepSearchOptions,
 } from "./engine/service/index.js";
 export {

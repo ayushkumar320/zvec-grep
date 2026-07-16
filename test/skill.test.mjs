@@ -34,6 +34,6 @@ test("zvec-grep skill keeps native MCP tools ahead of CLI fallback", async () =>
     metadata,
     /Use \$zvec-grep with native zvec_grep_\* MCP tools whenever available/,
   );
-  assert.match(fallback, /zg --mode server --status/);
-  assert.match(fallback, /zg --mode server "request validation"/);
+  assert.match(fallback, /zg status --mode server/);
+  assert.match(fallback, /zg query "request validation"/);
 });

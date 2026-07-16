@@ -16,6 +16,7 @@ export type NormalizedSearchInput = {
   root: string;
   queries?: string[];
   routes: Array<{ mode: "fts" | "vector"; query: string }>;
+  fuse?: boolean;
   limit?: number;
   freshness: "eventual" | "wait_for_fresh";
   autoUpdate: boolean;
@@ -23,6 +24,17 @@ export type NormalizedSearchInput = {
   symbolTypes?: CodeSymbolType[];
   includePaths?: string[];
   excludePaths?: string[];
+  globs?: string[];
+  insensitiveGlobs?: string[];
+  fileTypes?: string[];
+  excludedFileTypes?: string[];
+  hidden?: boolean;
+  noIgnore?: boolean;
+  ignoreFiles?: string[];
+  maxDepth?: number;
+  maxFileSizeBytes?: number;
+  follow?: boolean;
+  embeddingConcurrency?: number;
   modifiedAfter?: number;
   modifiedBefore?: number;
   trace?: boolean;
@@ -52,7 +64,6 @@ export function contextOptionsFromSearchInput(
     root: normalizeOptionalString(input.root),
     collection: normalizeOptionalString(input.collection),
     limit: input.limit,
-    fallback: "disabled",
     autoUpdate: input.autoUpdate ?? true,
     trace: input.trace,
     preferSymbol: input.preferSymbol,
@@ -106,6 +117,18 @@ function normalizeSearchFields(
     | "vector"
     | "include"
     | "exclude"
+    | "globs"
+    | "insensitiveGlobs"
+    | "fileTypes"
+    | "excludedFileTypes"
+    | "fuse"
+    | "hidden"
+    | "noIgnore"
+    | "ignoreFiles"
+    | "maxDepth"
+    | "maxFileSizeBytes"
+    | "follow"
+    | "embeddingConcurrency"
     | "preferSymbol"
     | "symbolTypes"
     | "modifiedAfter"
@@ -134,12 +157,24 @@ function normalizeSearchFields(
       ...fts.map((query) => ({ mode: "fts" as const, query })),
       ...vector.map((query) => ({ mode: "vector" as const, query })),
     ],
+    fuse: input.fuse,
     limit: input.limit,
     trace: input.trace,
     preferSymbol: input.preferSymbol,
     symbolTypes: input.symbolTypes.length > 0 ? input.symbolTypes : undefined,
     includePaths: includePaths.length > 0 ? includePaths : undefined,
     excludePaths: excludePaths.length > 0 ? excludePaths : undefined,
+    globs: normalizePlainStringList(input.globs),
+    insensitiveGlobs: normalizePlainStringList(input.insensitiveGlobs),
+    fileTypes: normalizePlainStringList(input.fileTypes),
+    excludedFileTypes: normalizePlainStringList(input.excludedFileTypes),
+    hidden: input.hidden,
+    noIgnore: input.noIgnore,
+    ignoreFiles: normalizePlainStringList(input.ignoreFiles),
+    maxDepth: input.maxDepth,
+    maxFileSizeBytes: input.maxFileSizeBytes,
+    follow: input.follow,
+    embeddingConcurrency: input.embeddingConcurrency,
     modifiedAfter: normalizeModifiedTime(input.modifiedAfter, "modifiedAfter"),
     modifiedBefore: normalizeModifiedTime(
       input.modifiedBefore,

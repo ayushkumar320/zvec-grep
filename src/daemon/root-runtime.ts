@@ -109,7 +109,6 @@ export class RootRuntime {
           ...options,
           root: this.canonicalRoot,
           autoUpdate: false,
-          fallback: "disabled",
         }),
       );
     });
@@ -324,7 +323,6 @@ export class RootRuntime {
         ...options,
         root: this.canonicalRoot,
         autoUpdate: false,
-        fallback: "disabled",
       });
     } finally {
       this.activeWriterSearches -= 1;

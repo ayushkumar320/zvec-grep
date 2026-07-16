@@ -9,7 +9,10 @@ import type {
   CollectionEmbeddingSchema,
   IndexProgress,
 } from "../engine/types.js";
-import type { NormalizedSearchInput } from "../mcp/input-normalization.js";
+import {
+  normalizePlainStringList,
+  type NormalizedSearchInput,
+} from "../mcp/input-normalization.js";
 import type {
   ZvecGrepDaemonBackend,
   ZvecGrepIndexResult,
@@ -184,16 +187,27 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
       runtime.search({
         queries: input.queries,
         routes: input.routes,
+        fuse: input.fuse,
         limit: input.limit,
         trace: input.trace,
         preferSymbol: input.preferSymbol,
         symbolTypes: input.symbolTypes,
         includePaths: input.includePaths,
         excludePaths: input.excludePaths,
+        globs: normalizePlainStringList(input.globs),
+        insensitiveGlobs: normalizePlainStringList(input.insensitiveGlobs),
+        fileTypes: normalizePlainStringList(input.fileTypes),
+        excludedFileTypes: normalizePlainStringList(input.excludedFileTypes),
+        hidden: input.hidden,
+        noIgnore: input.noIgnore,
+        ignoreFiles: input.ignoreFiles,
+        maxDepth: input.maxDepth,
+        maxFileSizeBytes: input.maxFileSizeBytes,
+        follow: input.follow,
+        embeddingConcurrency: input.embeddingConcurrency,
         modifiedAfter: input.modifiedAfter,
         modifiedBefore: input.modifiedBefore,
         autoUpdate: false,
-        fallback: "disabled",
       });
     let result;
     if (input.freshness === "wait_for_fresh") {
@@ -378,6 +392,18 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
       await service.index({
         root: runtime.canonicalRoot,
         rebuild: input.rebuild,
+        resetPaths: input.resetPaths,
+        globs: normalizePlainStringList(input.globs),
+        insensitiveGlobs: normalizePlainStringList(input.insensitiveGlobs),
+        fileTypes: normalizePlainStringList(input.fileTypes),
+        excludedFileTypes: normalizePlainStringList(input.excludedFileTypes),
+        hidden: input.hidden,
+        noIgnore: input.noIgnore,
+        ignoreFiles: normalizePlainStringList(input.ignoreFiles),
+        maxDepth: input.maxDepth,
+        maxFileSizeBytes: input.maxFileSizeBytes,
+        follow: input.follow,
+        embeddingConcurrency: input.embeddingConcurrency,
         changedPaths: input.changedPaths,
         onProgress: report,
         onWriterContext: (context) => runtime.setWriterContext(context),
@@ -701,6 +727,24 @@ function persistentStatus(
             recursive: rootPath.recursive,
             include: rootPath.include ? [...rootPath.include] : undefined,
             exclude: rootPath.exclude ? [...rootPath.exclude] : undefined,
+            globs: rootPath.globs ? [...rootPath.globs] : undefined,
+            insensitive_globs: rootPath.insensitiveGlobs
+              ? [...rootPath.insensitiveGlobs]
+              : undefined,
+            file_types: rootPath.fileTypes
+              ? [...rootPath.fileTypes]
+              : undefined,
+            excluded_file_types: rootPath.excludedFileTypes
+              ? [...rootPath.excludedFileTypes]
+              : undefined,
+            hidden: rootPath.hidden,
+            no_ignore: rootPath.noIgnore,
+            ignore_files: rootPath.ignoreFiles
+              ? [...rootPath.ignoreFiles]
+              : undefined,
+            max_depth: rootPath.maxDepth,
+            max_file_size_bytes: rootPath.maxFileSizeBytes,
+            follow: rootPath.follow,
           })),
           embedding: info.collection.embedding,
           index_version: info.collection.indexVersion,

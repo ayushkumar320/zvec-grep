@@ -110,7 +110,7 @@ export function printHumanContextResult(
       "Reason",
       emptyContextLabel(result).replace(/\.$/, ""),
     );
-    const missingPaths = result.diagnostics.fallback?.missingPaths ?? [];
+    const missingPaths = result.diagnostics.rg?.missingPaths ?? [];
     if (missingPaths.length > 0) {
       printHumanField(theme, "Missing", missingPaths.join(", "));
     }
@@ -171,7 +171,7 @@ export function printHumanContextResult(
 }
 
 export function contextWarningLines(result: ZvecGrepContextResult): string[] {
-  const missingPaths = result.diagnostics.fallback?.missingPaths ?? [];
+  const missingPaths = result.diagnostics.rg?.missingPaths ?? [];
   if (
     missingPaths.length === 0 ||
     result.diagnostics.emptyReason === "no_searchable_files"
@@ -199,10 +199,6 @@ function emptyContextLabel(result: ZvecGrepContextResult): string {
   switch (result.diagnostics.emptyReason ?? "no_matches") {
     case "no_searchable_files":
       return "No searchable files.";
-    case "index_unavailable":
-      return "Index unavailable.";
-    case "search_failed":
-      return "Search failed.";
     case "no_matches":
       return "No matches.";
   }
@@ -210,7 +206,7 @@ function emptyContextLabel(result: ZvecGrepContextResult): string {
 
 function emptyContextDetailLines(result: ZvecGrepContextResult): string[] {
   const lines: string[] = [];
-  const missingPaths = result.diagnostics.fallback?.missingPaths ?? [];
+  const missingPaths = result.diagnostics.rg?.missingPaths ?? [];
   if (missingPaths.length > 0) {
     lines.push(`missing: ${missingPaths.join(", ")}`);
   }
@@ -741,13 +737,13 @@ function createHumanTheme(options: CliOptions): HumanTheme {
 }
 
 function colorHumanStatus(value: string): string {
-  if (value === "fresh" || value === "lexical_exhaustive") {
+  if (value === "fresh" || value === "rg_exhaustive") {
     return `\x1b[32m${value}\x1b[0m`;
   }
 
   if (
     value === "possibly_stale" ||
-    value === "lexical_truncated" ||
+    value === "rg_truncated" ||
     value === "ranked_sample"
   ) {
     return `\x1b[33m${value}\x1b[0m`;

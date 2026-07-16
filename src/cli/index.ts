@@ -17,15 +17,15 @@ async function main(): Promise<void> {
   try {
     const parsed = parseArgs(args);
 
-    if (parsed.options.version) {
+    if (parsed.command === "version") {
       console.log(PACKAGE_VERSION);
       process.exitCode = 0;
       return;
     }
 
-    if (parsed.options.help || args.length === 0) {
-      printHelp(PACKAGE_VERSION);
-      process.exitCode = args.length === 0 ? 1 : 0;
+    if (parsed.command === "help") {
+      printHelp(PACKAGE_VERSION, parsed.helpTopic);
+      process.exitCode = 0;
       return;
     }
 

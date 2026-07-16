@@ -61,7 +61,7 @@ test("collection registry covers lifecycle, caching, rename, roots, disable, rea
   assert.match(outside.reason, /outside/);
   const pending = collection.diagnoseFile(join(root, "alpha.ts"));
   assert.equal(pending.belongsToCollection, true);
-  assert.match(pending.reason, /has not been indexed/);
+  assert.match(pending.reason, /file-selection.*may exclude/);
 
   const indexed = await collection.index();
   assert.equal(indexed.filesAdded, 1);

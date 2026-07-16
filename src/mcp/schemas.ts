@@ -71,6 +71,46 @@ const searchFields = {
     .describe("Maximum returned items per query/group."),
   include: pathFilterInputSchema.describe("Glob filters for paths to include."),
   exclude: pathFilterInputSchema.describe("Glob filters for paths to exclude."),
+  globs: pathFilterInputSchema.describe(
+    "Ordered case-sensitive rg-style glob rules. Later rules override earlier rules.",
+  ),
+  insensitiveGlobs: pathFilterInputSchema.describe(
+    "Ordered case-insensitive rg-style glob rules. Later rules override earlier rules.",
+  ),
+  fileTypes: pathFilterInputSchema.describe(
+    "Registered file types to include, such as ts or py.",
+  ),
+  excludedFileTypes: pathFilterInputSchema.describe(
+    "Registered file types to exclude.",
+  ),
+  hidden: z.boolean().optional().describe("Include hidden paths."),
+  noIgnore: z.boolean().optional().describe("Ignore no ignore files."),
+  ignoreFiles: pathFilterInputSchema.describe(
+    "Additional ignore files relative to the repository root.",
+  ),
+  maxDepth: z
+    .number()
+    .int()
+    .nonnegative()
+    .optional()
+    .describe("Maximum recursive directory depth."),
+  maxFileSizeBytes: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe("Maximum indexed file size in bytes."),
+  follow: z.boolean().optional().describe("Follow symbolic links."),
+  embeddingConcurrency: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe("Embedding requests processed concurrently during updates."),
+  fuse: z
+    .boolean()
+    .optional()
+    .describe("Fuse every query group into one ranked search plan."),
   preferSymbol: z
     .boolean()
     .optional()
@@ -112,6 +152,46 @@ export const zvecGrepIndexInputSchema = z.object({
     .boolean()
     .optional()
     .describe("Explicitly rebuild the existing index."),
+  resetPaths: z
+    .boolean()
+    .optional()
+    .describe("Replace the index root-path configuration."),
+  globs: pathFilterInputSchema.describe(
+    "Ordered case-sensitive rg-style glob rules for indexed files.",
+  ),
+  insensitiveGlobs: pathFilterInputSchema.describe(
+    "Ordered case-insensitive rg-style glob rules for indexed files.",
+  ),
+  fileTypes: pathFilterInputSchema.describe(
+    "Registered file types to include, such as ts or py.",
+  ),
+  excludedFileTypes: pathFilterInputSchema.describe(
+    "Registered file types to exclude.",
+  ),
+  hidden: z.boolean().optional().describe("Include hidden paths."),
+  noIgnore: z.boolean().optional().describe("Ignore no ignore files."),
+  ignoreFiles: pathFilterInputSchema.describe(
+    "Additional ignore files relative to the repository root.",
+  ),
+  maxDepth: z
+    .number()
+    .int()
+    .nonnegative()
+    .optional()
+    .describe("Maximum recursive directory depth."),
+  maxFileSizeBytes: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe("Maximum indexed file size in bytes."),
+  follow: z.boolean().optional().describe("Follow symbolic links."),
+  embeddingConcurrency: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe("Embedding requests processed concurrently."),
   wait: z
     .boolean()
     .optional()
@@ -307,6 +387,16 @@ export const zvecGrepIndexStatusOutputSchema = z.object({
             recursive: z.boolean(),
             include: z.array(z.string()).optional(),
             exclude: z.array(z.string()).optional(),
+            globs: z.array(z.string()).optional(),
+            insensitive_globs: z.array(z.string()).optional(),
+            file_types: z.array(z.string()).optional(),
+            excluded_file_types: z.array(z.string()).optional(),
+            hidden: z.boolean().optional(),
+            no_ignore: z.boolean().optional(),
+            ignore_files: z.array(z.string()).optional(),
+            max_depth: z.number().int().nonnegative().optional(),
+            max_file_size_bytes: z.number().int().positive().optional(),
+            follow: z.boolean().optional(),
           }),
         ),
         embedding: z

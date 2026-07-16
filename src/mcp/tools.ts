@@ -57,6 +57,16 @@ export type ZvecGrepIndexStatusResult = {
         recursive: boolean;
         include?: string[];
         exclude?: string[];
+        globs?: string[];
+        insensitive_globs?: string[];
+        file_types?: string[];
+        excluded_file_types?: string[];
+        hidden?: boolean;
+        no_ignore?: boolean;
+        ignore_files?: string[];
+        max_depth?: number;
+        max_file_size_bytes?: number;
+        follow?: boolean;
       }>;
       embedding?: {
         provider: string;

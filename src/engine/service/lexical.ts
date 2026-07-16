@@ -1,26 +1,16 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { isAbsolute, relative, resolve } from "node:path";
+import { toDisplayPath } from "../utils/path.js";
 import type {
   ZvecGrepContextItem,
   ZvecGrepSearchOptions,
-  ZvecGrepLexicalFallbackDiagnostics,
+  ZvecGrepRgDiagnostics,
 } from "./types.js";
 
-type LexicalFallbackOptions = {
-  root: string;
-  query: string;
-  limit?: number;
-  includePaths?: readonly string[];
-  excludePaths?: readonly string[];
-  modifiedAfter?: number;
-  modifiedBefore?: number;
-  rgOptions?: ZvecGrepSearchOptions;
-};
-
-type LexicalFallbackResult = {
+type RgSearchResult = {
   items: ZvecGrepContextItem[];
-  diagnostics: ZvecGrepLexicalFallbackDiagnostics;
+  diagnostics: ZvecGrepRgDiagnostics;
 };
 
 type RgSearchOptions = {
@@ -30,6 +20,16 @@ type RgSearchOptions = {
   limit?: number;
   includePaths?: readonly string[];
   excludePaths?: readonly string[];
+  globs?: readonly string[];
+  insensitiveGlobs?: readonly string[];
+  fileTypes?: readonly string[];
+  excludedFileTypes?: readonly string[];
+  hidden?: boolean;
+  noIgnore?: boolean;
+  ignoreFiles?: readonly string[];
+  maxDepth?: number;
+  maxFileSizeBytes?: number;
+  follow?: boolean;
   modifiedAfter?: number;
   modifiedBefore?: number;
   rgOptions?: ZvecGrepSearchOptions;
@@ -41,10 +41,7 @@ type CommandResult = {
   args: string[];
 };
 
-type RipgrepRunOptions = RgSearchOptions & {
-  fixedStringsDefault: boolean;
-  includeDefaultIgnores: boolean;
-};
+type RipgrepRunOptions = RgSearchOptions;
 
 type CheckedSearchPaths = {
   paths?: readonly string[];
@@ -56,103 +53,19 @@ type RipgrepBackend = {
   command: string;
 };
 
-const DEFAULT_IGNORED_DIRECTORIES = [
-  "node_modules",
-  "vendor",
-  "thirdparty",
-  "third_party",
-  "external",
-  "deps",
-  "dist",
-  "build",
-  "out",
-  "coverage",
-  "target",
-  "generated",
-  "__pycache__",
-  "venv",
-  ".venv",
-  "env",
-  ".tox",
-  ".eggs",
-  "Pods",
-  ".next",
-  ".nuxt",
-  ".svelte-kit",
-  ".turbo",
-  ".vite",
-  ".parcel-cache",
-  ".cache",
-  ".gradle",
-  ".pytest_cache",
-  ".mypy_cache",
-  ".ruff_cache",
-  "tmp",
-  "temp",
-  "logs",
-] as const;
-
 const HARD_IGNORED_HIDDEN_DIRECTORIES = [".git", ".zvec-grep"] as const;
-
-const DIAGNOSTIC_IGNORED_DIRECTORIES = [
-  ...DEFAULT_IGNORED_DIRECTORIES,
-  ...HARD_IGNORED_HIDDEN_DIRECTORIES,
-] as const;
 
 let bundledRipgrepPath: string | null | undefined;
 
-export async function runLexicalFallback(
-  options: LexicalFallbackOptions,
-): Promise<LexicalFallbackResult> {
-  let commandMissing: unknown;
-  for (const backend of await ripgrepBackends()) {
-    try {
-      const result = await runRipgrep(
-        {
-          ...options,
-          patterns: [options.query],
-          paths: [options.root],
-          fixedStringsDefault: true,
-          includeDefaultIgnores: true,
-        },
-        backend.command,
-      );
-
-      return {
-        items: result.items,
-        diagnostics: {
-          backend: backend.backend,
-          command: backend.command,
-          args: result.args,
-          ignoredDirectories: DIAGNOSTIC_IGNORED_DIRECTORIES,
-          limit: options.limit,
-          truncated: result.truncated,
-        },
-      };
-    } catch (error) {
-      if (!isCommandMissing(error)) {
-        throw error;
-      }
-      commandMissing = error;
-    }
-  }
-
-  throw commandMissing instanceof Error
-    ? commandMissing
-    : new Error("ripgrep command not found");
-}
-
 export async function runRgSearch(
   options: RgSearchOptions,
-): Promise<LexicalFallbackResult> {
+): Promise<RgSearchResult> {
   const backends = await ripgrepBackends();
   const paths = checkSearchPaths(options.root, options.paths);
   if (options.paths && options.paths.length > 0 && !paths.paths?.length) {
     const backend = backends[0]!;
     const args = buildRipgrepArgs({
       ...options,
-      fixedStringsDefault: false,
-      includeDefaultIgnores: false,
     });
 
     return {
@@ -177,8 +90,6 @@ export async function runRgSearch(
         {
           ...options,
           paths: paths.paths,
-          fixedStringsDefault: false,
-          includeDefaultIgnores: false,
         },
         backend.command,
       );
@@ -270,19 +181,25 @@ function buildRipgrepArgs(options: RipgrepRunOptions): string[] {
     "--with-filename",
     "--color",
     "never",
-    ...ripgrepSearchArgs(options.rgOptions, options.fixedStringsDefault),
-    ...hiddenSearchArgs(options.includePaths, options.rgOptions),
-    ...(options.includeDefaultIgnores
-      ? DEFAULT_IGNORED_DIRECTORIES.flatMap((directory) => [
-          "--glob",
-          `!**/${directory}/**`,
-        ])
-      : []),
+    ...ripgrepSearchArgs(options.rgOptions),
+    ...hiddenSearchArgs(
+      options.includePaths,
+      options.hidden,
+      options.rgOptions,
+    ),
+    ...ripgrepDiscoveryArgs(options),
     ...pathFilterArgs(options.includePaths, false),
     ...pathFilterArgs(options.excludePaths, true),
+    ...globFilterArgs(options.globs, "--glob"),
+    ...globFilterArgs(options.insensitiveGlobs, "--iglob"),
+    ...(options.fileTypes ?? []).flatMap((type) => ["--type", type]),
+    ...(options.excludedFileTypes ?? []).flatMap((type) => [
+      "--type-not",
+      type,
+    ]),
     ...hardIgnoredHiddenDirectoryArgs(),
     ...(options.rgOptions?.extraArgs ?? []),
-    ...patternArgs(options.patterns),
+    ...patternArgs(options.patterns, options.rgOptions?.patternFiles),
     "--",
     ...(options.paths && options.paths.length > 0
       ? options.paths
@@ -292,10 +209,9 @@ function buildRipgrepArgs(options: RipgrepRunOptions): string[] {
 
 function ripgrepSearchArgs(
   options: ZvecGrepSearchOptions | undefined,
-  fixedStringsDefault: boolean,
 ): string[] {
   const args: string[] = [];
-  if (options?.fixedStrings ?? fixedStringsDefault) {
+  if (options?.fixedStrings) {
     args.push("--fixed-strings");
   }
   if (options?.ignoreCase) {
@@ -309,11 +225,33 @@ function ripgrepSearchArgs(
 
 function hiddenSearchArgs(
   includePaths: readonly string[] | undefined,
+  hidden: boolean | undefined,
   options: ZvecGrepSearchOptions | undefined,
 ): string[] {
-  return options?.hidden || includesHiddenPath(includePaths)
+  return hidden || options?.hidden || includesHiddenPath(includePaths)
     ? ["--hidden"]
     : [];
+}
+
+function ripgrepDiscoveryArgs(options: RipgrepRunOptions): string[] {
+  return [
+    ...(options.noIgnore ? ["--no-ignore"] : []),
+    ...(options.ignoreFiles ?? []).flatMap((path) => ["--ignore-file", path]),
+    ...(options.maxDepth !== undefined
+      ? ["--max-depth", String(options.maxDepth)]
+      : []),
+    ...(options.maxFileSizeBytes !== undefined
+      ? ["--max-filesize", String(options.maxFileSizeBytes)]
+      : []),
+    ...(options.follow ? ["--follow"] : []),
+  ];
+}
+
+function globFilterArgs(
+  patterns: readonly string[] | undefined,
+  option: "--glob" | "--iglob",
+): string[] {
+  return (patterns ?? []).flatMap((pattern) => [option, pattern]);
 }
 
 function hardIgnoredHiddenDirectoryArgs(): string[] {
@@ -348,8 +286,14 @@ function expandRipgrepPathGlob(pattern: string): string[] {
   return [normalized, `**/${normalized}`];
 }
 
-function patternArgs(patterns: readonly string[]): string[] {
-  return patterns.flatMap((pattern) => ["--regexp", pattern]);
+function patternArgs(
+  patterns: readonly string[],
+  patternFiles: readonly string[] | undefined,
+): string[] {
+  return [
+    ...patterns.flatMap((pattern) => ["--regexp", pattern]),
+    ...(patternFiles ?? []).flatMap((path) => ["--file", path]),
+  ];
 }
 
 function includesHiddenPath(patterns: readonly string[] | undefined): boolean {
@@ -635,12 +579,16 @@ function parseRipgrepJsonLine(
     Array.isArray(data.submatches) && isRecord(data.submatches[0])
       ? data.submatches[0]
       : undefined;
-  const startOffset =
-    typeof firstSubmatch?.start === "number" ? firstSubmatch.start : 0;
-  const endOffset =
+  const start = textPositionAtByteOffset(
+    lineText,
+    typeof firstSubmatch?.start === "number" ? firstSubmatch.start : 0,
+  );
+  const end = textPositionAtByteOffset(
+    lineText,
     typeof firstSubmatch?.end === "number"
       ? firstSubmatch.end
-      : lineText.length;
+      : Buffer.byteLength(lineText, "utf8"),
+  );
 
   return {
     kind: "lexical_match",
@@ -648,10 +596,10 @@ function parseRipgrepJsonLine(
     file: path,
     range: {
       kind: "text",
-      startLine: data.line_number,
-      endLine: data.line_number,
-      startOffset,
-      endOffset,
+      startLine: data.line_number + start.lineOffset,
+      endLine: data.line_number + end.lineOffset,
+      startOffset: start.column,
+      endOffset: end.column,
     },
     content: lineText,
     status: "fresh",
@@ -664,13 +612,27 @@ function normalizeResultPath(root: string, path: string) {
 
   return {
     absolutePath,
-    relativePath: relative(root, absolutePath) || ".",
+    relativePath: toDisplayPath(relative(root, absolutePath) || "."),
     rootPath: root,
   };
 }
 
 function trimTrailingNewline(value: string): string {
-  return value.endsWith("\n") ? value.slice(0, -1) : value;
+  return value.replace(/\r?\n$/, "");
+}
+
+function textPositionAtByteOffset(
+  value: string,
+  byteOffset: number,
+): { lineOffset: number; column: number } {
+  const prefix = Buffer.from(value, "utf8")
+    .subarray(0, Math.max(0, byteOffset))
+    .toString("utf8");
+  const lines = prefix.split("\n");
+  return {
+    lineOffset: lines.length - 1,
+    column: lines.at(-1)?.replace(/\r$/, "").length ?? 0,
+  };
 }
 
 function isCommandMissing(error: unknown): boolean {
