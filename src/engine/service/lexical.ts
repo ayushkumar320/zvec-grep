@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { isAbsolute, relative, resolve } from "node:path";
+import { toDisplayPath } from "../utils/path.js";
 import type {
   ZvecGrepContextItem,
   ZvecGrepSearchOptions,
@@ -611,7 +612,7 @@ function normalizeResultPath(root: string, path: string) {
 
   return {
     absolutePath,
-    relativePath: relative(root, absolutePath) || ".",
+    relativePath: toDisplayPath(relative(root, absolutePath) || "."),
     rootPath: root,
   };
 }
