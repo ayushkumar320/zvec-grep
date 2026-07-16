@@ -4,18 +4,21 @@ import { IndexCoordinator } from "../dist/daemon/index-coordinator.js";
 import { DaemonError } from "../dist/daemon/errors.js";
 import { JobScheduler } from "../dist/daemon/job-scheduler.js";
 
-
 test("changes arriving during a write are indexed by one follow-up revision", async () => {
   const scheduler = new JobScheduler({ concurrency: 1 });
   let dirtyRevision = 0;
   let indexedRevision = 0;
   let releaseFirst;
-  const firstRunning = new Promise((resolve) => { releaseFirst = resolve; });
+  const firstRunning = new Promise((resolve) => {
+    releaseFirst = resolve;
+  });
   const snapshots = [];
   const runtime = {
     canonicalRoot: "/repo",
     markDirty: () => ++dirtyRevision,
-    markIndexed: (revision) => { indexedRevision = revision; },
+    markIndexed: (revision) => {
+      indexedRevision = revision;
+    },
     setWriterPending: () => {},
     withWrite: (operation) => operation(),
   };
@@ -43,9 +46,12 @@ test("changes arriving during a write are indexed by one follow-up revision", as
   await scheduler.close();
 });
 
-
 test("a retry reuses the same change snapshot", async () => {
-  const scheduler = new JobScheduler({ concurrency: 1, maxAttempts: 2, retryBaseDelayMs: 1 });
+  const scheduler = new JobScheduler({
+    concurrency: 1,
+    maxAttempts: 2,
+    retryBaseDelayMs: 1,
+  });
   let dirtyRevision = 0;
   let indexedRevision = 0;
   const snapshots = [];
@@ -53,26 +59,28 @@ test("a retry reuses the same change snapshot", async () => {
     runtime: {
       canonicalRoot: "/repo",
       markDirty: () => ++dirtyRevision,
-      markIndexed: (revision) => { indexedRevision = revision; },
+      markIndexed: (revision) => {
+        indexedRevision = revision;
+      },
       setWriterPending: () => {},
       withWrite: (operation) => operation(),
     },
     scheduler,
     run: async (changes) => {
       snapshots.push(changes);
-      if (snapshots.length === 1) throw new DaemonError("INDEX_BUSY", "busy", true);
+      if (snapshots.length === 1)
+        throw new DaemonError("INDEX_BUSY", "busy", true);
     },
   });
   const job = coordinator.enqueue(change("/repo/a.ts"));
   assert.equal((await scheduler.wait(job.id)).state, "succeeded");
-  assert.deepEqual(snapshots.map((snapshot) => snapshot.touchedFiles), [
-    ["/repo/a.ts"],
-    ["/repo/a.ts"],
-  ]);
+  assert.deepEqual(
+    snapshots.map((snapshot) => snapshot.touchedFiles),
+    [["/repo/a.ts"], ["/repo/a.ts"]],
+  );
   assert.equal(indexedRevision, 1);
   await scheduler.close();
 });
-
 
 function change(path) {
   return {
@@ -82,7 +90,6 @@ function change(path) {
     forceFullReconcile: false,
   };
 }
-
 
 async function waitFor(predicate) {
   for (let attempt = 0; attempt < 100; attempt++) {

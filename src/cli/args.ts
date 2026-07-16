@@ -1,7 +1,4 @@
-import type {
-  CodeSymbolType,
-  ZvecGrepContextRoute,
-} from "../index.js";
+import type { CodeSymbolType, ZvecGrepContextRoute } from "../index.js";
 import type {
   CliOptions,
   CliRgOptions,
@@ -11,7 +8,6 @@ import type {
 } from "./types.js";
 import { VALID_SYMBOL_TYPES } from "./types.js";
 
-
 const RG_OPTIONS_WITH_VALUE = new Set([
   "--encoding",
   "--engine",
@@ -20,7 +16,6 @@ const RG_OPTIONS_WITH_VALUE = new Set([
   "--type",
   "--type-not",
 ]);
-
 
 const RG_OPTIONS_WITHOUT_VALUE = new Set([
   "--auto-hybrid-regex",
@@ -39,7 +34,6 @@ const RG_OPTIONS_WITHOUT_VALUE = new Set([
   "--smart-case",
 ]);
 
-
 const MANAGED_RG_OUTPUT_OPTIONS = new Set([
   "--count",
   "--count-matches",
@@ -54,7 +48,6 @@ const MANAGED_RG_OUTPUT_OPTIONS = new Set([
   "-l",
   "-o",
 ]);
-
 
 export function parseArgs(args: readonly string[]): ParsedArgs {
   const options: CliOptions = {};
@@ -72,10 +65,17 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
       startIndex = 1;
     }
   } else if (args[0] === "serve") {
-    throw new Error("zg serve has been removed; use zg server on and Streamable HTTP MCP");
+    throw new Error(
+      "zg serve has been removed; use zg server on and Streamable HTTP MCP",
+    );
   } else if (args[0] === "server") {
     options.server = true;
-    if (args[1] === "on" || args[1] === "off" || args[1] === "status" || args[1] === "run") {
+    if (
+      args[1] === "on" ||
+      args[1] === "off" ||
+      args[1] === "status" ||
+      args[1] === "run"
+    ) {
       options.serverAction = args[1];
       startIndex = 2;
     } else {
@@ -123,20 +123,35 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
     } else if (arg === "--token-file") {
       options.serverTokenFile = readOptionValue(args, ++index, arg);
     } else if (isLongOptionWithValue(arg, "--target")) {
-      options.installTargets = appendInstallTargets(options.installTargets, valueFromLongOption(arg));
+      options.installTargets = appendInstallTargets(
+        options.installTargets,
+        valueFromLongOption(arg),
+      );
     } else if (arg === "--target") {
-      options.installTargets = appendInstallTargets(options.installTargets, readOptionValue(args, ++index, arg));
+      options.installTargets = appendInstallTargets(
+        options.installTargets,
+        readOptionValue(args, ++index, arg),
+      );
     } else if (isLongOptionWithValue(arg, "--mcp-tool-timeout")) {
       options.installMcpToolTimeoutSeconds = parsePositiveInteger(
         valueFromLongOption(arg),
         "--mcp-tool-timeout",
       );
     } else if (arg === "--mcp-tool-timeout") {
-      options.installMcpToolTimeoutSeconds = parsePositiveInteger(readOptionValue(args, ++index, arg), arg);
+      options.installMcpToolTimeoutSeconds = parsePositiveInteger(
+        readOptionValue(args, ++index, arg),
+        arg,
+      );
     } else if (isLongOptionWithValue(arg, "--mcp-token-env")) {
-      options.installMcpTokenEnv = parseEnvironmentVariable(valueFromLongOption(arg), "--mcp-token-env");
+      options.installMcpTokenEnv = parseEnvironmentVariable(
+        valueFromLongOption(arg),
+        "--mcp-token-env",
+      );
     } else if (arg === "--mcp-token-env") {
-      options.installMcpTokenEnv = parseEnvironmentVariable(readOptionValue(args, ++index, arg), arg);
+      options.installMcpTokenEnv = parseEnvironmentVariable(
+        readOptionValue(args, ++index, arg),
+        arg,
+      );
     } else if (arg === "--yes") {
       options.yes = true;
     } else if (arg === "--rg") {
@@ -152,7 +167,9 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
     } else if (arg === "--preview") {
       options.preview = parsePreviewMode(readOptionValue(args, ++index, arg));
     } else if (arg === "--json") {
-      throw new Error("--json has been removed; use the default agent markdown output or --human");
+      throw new Error(
+        "--json has been removed; use the default agent markdown output or --human",
+      );
     } else if (arg === "--no-color") {
       options.color = "never";
     } else if (arg === "--rebuild") {
@@ -182,35 +199,64 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
     } else if (arg === "--no-gpu") {
       setLlamaGpuOption(options, false, arg);
     } else if (arg === "--llama-gpu") {
-      setLlamaGpuOption(options, parseLlamaGpu(readOptionValue(args, ++index, arg)), arg);
+      setLlamaGpuOption(
+        options,
+        parseLlamaGpu(readOptionValue(args, ++index, arg)),
+        arg,
+      );
     } else if (arg === "--embedding-parallelism") {
-      options.embeddingParallelism = parsePositiveInteger(readOptionValue(args, ++index, arg), arg);
+      options.embeddingParallelism = parsePositiveInteger(
+        readOptionValue(args, ++index, arg),
+        arg,
+      );
     } else if (arg === "--api-key") {
       options.apiKey = readOptionValue(args, ++index, arg);
     } else if (arg === "--endpoint") {
       options.endpoint = readOptionValue(args, ++index, arg);
     } else if (arg === "--limit") {
-      options.limit = parsePositiveInteger(readOptionValue(args, ++index, arg), arg);
+      options.limit = parsePositiveInteger(
+        readOptionValue(args, ++index, arg),
+        arg,
+      );
     } else if (arg === "--embedding-concurrency") {
-      options.embeddingConcurrency = parsePositiveInteger(readOptionValue(args, ++index, arg), arg);
+      options.embeddingConcurrency = parsePositiveInteger(
+        readOptionValue(args, ++index, arg),
+        arg,
+      );
     } else if (arg === "--fts") {
       const routeValues = readRouteOptionValues(args, index + 1, arg);
       options.routes = appendRoutes(options.routes, "fts", routeValues.values);
       index = routeValues.nextIndex - 1;
     } else if (arg === "--vector") {
       const routeValues = readRouteOptionValues(args, index + 1, arg);
-      options.routes = appendRoutes(options.routes, "vector", routeValues.values);
+      options.routes = appendRoutes(
+        options.routes,
+        "vector",
+        routeValues.values,
+      );
       index = routeValues.nextIndex - 1;
     } else if (arg === "--color") {
       options.color = parseColorMode(readOptionValue(args, ++index, arg));
     } else if (isLongOptionWithValue(arg, "--include")) {
-      options.includePaths = appendPathFilters(options.includePaths, valueFromLongOption(arg));
+      options.includePaths = appendPathFilters(
+        options.includePaths,
+        valueFromLongOption(arg),
+      );
     } else if (arg === "--include") {
-      options.includePaths = appendPathFilters(options.includePaths, readOptionValue(args, ++index, arg));
+      options.includePaths = appendPathFilters(
+        options.includePaths,
+        readOptionValue(args, ++index, arg),
+      );
     } else if (isLongOptionWithValue(arg, "--exclude")) {
-      options.excludePaths = appendPathFilters(options.excludePaths, valueFromLongOption(arg));
+      options.excludePaths = appendPathFilters(
+        options.excludePaths,
+        valueFromLongOption(arg),
+      );
     } else if (arg === "--exclude") {
-      options.excludePaths = appendPathFilters(options.excludePaths, readOptionValue(args, ++index, arg));
+      options.excludePaths = appendPathFilters(
+        options.excludePaths,
+        readOptionValue(args, ++index, arg),
+      );
     } else if (arg === "--ignore-case") {
       options.rgOptions = {
         ...(options.rgOptions ?? {}),
@@ -251,31 +297,71 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
     } else if (RG_OPTIONS_WITHOUT_VALUE.has(arg)) {
       options.rgOptions = appendRgExtraArgs(options.rgOptions, [arg]);
       markRgCompatibilityOption(options, arg);
-    } else if (arg === "--recursive" || arg === "--line-number" || arg === "--with-filename") {
+    } else if (
+      arg === "--recursive" ||
+      arg === "--line-number" ||
+      arg === "--with-filename"
+    ) {
       markRgCompatibilityOption(options, arg);
     } else if (isLongOptionWithValue(arg, "--regexp")) {
-      options.rgOptions = appendRgPattern(options.rgOptions, valueFromLongOption(arg));
+      options.rgOptions = appendRgPattern(
+        options.rgOptions,
+        valueFromLongOption(arg),
+      );
       markRgCompatibilityOption(options, "--regexp");
     } else if (arg === "--regexp") {
-      options.rgOptions = appendRgPattern(options.rgOptions, readOptionValue(args, ++index, arg));
+      options.rgOptions = appendRgPattern(
+        options.rgOptions,
+        readOptionValue(args, ++index, arg),
+      );
       markRgCompatibilityOption(options, arg);
     } else if (isLongOptionWithValue(arg, "--context")) {
-      options.rgOptions = setRgContext(options.rgOptions, "both", valueFromLongOption(arg), "--context");
+      options.rgOptions = setRgContext(
+        options.rgOptions,
+        "both",
+        valueFromLongOption(arg),
+        "--context",
+      );
       markRgCompatibilityOption(options, "--context");
     } else if (arg === "--context") {
-      options.rgOptions = setRgContext(options.rgOptions, "both", readOptionValue(args, ++index, arg), arg);
+      options.rgOptions = setRgContext(
+        options.rgOptions,
+        "both",
+        readOptionValue(args, ++index, arg),
+        arg,
+      );
       markRgCompatibilityOption(options, arg);
     } else if (isLongOptionWithValue(arg, "--before-context")) {
-      options.rgOptions = setRgContext(options.rgOptions, "before", valueFromLongOption(arg), "--before-context");
+      options.rgOptions = setRgContext(
+        options.rgOptions,
+        "before",
+        valueFromLongOption(arg),
+        "--before-context",
+      );
       markRgCompatibilityOption(options, "--before-context");
     } else if (arg === "--before-context") {
-      options.rgOptions = setRgContext(options.rgOptions, "before", readOptionValue(args, ++index, arg), arg);
+      options.rgOptions = setRgContext(
+        options.rgOptions,
+        "before",
+        readOptionValue(args, ++index, arg),
+        arg,
+      );
       markRgCompatibilityOption(options, arg);
     } else if (isLongOptionWithValue(arg, "--after-context")) {
-      options.rgOptions = setRgContext(options.rgOptions, "after", valueFromLongOption(arg), "--after-context");
+      options.rgOptions = setRgContext(
+        options.rgOptions,
+        "after",
+        valueFromLongOption(arg),
+        "--after-context",
+      );
       markRgCompatibilityOption(options, "--after-context");
     } else if (arg === "--after-context") {
-      options.rgOptions = setRgContext(options.rgOptions, "after", readOptionValue(args, ++index, arg), arg);
+      options.rgOptions = setRgContext(
+        options.rgOptions,
+        "after",
+        readOptionValue(args, ++index, arg),
+        arg,
+      );
       markRgCompatibilityOption(options, arg);
     } else if (isLongOptionWithValue(arg, "--glob")) {
       appendRgGlobFilter(options, valueFromLongOption(arg));
@@ -287,15 +373,26 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
       appendRgGlobFilter(options, readOptionValue(args, ++index, arg));
       markRgCompatibilityOption(options, arg);
     } else if (isManagedRgOutputOption(arg)) {
-      throw new Error(`${arg} changes rg output and cannot be used with managed --rg`);
+      throw new Error(
+        `${arg} changes rg output and cannot be used with managed --rg`,
+      );
     } else if (isShortRgOptionGroup(arg)) {
       index = parseShortRgOptionGroup(args, index, options);
     } else if (arg === "--modified-after") {
-      options.modifiedAfter = parseModifiedTime(readOptionValue(args, ++index, arg), arg);
+      options.modifiedAfter = parseModifiedTime(
+        readOptionValue(args, ++index, arg),
+        arg,
+      );
     } else if (arg === "--modified-before") {
-      options.modifiedBefore = parseModifiedTime(readOptionValue(args, ++index, arg), arg);
+      options.modifiedBefore = parseModifiedTime(
+        readOptionValue(args, ++index, arg),
+        arg,
+      );
     } else if (arg === "--symbol-type") {
-      options.symbolTypes = [...(options.symbolTypes ?? []), parseSymbolType(readOptionValue(args, ++index, arg))];
+      options.symbolTypes = [
+        ...(options.symbolTypes ?? []),
+        parseSymbolType(readOptionValue(args, ++index, arg)),
+      ];
     } else {
       throw new Error(`Unknown option: ${arg}`);
     }
@@ -305,21 +402,27 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
   return { options, positionals };
 }
 
-
 function validateCliShape(options: CliOptions): void {
-  const hasUtilityCommand = options.index
-    || options.disableIndex
-    || options.status
-    || options.collections
-    || options.install
-    || options.config
-    || options.server;
+  const hasUtilityCommand =
+    options.index ||
+    options.disableIndex ||
+    options.status ||
+    options.collections ||
+    options.install ||
+    options.config ||
+    options.server;
 
   if (options.config && !options.configAction && !options.help) {
     throw new Error("zg config requires model set");
   }
   if (options.config) {
-    const allowed = new Set(["config", "configAction", "llamaGpu", "embeddingParallelism", "help"]);
+    const allowed = new Set([
+      "config",
+      "configAction",
+      "llamaGpu",
+      "embeddingParallelism",
+      "help",
+    ]);
     const unsupported = Object.keys(options).find((key) => !allowed.has(key));
     if (unsupported) {
       const flag = `--${unsupported.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}`;
@@ -331,23 +434,31 @@ function validateCliShape(options: CliOptions): void {
     throw new Error("zg server requires on, off, status, or run");
   }
 
-  if (options.listen !== undefined && options.serverAction !== "run" && options.serverAction !== "on") {
+  if (
+    options.listen !== undefined &&
+    options.serverAction !== "run" &&
+    options.serverAction !== "on"
+  ) {
     throw new Error("--listen can only be used with zg server on or run");
   }
-  if (options.serverTokenFile !== undefined && options.serverAction === "status") {
+  if (
+    options.serverTokenFile !== undefined &&
+    options.serverAction === "status"
+  ) {
     throw new Error("--token-file cannot be used with zg server status");
   }
   if (options.installMcpTokenEnv !== undefined && !options.install) {
     throw new Error("--mcp-token-env can only be used with zg install");
   }
 
-  if (options.server && (
-    options.index
-    || options.disableIndex
-    || options.status
-    || options.collections
-    || options.install
-  )) {
+  if (
+    options.server &&
+    (options.index ||
+      options.disableIndex ||
+      options.status ||
+      options.collections ||
+      options.install)
+  ) {
     throw new Error("zg server cannot be combined with another command");
   }
 
@@ -355,11 +466,27 @@ function validateCliShape(options: CliOptions): void {
     throw new Error("--index and --collections cannot be used together");
   }
 
-  if (options.install && (options.index || options.disableIndex || options.status || options.collections)) {
-    throw new Error("zg install cannot be combined with index, status, or collections commands");
+  if (
+    options.install &&
+    (options.index ||
+      options.disableIndex ||
+      options.status ||
+      options.collections)
+  ) {
+    throw new Error(
+      "zg install cannot be combined with index, status, or collections commands",
+    );
   }
 
-  if (options.config && (options.index || options.disableIndex || options.status || options.collections || options.install || options.server)) {
+  if (
+    options.config &&
+    (options.index ||
+      options.disableIndex ||
+      options.status ||
+      options.collections ||
+      options.install ||
+      options.server)
+  ) {
     throw new Error("zg config cannot be combined with another command");
   }
 
@@ -368,7 +495,9 @@ function validateCliShape(options: CliOptions): void {
   }
 
   if (options.disableIndex && options.collections) {
-    throw new Error("--disable-index and --collections cannot be used together");
+    throw new Error(
+      "--disable-index and --collections cannot be used together",
+    );
   }
 
   if (options.disableIndex && options.index) {
@@ -388,7 +517,9 @@ function validateCliShape(options: CliOptions): void {
   }
 
   if (options.status && options.collection) {
-    throw new Error("--status does not accept --collection; use --collections info <name>");
+    throw new Error(
+      "--status does not accept --collection; use --collections info <name>",
+    );
   }
 
   if (options.index && options.collection) {
@@ -448,7 +579,9 @@ function validateCliShape(options: CliOptions): void {
   }
 
   if (options.rg && options.preview) {
-    throw new Error("--preview is not supported with --rg; use -A/-B/-C for rg context");
+    throw new Error(
+      "--preview is not supported with --rg; use -A/-B/-C for rg context",
+    );
   }
 
   if (options.rg && options.noFallback) {
@@ -464,7 +597,9 @@ function validateCliShape(options: CliOptions): void {
   }
 
   if (options.resetPaths && !options.index && !options.collections) {
-    throw new Error("--reset-paths can only be used with --index or --collections index");
+    throw new Error(
+      "--reset-paths can only be used with --index or --collections index",
+    );
   }
 
   if (!options.rg && (options.rgCompatibilityOptions?.length ?? 0) > 0) {
@@ -473,14 +608,17 @@ function validateCliShape(options: CliOptions): void {
   }
 }
 
-
 function parseClientMode(value: string): "direct" | "server" | "auto" {
-  if (value === "direct" || value === "server" || value === "auto") return value;
+  if (value === "direct" || value === "server" || value === "auto")
+    return value;
   throw new Error("--mode must be direct, server, or auto");
 }
 
-
-function readOptionValue(args: readonly string[], index: number, option: string): string {
+function readOptionValue(
+  args: readonly string[],
+  index: number,
+  option: string,
+): string {
   const value = args[index];
   if (value === undefined || value.length === 0) {
     throw new Error(`${option} requires a value`);
@@ -489,42 +627,33 @@ function readOptionValue(args: readonly string[], index: number, option: string)
   return value;
 }
 
-
 function isLongOptionWithValue(arg: string, option: string): boolean {
   return arg.startsWith(`${option}=`);
 }
-
 
 function valueFromLongOption(arg: string): string {
   const separator = arg.indexOf("=");
   return separator >= 0 ? arg.slice(separator + 1) : "";
 }
 
-
 function optionNameFromLong(arg: string): string {
   const separator = arg.indexOf("=");
   return separator >= 0 ? arg.slice(0, separator) : arg;
 }
-
 
 function isRgFlagWithValue(arg: string): boolean {
   const option = optionNameFromLong(arg);
   return arg.includes("=") && RG_OPTIONS_WITH_VALUE.has(option);
 }
 
-
 function isManagedRgOutputOption(arg: string): boolean {
   const option = optionNameFromLong(arg);
   return MANAGED_RG_OUTPUT_OPTIONS.has(option);
 }
 
-
 function isShortRgOptionGroup(arg: string): boolean {
-  return /^-[A-Za-z].*$/.test(arg)
-    && arg !== "-h"
-    && arg !== "-v";
+  return /^-[A-Za-z].*$/.test(arg) && arg !== "-h" && arg !== "-v";
 }
-
 
 function parseShortRgOptionGroup(
   args: readonly string[],
@@ -587,7 +716,10 @@ function parseShortRgOptionGroup(
       case "T":
       case "E": {
         const value = readShortOptionValue(args, index, offset, arg, flag);
-        options.rgOptions = appendRgExtraArgs(options.rgOptions, [flag, value.value]);
+        options.rgOptions = appendRgExtraArgs(options.rgOptions, [
+          flag,
+          value.value,
+        ]);
         markRgCompatibilityOption(options, flag);
         return value.nextIndex;
       }
@@ -595,18 +727,22 @@ function parseShortRgOptionGroup(
       case "B":
       case "C": {
         const value = readShortOptionValue(args, index, offset, arg, flag);
-        const direction = option === "A"
-          ? "after"
-          : option === "B"
-            ? "before"
-            : "both";
-        options.rgOptions = setRgContext(options.rgOptions, direction, value.value, flag);
+        const direction =
+          option === "A" ? "after" : option === "B" ? "before" : "both";
+        options.rgOptions = setRgContext(
+          options.rgOptions,
+          direction,
+          value.value,
+          flag,
+        );
         markRgCompatibilityOption(options, flag);
         return value.nextIndex;
       }
       default:
         if (isManagedRgOutputOption(flag)) {
-          throw new Error(`${flag} changes rg output and cannot be used with managed --rg`);
+          throw new Error(
+            `${flag} changes rg output and cannot be used with managed --rg`,
+          );
         }
         throw new Error(`Unsupported --rg option: ${flag}`);
     }
@@ -615,14 +751,13 @@ function parseShortRgOptionGroup(
   return index;
 }
 
-
 function readShortOptionValue(
   args: readonly string[],
   index: number,
   offset: number,
   arg: string,
   option: string,
-): { value: string; nextIndex: number; } {
+): { value: string; nextIndex: number } {
   const inline = arg.slice(offset + 1);
   if (inline.length > 0) {
     return {
@@ -637,7 +772,6 @@ function readShortOptionValue(
   };
 }
 
-
 function markRgCompatibilityOption(options: CliOptions, option: string): void {
   options.rgCompatibilityOptions = [
     ...(options.rgCompatibilityOptions ?? []),
@@ -645,22 +779,20 @@ function markRgCompatibilityOption(options: CliOptions, option: string): void {
   ];
 }
 
-
 function appendRgPattern(
   existing: CliRgOptions | undefined,
   value: string,
 ): CliRgOptions {
   return {
     ...(existing ?? {}),
-    patterns: [
-      ...(existing?.patterns ?? []),
-      value,
-    ],
+    patterns: [...(existing?.patterns ?? []), value],
   };
 }
 
-
-function appendInstallTargets(existing: string[] | undefined, value: string): string[] {
+function appendInstallTargets(
+  existing: string[] | undefined,
+  value: string,
+): string[] {
   const targets = value
     .split(/[,\s]+/)
     .map((target) => target.trim())
@@ -668,7 +800,6 @@ function appendInstallTargets(existing: string[] | undefined, value: string): st
 
   return [...(existing ?? []), ...targets];
 }
-
 
 function setRgContext(
   existing: CliRgOptions | undefined,
@@ -679,15 +810,16 @@ function setRgContext(
   const parsed = parseNonNegativeInteger(value, option);
   return {
     ...(existing ?? {}),
-    beforeContext: direction === "before" || direction === "both"
-      ? parsed
-      : existing?.beforeContext,
-    afterContext: direction === "after" || direction === "both"
-      ? parsed
-      : existing?.afterContext,
+    beforeContext:
+      direction === "before" || direction === "both"
+        ? parsed
+        : existing?.beforeContext,
+    afterContext:
+      direction === "after" || direction === "both"
+        ? parsed
+        : existing?.afterContext,
   };
 }
-
 
 function appendRgExtraArgs(
   existing: CliRgOptions | undefined,
@@ -695,29 +827,27 @@ function appendRgExtraArgs(
 ): CliRgOptions {
   return {
     ...(existing ?? {}),
-    extraArgs: [
-      ...(existing?.extraArgs ?? []),
-      ...args,
-    ],
+    extraArgs: [...(existing?.extraArgs ?? []), ...args],
   };
 }
 
-
 function appendRgGlobFilter(options: CliOptions, value: string): void {
   if (value.startsWith("!")) {
-    options.excludePaths = appendPathFilters(options.excludePaths, value.slice(1));
+    options.excludePaths = appendPathFilters(
+      options.excludePaths,
+      value.slice(1),
+    );
     return;
   }
 
   options.includePaths = appendPathFilters(options.includePaths, value);
 }
 
-
 function readRouteOptionValues(
   args: readonly string[],
   index: number,
   option: string,
-): { values: string[]; nextIndex: number; } {
+): { values: string[]; nextIndex: number } {
   const values: string[] = [];
   let nextIndex = index;
 
@@ -740,7 +870,6 @@ function readRouteOptionValues(
   return { values, nextIndex };
 }
 
-
 function parsePositiveInteger(value: string, option: string): number {
   const parsed = Number.parseInt(value, 10);
   if (!Number.isInteger(parsed) || parsed < 1) {
@@ -750,14 +879,12 @@ function parsePositiveInteger(value: string, option: string): number {
   return parsed;
 }
 
-
 function parseEnvironmentVariable(value: string, option: string): string {
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
     throw new Error(`${option} requires a valid environment variable name`);
   }
   return value;
 }
-
 
 function parseNonNegativeInteger(value: string, option: string): number {
   const parsed = Number.parseInt(value, 10);
@@ -768,7 +895,6 @@ function parseNonNegativeInteger(value: string, option: string): number {
   return parsed;
 }
 
-
 function parseColorMode(value: string): ColorMode {
   if (value === "auto" || value === "always" || value === "never") {
     return value;
@@ -776,7 +902,6 @@ function parseColorMode(value: string): ColorMode {
 
   throw new Error(`Unsupported color mode: ${value}`);
 }
-
 
 function parsePreviewMode(value: string): PreviewMode {
   if (value === "none" || value === "short" || value === "full") {
@@ -786,20 +911,27 @@ function parsePreviewMode(value: string): PreviewMode {
   throw new Error(`Unsupported preview mode: ${value}`);
 }
 
-
-export function parseLlamaGpu(value: string): "auto" | "metal" | "vulkan" | "cuda" | false {
+export function parseLlamaGpu(
+  value: string,
+): "auto" | "metal" | "vulkan" | "cuda" | false {
   const normalized = value.trim().toLowerCase();
-  if (normalized === "auto" || normalized === "metal" || normalized === "vulkan" || normalized === "cuda") {
+  if (
+    normalized === "auto" ||
+    normalized === "metal" ||
+    normalized === "vulkan" ||
+    normalized === "cuda"
+  ) {
     return normalized;
   }
 
-  if (["false", "off", "none", "disable", "disabled", "0"].includes(normalized)) {
+  if (
+    ["false", "off", "none", "disable", "disabled", "0"].includes(normalized)
+  ) {
     return false;
   }
 
   throw new Error(`Unsupported llama GPU mode: ${value}`);
 }
-
 
 function setLlamaGpuOption(
   options: CliOptions,
@@ -812,23 +944,17 @@ function setLlamaGpuOption(
   options.llamaGpu = value;
 }
 
-
 function hasExplicitRoutes(options: CliOptions): boolean {
   return (options.routes?.length ?? 0) > 0;
 }
-
 
 function appendRoutes(
   existing: ZvecGrepContextRoute[] | undefined,
   mode: ZvecGrepContextRoute["mode"],
   queries: readonly string[],
 ): ZvecGrepContextRoute[] {
-  return [
-    ...(existing ?? []),
-    ...queries.map((query) => ({ mode, query })),
-  ];
+  return [...(existing ?? []), ...queries.map((query) => ({ mode, query }))];
 }
-
 
 function parseSymbolType(value: string): CodeSymbolType {
   if (VALID_SYMBOL_TYPES.has(value as CodeSymbolType)) {
@@ -838,7 +964,6 @@ function parseSymbolType(value: string): CodeSymbolType {
   throw new Error(`Unsupported symbol type: ${value}`);
 }
 
-
 export function splitPathFilters(value: string): string[] {
   return value
     .split(",")
@@ -846,11 +971,12 @@ export function splitPathFilters(value: string): string[] {
     .filter((item) => item.length > 0);
 }
 
-
-function appendPathFilters(existing: string[] | undefined, value: string): string[] {
+function appendPathFilters(
+  existing: string[] | undefined,
+  value: string,
+): string[] {
   return [...(existing ?? []), ...splitPathFilters(value)];
 }
-
 
 export function parseModifiedTime(value: string, option: string): number {
   if (/^\d+$/.test(value)) {
@@ -867,9 +993,9 @@ export function parseModifiedTime(value: string, option: string): number {
     const day = Number.parseInt(dateOnly[3]!, 10);
     const date = new Date(year, month - 1, day);
     if (
-      date.getFullYear() === year
-      && date.getMonth() === month - 1
-      && date.getDate() === day
+      date.getFullYear() === year &&
+      date.getMonth() === month - 1 &&
+      date.getDate() === day
     ) {
       return date.getTime();
     }
@@ -880,5 +1006,7 @@ export function parseModifiedTime(value: string, option: string): number {
     return parsed;
   }
 
-  throw new Error(`${option} requires an epoch millisecond value or a parseable date`);
+  throw new Error(
+    `${option} requires an epoch millisecond value or a parseable date`,
+  );
 }

@@ -1,6 +1,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ZvecGrepContextResult } from "../index.js";
-import { normalizeSearchInput, type NormalizedSearchInput } from "./input-normalization.js";
+import {
+  normalizeSearchInput,
+  type NormalizedSearchInput,
+} from "./input-normalization.js";
 import {
   zvecGrepIndexInputSchema,
   zvecGrepIndexOutputSchema,
@@ -13,10 +16,14 @@ import {
   type ZvecGrepIndexInput,
   type ZvecGrepIndexStatusInput,
 } from "./schemas.js";
-import { contextText, simplifyContextResult, toolResult } from "./result-format.js";
+import {
+  contextText,
+  simplifyContextResult,
+  toolResult,
+} from "./result-format.js";
 
-
-export type IndexJobState = "queued" | "running" | "succeeded" | "failed" | "cancelled";
+export type IndexJobState =
+  "queued" | "running" | "succeeded" | "failed" | "cancelled";
 
 export type ZvecGrepIndexResult = {
   root: string;
@@ -102,10 +109,11 @@ export type ZvecGrepServerStatusResult = {
 export interface ZvecGrepDaemonBackend {
   index(input: ZvecGrepIndexInput): Promise<ZvecGrepIndexResult>;
   search(input: NormalizedSearchInput): Promise<ZvecGrepSearchResult>;
-  indexStatus(input: ZvecGrepIndexStatusInput): Promise<ZvecGrepIndexStatusResult>;
+  indexStatus(
+    input: ZvecGrepIndexStatusInput,
+  ): Promise<ZvecGrepIndexStatusResult>;
   serverStatus(): Promise<ZvecGrepServerStatusResult>;
 }
-
 
 export function createZvecGrepMcpServer(
   backend: ZvecGrepDaemonBackend,
@@ -125,13 +133,16 @@ export function createZvecGrepMcpServer(
   return server;
 }
 
-
-export function registerZvecGrepTools(server: McpServer, backend: ZvecGrepDaemonBackend): void {
+export function registerZvecGrepTools(
+  server: McpServer,
+  backend: ZvecGrepDaemonBackend,
+): void {
   server.registerTool(
     "zvec_grep_index",
     {
       title: "Ensure zvec-grep index",
-      description: "Activate an absolute repository root and create or incrementally update its index.",
+      description:
+        "Activate an absolute repository root and create or incrementally update its index.",
       inputSchema: zvecGrepIndexInputSchema.shape,
       outputSchema: zvecGrepIndexOutputSchema.shape,
       annotations: {
@@ -160,7 +171,8 @@ export function registerZvecGrepTools(server: McpServer, backend: ZvecGrepDaemon
     "zvec_grep_search",
     {
       title: "Search with zvec-grep",
-      description: "Search an existing repository index and report whether results may be stale.",
+      description:
+        "Search an existing repository index and report whether results may be stale.",
       inputSchema: zvecGrepSearchInputSchema.shape,
       outputSchema: zvecGrepSearchOutputSchema.shape,
       annotations: {
@@ -177,11 +189,16 @@ export function registerZvecGrepTools(server: McpServer, backend: ZvecGrepDaemon
         root: response.root,
         freshness: response.freshness,
         update_job_id: response.updateJobId,
-        result: simplifyContextResult(response.result, normalized.maxContentChars),
+        result: simplifyContextResult(
+          response.result,
+          normalized.maxContentChars,
+        ),
       };
       const statusLines = [
         `freshness: ${response.freshness}`,
-        ...(response.updateJobId ? [`update_job_id: ${response.updateJobId}`] : []),
+        ...(response.updateJobId
+          ? [`update_job_id: ${response.updateJobId}`]
+          : []),
       ];
       return toolResult(
         `${statusLines.join("\n")}\n${contextText(response.result, normalized.maxContentChars)}`,
@@ -194,7 +211,8 @@ export function registerZvecGrepTools(server: McpServer, backend: ZvecGrepDaemon
     "zvec_grep_index_status",
     {
       title: "Inspect zvec-grep index status",
-      description: "Read persisted index status and, when active, the daemon runtime and job status for an absolute root.",
+      description:
+        "Read persisted index status and, when active, the daemon runtime and job status for an absolute root.",
       inputSchema: zvecGrepIndexStatusInputSchema.shape,
       outputSchema: zvecGrepIndexStatusOutputSchema.shape,
       annotations: {
@@ -207,7 +225,10 @@ export function registerZvecGrepTools(server: McpServer, backend: ZvecGrepDaemon
     async (input) => {
       const result = await backend.indexStatus(input);
       const structuredContent = formatIndexStatus(result);
-      return toolResult(JSON.stringify(structuredContent, null, 2), structuredContent);
+      return toolResult(
+        JSON.stringify(structuredContent, null, 2),
+        structuredContent,
+      );
     },
   );
 
@@ -215,7 +236,8 @@ export function registerZvecGrepTools(server: McpServer, backend: ZvecGrepDaemon
     "zvec_grep_server_status",
     {
       title: "Inspect zvec-grep server status",
-      description: "Read daemon version, queue, runtime and model-pool summary without exposing repository paths.",
+      description:
+        "Read daemon version, queue, runtime and model-pool summary without exposing repository paths.",
       inputSchema: zvecGrepServerStatusInputSchema.shape,
       outputSchema: zvecGrepServerStatusOutputSchema.shape,
       annotations: {
@@ -239,13 +261,17 @@ export function registerZvecGrepTools(server: McpServer, backend: ZvecGrepDaemon
           active_leases: result.models.activeLeases,
         },
       };
-      return toolResult(JSON.stringify(structuredContent, null, 2), structuredContent);
+      return toolResult(
+        JSON.stringify(structuredContent, null, 2),
+        structuredContent,
+      );
     },
   );
 }
 
-
-function formatIndexStatus(result: ZvecGrepIndexStatusResult): Record<string, unknown> {
+function formatIndexStatus(
+  result: ZvecGrepIndexStatusResult,
+): Record<string, unknown> {
   return {
     root: result.root,
     indexed: result.indexed,

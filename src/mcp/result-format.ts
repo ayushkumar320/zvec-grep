@@ -1,32 +1,33 @@
 import type { ZvecGrepContextResult } from "../index.js";
 
-
 export type ToolResult = {
   content: Array<{ type: "text"; text: string }>;
   structuredContent: Record<string, unknown>;
 };
 
-
-export function toolResult(text: string, structuredContent: Record<string, unknown>): ToolResult {
+export function toolResult(
+  text: string,
+  structuredContent: Record<string, unknown>,
+): ToolResult {
   return {
     content: [{ type: "text", text }],
     structuredContent,
   };
 }
 
-
 export function contextToolResult(
   result: ZvecGrepContextResult,
   maxContentChars: number,
 ): ToolResult {
-  return toolResult(
-    contextText(result, maxContentChars),
-    { result: simplifyContextResult(result, maxContentChars) },
-  );
+  return toolResult(contextText(result, maxContentChars), {
+    result: simplifyContextResult(result, maxContentChars),
+  });
 }
 
-
-export function contextText(result: ZvecGrepContextResult, maxContentChars: number): string {
+export function contextText(
+  result: ZvecGrepContextResult,
+  maxContentChars: number,
+): string {
   const lines = [
     `query: ${result.query}`,
     `root: ${result.root}`,
@@ -37,7 +38,9 @@ export function contextText(result: ZvecGrepContextResult, maxContentChars: numb
 
   for (const item of result.items) {
     lines.push("");
-    lines.push(`${item.file.relativePath}:${rangeLabel(item.range)} rank=${item.rank} matchedBy=${item.matchedBy}`);
+    lines.push(
+      `${item.file.relativePath}:${rangeLabel(item.range)} rank=${item.rank} matchedBy=${item.matchedBy}`,
+    );
     if (item.outline) {
       lines.push(`outline: ${truncate(item.outline, maxContentChars)}`);
     }
@@ -47,7 +50,6 @@ export function contextText(result: ZvecGrepContextResult, maxContentChars: numb
 
   return lines.join("\n");
 }
-
 
 export function simplifyContextResult(
   result: ZvecGrepContextResult,
@@ -66,7 +68,9 @@ export function simplifyContextResult(
       file: item.file,
       range: item.range,
       excerptRange: item.excerptRange,
-      outline: item.outline ? truncate(item.outline, maxContentChars) : undefined,
+      outline: item.outline
+        ? truncate(item.outline, maxContentChars)
+        : undefined,
       content: truncate(item.content, maxContentChars),
       contentRole: item.contentRole,
       status: item.status,
@@ -80,7 +84,6 @@ export function simplifyContextResult(
   };
 }
 
-
 function rangeLabel(range: {
   kind: string;
   startLine?: number;
@@ -88,15 +91,21 @@ function rangeLabel(range: {
   startOffset?: number;
   endOffset?: number;
 }): string {
-  if (range.kind === "text" && typeof range.startLine === "number" && typeof range.endLine === "number") {
+  if (
+    range.kind === "text" &&
+    typeof range.startLine === "number" &&
+    typeof range.endLine === "number"
+  ) {
     return `${range.startLine}-${range.endLine}`;
   }
-  if (typeof range.startOffset === "number" && typeof range.endOffset === "number") {
+  if (
+    typeof range.startOffset === "number" &&
+    typeof range.endOffset === "number"
+  ) {
     return `${range.startOffset}-${range.endOffset}`;
   }
   return range.kind;
 }
-
 
 export function truncate(value: string, maxChars: number): string {
   if (value.length <= maxChars) {

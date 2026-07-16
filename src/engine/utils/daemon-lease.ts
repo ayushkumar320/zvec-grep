@@ -13,7 +13,6 @@ import { dirname, join } from "node:path";
 import { EngineError } from "../errors/index.js";
 import { anonymousHome } from "../service/root.js";
 
-
 export type DaemonLeaseRecord = {
   pid: number;
   hostname: string;
@@ -22,23 +21,22 @@ export type DaemonLeaseRecord = {
   updatedAt: number;
 };
 
-
 export function daemonLeasePath(root: string): string {
   return join(anonymousHome(root), "locks", "daemon.json");
 }
-
 
 export function daemonLeaseGuardPath(root: string): string {
   return join(anonymousHome(root), "locks", "daemon.guard");
 }
 
-
 export type DaemonLeaseGuard = {
   release(): void;
 };
 
-
-export function acquireDaemonLeaseGuard(root: string, instanceToken: string): DaemonLeaseGuard | undefined {
+export function acquireDaemonLeaseGuard(
+  root: string,
+  instanceToken: string,
+): DaemonLeaseGuard | undefined {
   const path = daemonLeaseGuardPath(root);
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const record: DaemonLeaseRecord = {
@@ -51,7 +49,9 @@ export function acquireDaemonLeaseGuard(root: string, instanceToken: string): Da
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       mkdirSync(path, { recursive: false, mode: 0o700 });
-      writeFileSync(join(path, "owner.json"), `${JSON.stringify(record)}\n`, { mode: 0o600 });
+      writeFileSync(join(path, "owner.json"), `${JSON.stringify(record)}\n`, {
+        mode: 0o600,
+      });
       let released = false;
       return {
         release() {
@@ -83,20 +83,21 @@ export function acquireDaemonLeaseGuard(root: string, instanceToken: string): Da
   return undefined;
 }
 
-
 export function readDaemonLease(root: string): DaemonLeaseRecord | undefined {
   const path = daemonLeasePath(root);
   if (!existsSync(path)) {
     return undefined;
   }
   try {
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<DaemonLeaseRecord>;
+    const parsed = JSON.parse(
+      readFileSync(path, "utf8"),
+    ) as Partial<DaemonLeaseRecord>;
     if (
-      typeof parsed.pid !== "number"
-      || typeof parsed.hostname !== "string"
-      || typeof parsed.instanceToken !== "string"
-      || typeof parsed.createdAt !== "number"
-      || typeof parsed.updatedAt !== "number"
+      typeof parsed.pid !== "number" ||
+      typeof parsed.hostname !== "string" ||
+      typeof parsed.instanceToken !== "string" ||
+      typeof parsed.createdAt !== "number" ||
+      typeof parsed.updatedAt !== "number"
     ) {
       return undefined;
     }
@@ -106,7 +107,6 @@ export function readDaemonLease(root: string): DaemonLeaseRecord | undefined {
   }
 }
 
-
 export function daemonLeaseFileIsAbandoned(root: string): boolean {
   try {
     return Date.now() - statSync(daemonLeasePath(root)).mtimeMs > 30_000;
@@ -114,7 +114,6 @@ export function daemonLeaseFileIsAbandoned(root: string): boolean {
     return true;
   }
 }
-
 
 export function assertDaemonWriteAllowed(
   root: string,
@@ -125,7 +124,10 @@ export function assertDaemonWriteAllowed(
   if (initial?.pid === process.pid && initial.instanceToken === instanceToken) {
     return undefined;
   }
-  const guard = acquireDaemonLeaseGuard(root, instanceToken ?? `direct-${process.pid}`);
+  const guard = acquireDaemonLeaseGuard(
+    root,
+    instanceToken ?? `direct-${process.pid}`,
+  );
   if (!guard) {
     throw daemonLeaseActiveError(root, initial?.pid ?? 0);
   }
@@ -156,7 +158,6 @@ export function assertDaemonWriteAllowed(
   throw daemonLeaseActiveError(root, record.pid);
 }
 
-
 function daemonLeaseActiveError(root: string, pid: number): EngineError {
   return new EngineError("A zvec-grep daemon owns index writes for this root", {
     code: "ZVEC_GREP.ENGINE.DAEMON_LEASE_ACTIVE",
@@ -164,30 +165,31 @@ function daemonLeaseActiveError(root: string, pid: number): EngineError {
       `root=${root}`,
       `pid=${pid}`,
       "hint=Run with --mode auto so a ready daemon handles indexed operations. If auto is already active, check zg server status and restore or stop the daemon before retrying.",
-      "config=Edit ~/.zvec-grep/config.json and set client.mode to \"auto\" to persist this behavior.",
+      'config=Edit ~/.zvec-grep/config.json and set client.mode to "auto" to persist this behavior.',
     ].join("\n"),
   });
 }
 
-
 function guardIsStale(path: string): boolean {
   try {
-    const record = JSON.parse(readFileSync(join(path, "owner.json"), "utf8")) as Partial<DaemonLeaseRecord>;
+    const record = JSON.parse(
+      readFileSync(join(path, "owner.json"), "utf8"),
+    ) as Partial<DaemonLeaseRecord>;
     if (
-      record.hostname === hostname()
-      && typeof record.pid === "number"
-      && typeof record.instanceToken === "string"
-      && typeof record.createdAt === "number"
-      && typeof record.updatedAt === "number"
+      record.hostname === hostname() &&
+      typeof record.pid === "number" &&
+      typeof record.instanceToken === "string" &&
+      typeof record.createdAt === "number" &&
+      typeof record.updatedAt === "number"
     ) {
       return !processIsAlive(record.pid);
     }
     if (
-      typeof record.hostname === "string"
-      && typeof record.pid === "number"
-      && typeof record.instanceToken === "string"
-      && typeof record.createdAt === "number"
-      && typeof record.updatedAt === "number"
+      typeof record.hostname === "string" &&
+      typeof record.pid === "number" &&
+      typeof record.instanceToken === "string" &&
+      typeof record.createdAt === "number" &&
+      typeof record.updatedAt === "number"
     ) {
       return Date.now() - record.updatedAt > 30_000;
     }
@@ -200,7 +202,6 @@ function guardIsStale(path: string): boolean {
     }
   }
 }
-
 
 export function processIsAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) {

@@ -13,10 +13,8 @@ import { parseListenAddress } from "../dist/daemon/config.js";
 import { DaemonHttpServer } from "../dist/daemon/http-server.js";
 import { readInstanceRecord } from "../dist/daemon/server-controller.js";
 
-
 const execFileAsync = promisify(execFile);
 const cliPath = resolve("dist/cli/index.js");
-
 
 test("server run parses a loopback listen address", () => {
   const parsed = parseArgs(["server", "run", "--listen", "127.0.0.1:8123"]);
@@ -29,7 +27,6 @@ test("server run parses a loopback listen address", () => {
   });
 });
 
-
 test("server lifecycle and client mode arguments are parsed", () => {
   for (const action of ["on", "off", "status"]) {
     const parsed = parseArgs(["server", action]);
@@ -37,10 +34,15 @@ test("server lifecycle and client mode arguments are parsed", () => {
   }
   assert.equal(parseArgs(["--mode", "server", "query"]).options.mode, "server");
   assert.equal(parseArgs(["--mode=auto", "query"]).options.mode, "auto");
-  assert.throws(() => parseArgs(["--mode", "invalid", "query"]), /direct, server, or auto/i);
-  assert.throws(() => parseArgs(["--force-direct", "query"]), /requires --mode direct/i);
+  assert.throws(
+    () => parseArgs(["--mode", "invalid", "query"]),
+    /direct, server, or auto/i,
+  );
+  assert.throws(
+    () => parseArgs(["--force-direct", "query"]),
+    /requires --mode direct/i,
+  );
 });
-
 
 test("server queries default to eventual freshness and allow explicit fresh reads", () => {
   assert.deepEqual(resolveServerSearchPolicy({}), {
@@ -62,36 +64,61 @@ test("server queries default to eventual freshness and allow explicit fresh read
   );
 });
 
-
 test("server run rejects non-loopback addresses and unrelated listen flags", () => {
   assert.throws(() => parseListenAddress("0.0.0.0:7999"), /loopback/i);
-  assert.throws(() => new DaemonHttpServer({
-    host: "0.0.0.0",
-    port: 7999,
-    token: "token-at-least-32-characters-long",
-    version: "1.0.0",
-    backend: {},
-  }), /loopback/i);
-  assert.throws(() => parseArgs(["--listen", "127.0.0.1:7999", "query"]), /zg server on or run/i);
+  assert.throws(
+    () =>
+      new DaemonHttpServer({
+        host: "0.0.0.0",
+        port: 7999,
+        token: "token-at-least-32-characters-long",
+        version: "1.0.0",
+        backend: {},
+      }),
+    /loopback/i,
+  );
+  assert.throws(
+    () => parseArgs(["--listen", "127.0.0.1:7999", "query"]),
+    /zg server on or run/i,
+  );
 });
-
 
 test("server on, status and off are idempotent", async (t) => {
   const home = await mkdtemp(join(tmpdir(), "zvec-grep-server-cli-"));
   const port = await availablePort();
   const args = ["--home", home];
   t.after(async () => {
-    await execFileAsync(process.execPath, [cliPath, "server", "off", ...args]).catch(() => undefined);
+    await execFileAsync(process.execPath, [
+      cliPath,
+      "server",
+      "off",
+      ...args,
+    ]).catch(() => undefined);
     await rm(home, { recursive: true, force: true });
   });
 
   const first = await execFileAsync(process.execPath, [
-    cliPath, "server", "on", "--listen", `127.0.0.1:${port}`, ...args,
+    cliPath,
+    "server",
+    "on",
+    "--listen",
+    `127.0.0.1:${port}`,
+    ...args,
   ]);
   assert.match(first.stdout, /Server: ready/);
-  const second = await execFileAsync(process.execPath, [cliPath, "server", "on", ...args]);
+  const second = await execFileAsync(process.execPath, [
+    cliPath,
+    "server",
+    "on",
+    ...args,
+  ]);
   assert.match(second.stdout, /Server: ready/);
-  const status = await execFileAsync(process.execPath, [cliPath, "server", "status", ...args]);
+  const status = await execFileAsync(process.execPath, [
+    cliPath,
+    "server",
+    "status",
+    ...args,
+  ]);
   assert.match(status.stdout, new RegExp(`127\\.0\\.0\\.1:${port}`));
   const mcpResponse = await fetch(`http://127.0.0.1:${port}/mcp`, {
     method: "POST",
@@ -111,13 +138,24 @@ test("server on, status and off are idempotent", async (t) => {
     }),
   });
   assert.equal(mcpResponse.status, 200);
-  await assert.rejects(readFile(join(home, "daemon", "token"), "utf8"), { code: "ENOENT" });
-  const stopped = await execFileAsync(process.execPath, [cliPath, "server", "off", ...args]);
+  await assert.rejects(readFile(join(home, "daemon", "token"), "utf8"), {
+    code: "ENOENT",
+  });
+  const stopped = await execFileAsync(process.execPath, [
+    cliPath,
+    "server",
+    "off",
+    ...args,
+  ]);
   assert.match(stopped.stdout, /Server: stopped/);
-  const stoppedAgain = await execFileAsync(process.execPath, [cliPath, "server", "off", ...args]);
+  const stoppedAgain = await execFileAsync(process.execPath, [
+    cliPath,
+    "server",
+    "off",
+    ...args,
+  ]);
   assert.match(stoppedAgain.stdout, /Server: stopped/);
 });
-
 
 test("server token file enables authentication", async (t) => {
   const home = await mkdtemp(join(tmpdir(), "zvec-grep-server-token-"));
@@ -126,14 +164,33 @@ test("server token file enables authentication", async (t) => {
   const token = "server-cli-test-token-at-least-32-characters";
   await writeFile(tokenFile, `${token}\n`);
   t.after(async () => {
-    await execFileAsync(process.execPath, [cliPath, "server", "off", "--home", home, "--token-file", tokenFile]).catch(() => undefined);
+    await execFileAsync(process.execPath, [
+      cliPath,
+      "server",
+      "off",
+      "--home",
+      home,
+      "--token-file",
+      tokenFile,
+    ]).catch(() => undefined);
     await rm(home, { recursive: true, force: true });
   });
 
   await execFileAsync(process.execPath, [
-    cliPath, "server", "on", "--listen", `127.0.0.1:${port}`, "--home", home, "--token-file", tokenFile,
+    cliPath,
+    "server",
+    "on",
+    "--listen",
+    `127.0.0.1:${port}`,
+    "--home",
+    home,
+    "--token-file",
+    tokenFile,
   ]);
-  const response = await fetch(`http://127.0.0.1:${port}/mcp`, { method: "POST", body: "{}" });
+  const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
+    method: "POST",
+    body: "{}",
+  });
   assert.equal(response.status, 401);
   const clientStatus = await new DaemonClient({
     serverUrl: `http://127.0.0.1:${port}/mcp`,
@@ -141,33 +198,54 @@ test("server token file enables authentication", async (t) => {
   }).callTool("zvec_grep_server_status", {});
   assert.equal(clientStatus.version, "0.1.5");
   const stopped = await execFileAsync(process.execPath, [
-    cliPath, "server", "off", "--home", home, "--token-file", tokenFile,
+    cliPath,
+    "server",
+    "off",
+    "--home",
+    home,
+    "--token-file",
+    tokenFile,
   ]);
   assert.match(stopped.stdout, /Server: stopped/);
 });
 
-
-test("foreground server releases its instance record on termination", {
-  skip: process.platform === "win32" ? "Windows uses the control endpoint instead of POSIX signals" : false,
-}, async (t) => {
-  const home = await mkdtemp(join(tmpdir(), "zvec-grep-server-signal-"));
-  const port = await availablePort();
-  const child = spawn(process.execPath, [
-    cliPath, "server", "run", "--listen", `127.0.0.1:${port}`, "--home", home,
-  ], { stdio: "ignore", windowsHide: true });
-  t.after(async () => {
-    if (child.exitCode === null) child.kill();
-    await rm(home, { recursive: true, force: true });
-  });
-  await waitFor(async () => (await readInstanceRecord(home))?.ready === true);
-  child.kill();
-  await new Promise((resolve, reject) => {
-    child.once("exit", resolve);
-    child.once("error", reject);
-  });
-  assert.equal(await readInstanceRecord(home), undefined);
-});
-
+test(
+  "foreground server releases its instance record on termination",
+  {
+    skip:
+      process.platform === "win32"
+        ? "Windows uses the control endpoint instead of POSIX signals"
+        : false,
+  },
+  async (t) => {
+    const home = await mkdtemp(join(tmpdir(), "zvec-grep-server-signal-"));
+    const port = await availablePort();
+    const child = spawn(
+      process.execPath,
+      [
+        cliPath,
+        "server",
+        "run",
+        "--listen",
+        `127.0.0.1:${port}`,
+        "--home",
+        home,
+      ],
+      { stdio: "ignore", windowsHide: true },
+    );
+    t.after(async () => {
+      if (child.exitCode === null) child.kill();
+      await rm(home, { recursive: true, force: true });
+    });
+    await waitFor(async () => (await readInstanceRecord(home))?.ready === true);
+    child.kill();
+    await new Promise((resolve, reject) => {
+      child.once("exit", resolve);
+      child.once("error", reject);
+    });
+    assert.equal(await readInstanceRecord(home), undefined);
+  },
+);
 
 async function availablePort() {
   const server = createServer();
@@ -177,10 +255,11 @@ async function availablePort() {
   });
   const address = server.address();
   const port = typeof address === "object" && address ? address.port : 0;
-  await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  await new Promise((resolve, reject) =>
+    server.close((error) => (error ? reject(error) : resolve())),
+  );
   return port;
 }
-
 
 async function waitFor(predicate) {
   for (let attempt = 0; attempt < 200; attempt++) {

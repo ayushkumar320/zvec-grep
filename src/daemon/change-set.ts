@@ -1,7 +1,6 @@
 import { basename, dirname, isAbsolute, relative, sep } from "node:path";
 import { normalizePath } from "../engine/utils/path.js";
 
-
 export type ChangeKind = "created" | "changed" | "deleted";
 
 export type ChangeSetSnapshot = {
@@ -15,7 +14,6 @@ export type ChangeSetOptions = {
   maxChangedPaths?: number;
 };
 
-
 export class ChangeSet {
   private readonly touchedFiles = new Set<string>();
   private readonly rescanDirectories = new Set<string>();
@@ -23,11 +21,9 @@ export class ChangeSet {
   private forceFullReconcile = false;
   private readonly maxChangedPaths: number;
 
-
   constructor(options: ChangeSetOptions = {}) {
     this.maxChangedPaths = options.maxChangedPaths ?? 1_000;
   }
-
 
   add(path: string, kind: ChangeKind, isDirectory = false): void {
     if (!isAbsolute(path)) {
@@ -49,20 +45,18 @@ export class ChangeSet {
     }
   }
 
-
   requireFullReconcile(): void {
     this.forceFullReconcile = true;
   }
 
-
   merge(other: ChangeSetSnapshot): void {
     for (const path of other.touchedFiles) this.touchedFiles.add(path);
-    for (const path of other.rescanDirectories) this.rescanDirectories.add(path);
+    for (const path of other.rescanDirectories)
+      this.rescanDirectories.add(path);
     for (const path of other.deletedPrefixes) this.deletedPrefixes.add(path);
     this.forceFullReconcile ||= other.forceFullReconcile;
     this.collapsePaths();
   }
-
 
   snapshot(): ChangeSetSnapshot {
     return {
@@ -73,22 +67,26 @@ export class ChangeSet {
     };
   }
 
-
   get size(): number {
-    return this.touchedFiles.size + this.rescanDirectories.size + this.deletedPrefixes.size;
+    return (
+      this.touchedFiles.size +
+      this.rescanDirectories.size +
+      this.deletedPrefixes.size
+    );
   }
-
 
   get empty(): boolean {
     return this.size === 0 && !this.forceFullReconcile;
   }
 
-
   private collapsePaths(): void {
     collapseSet(this.rescanDirectories);
     collapseSet(this.deletedPrefixes);
     for (const file of this.touchedFiles) {
-      if (hasAncestor(this.rescanDirectories, file) || hasAncestor(this.deletedPrefixes, file)) {
+      if (
+        hasAncestor(this.rescanDirectories, file) ||
+        hasAncestor(this.deletedPrefixes, file)
+      ) {
         this.touchedFiles.delete(file);
       }
     }
@@ -100,7 +98,6 @@ export class ChangeSet {
   }
 }
 
-
 function collapseSet(paths: Set<string>): void {
   const sorted = [...paths].sort((left, right) => left.length - right.length);
   for (const path of sorted) {
@@ -110,14 +107,21 @@ function collapseSet(paths: Set<string>): void {
   }
 }
 
-
-function hasAncestor(paths: Set<string>, target: string, exclude?: string): boolean {
+function hasAncestor(
+  paths: Set<string>,
+  target: string,
+  exclude?: string,
+): boolean {
   for (const path of paths) {
     if (path === exclude || path === target) {
       continue;
     }
     const fromPath = relative(path, target);
-    if (!isAbsolute(fromPath) && fromPath !== ".." && !fromPath.startsWith(`..${sep}`)) {
+    if (
+      !isAbsolute(fromPath) &&
+      fromPath !== ".." &&
+      !fromPath.startsWith(`..${sep}`)
+    ) {
       return true;
     }
   }

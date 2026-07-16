@@ -1,6 +1,9 @@
 import type { AnonymousReadSession } from "../engine/service/zvec-grep.js";
 import { openAnonymousReadSession } from "../engine/service/zvec-grep.js";
-import type { ZvecGrepContextOptions, ZvecGrepContextResult } from "../engine/service/types.js";
+import type {
+  ZvecGrepContextOptions,
+  ZvecGrepContextResult,
+} from "../engine/service/types.js";
 import type {
   EmbeddingModelPool,
   ModelLease,
@@ -9,14 +12,15 @@ import type {
 import { ReadCollectionCache } from "./read-collection-cache.js";
 import type { RootLease } from "./root-lease.js";
 
-
 export type RootRuntimeOptions = {
   canonicalRoot: string;
   modelPool: EmbeddingModelPool;
   modelRequest?: ModelLeaseRequest;
   rootLease?: RootLease;
   readCollectionIdleTtlMs?: number;
-  openSession?: (lease: ModelLease) => AnonymousReadSession | Promise<AnonymousReadSession>;
+  openSession?: (
+    lease: ModelLease,
+  ) => AnonymousReadSession | Promise<AnonymousReadSession>;
   onActivity?: () => void;
 };
 
@@ -28,7 +32,6 @@ type ReadGeneration = {
   key: string;
   cache: ReadCollectionCache<LeasedReadSession>;
 };
-
 
 export class RootRuntime {
   readonly canonicalRoot: string;
@@ -45,25 +48,26 @@ export class RootRuntime {
   private writerPending = false;
   private writerReady?: Promise<void>;
   private writerReadyResolve?: () => void;
-  private writerContext?: (options: ZvecGrepContextOptions) => Promise<ZvecGrepContextResult>;
+  private writerContext?: (
+    options: ZvecGrepContextOptions,
+  ) => Promise<ZvecGrepContextResult>;
   private activeWriterSearches = 0;
   private writerSearchesDrained?: Promise<void>;
   private writerSearchesDrainedResolve?: () => void;
   private closed = false;
-
 
   constructor(private readonly options: RootRuntimeOptions) {
     this.canonicalRoot = options.canonicalRoot;
     this.modelRequest = options.modelRequest;
   }
 
-
   updateModelRequest(request: ModelLeaseRequest): void {
     this.modelRequest = request;
   }
 
-
-  async search(options: ZvecGrepContextOptions): Promise<ZvecGrepContextResult> {
+  async search(
+    options: ZvecGrepContextOptions,
+  ): Promise<ZvecGrepContextResult> {
     this.options.onActivity?.();
     if (this.closed) {
       throw new Error("Root runtime is closed.");
@@ -81,7 +85,9 @@ export class RootRuntime {
       }
       const request = this.modelRequest;
       if (!request) {
-        throw new Error("Root runtime does not have an indexed embedding schema.");
+        throw new Error(
+          "Root runtime does not have an indexed embedding schema.",
+        );
       }
       const desiredKey = this.options.modelPool.keyFor(request);
       if (this.generation?.key !== desiredKey) {
@@ -96,15 +102,16 @@ export class RootRuntime {
         };
       }
 
-      return this.generation.cache.withRead((session) => session.context({
-        ...options,
-        root: this.canonicalRoot,
-        autoUpdate: false,
-        fallback: "disabled",
-      }));
+      return this.generation.cache.withRead((session) =>
+        session.context({
+          ...options,
+          root: this.canonicalRoot,
+          autoUpdate: false,
+          fallback: "disabled",
+        }),
+      );
     });
   }
-
 
   setWriterPending(pending: boolean): void {
     if (pending === this.writerPending) {
@@ -122,9 +129,10 @@ export class RootRuntime {
     }
   }
 
-
   setWriterContext(
-    context: (options: ZvecGrepContextOptions) => Promise<ZvecGrepContextResult>,
+    context: (
+      options: ZvecGrepContextOptions,
+    ) => Promise<ZvecGrepContextResult>,
   ): () => Promise<void> {
     this.writerContext = context;
     return async () => {
@@ -141,12 +149,10 @@ export class RootRuntime {
     };
   }
 
-
   markDirty(): number {
     this.dirtyRevision += 1;
     return this.dirtyRevision;
   }
-
 
   markIndexed(revision = this.dirtyRevision): void {
     this.indexedRevision = Math.max(this.indexedRevision, revision);
@@ -155,28 +161,28 @@ export class RootRuntime {
     }
   }
 
-
   needsReconciliation(): boolean {
-    return this.reconciliationRequired || this.indexedRevision < this.dirtyRevision;
+    return (
+      this.reconciliationRequired || this.indexedRevision < this.dirtyRevision
+    );
   }
-
 
   probeInitialFreshness(
     probe: () => Promise<boolean>,
     onResult?: (result: "fresh" | "stale") => void,
   ): Promise<"fresh" | "stale"> {
-    this.initialFreshnessProbe ??= this.runInitialFreshnessProbe(probe).then((result) => {
-      onResult?.(result);
-      return result;
-    });
+    this.initialFreshnessProbe ??= this.runInitialFreshnessProbe(probe).then(
+      (result) => {
+        onResult?.(result);
+        return result;
+      },
+    );
     return this.initialFreshnessProbe;
   }
-
 
   setWatcherActive(active: boolean): void {
     this.watcherActive = active;
   }
-
 
   setWatcherPending(pending: boolean): void {
     if (pending) {
@@ -185,7 +191,6 @@ export class RootRuntime {
     this.watcherPending = pending;
     this.options.onActivity?.();
   }
-
 
   async withWrite<T>(operation: () => Promise<T>): Promise<T> {
     this.options.onActivity?.();
@@ -200,7 +205,6 @@ export class RootRuntime {
       this.options.onActivity?.();
     }
   }
-
 
   snapshot(): {
     readCollectionOpen: boolean;
@@ -223,7 +227,6 @@ export class RootRuntime {
     };
   }
 
-
   async close(): Promise<void> {
     if (this.closed) {
       return;
@@ -243,7 +246,9 @@ export class RootRuntime {
     });
   }
 
-  private async openLeasedSession(request: ModelLeaseRequest): Promise<LeasedReadSession> {
+  private async openLeasedSession(
+    request: ModelLeaseRequest,
+  ): Promise<LeasedReadSession> {
     const lease = await this.options.modelPool.acquire(request);
     let session: AnonymousReadSession;
     try {
@@ -273,9 +278,10 @@ export class RootRuntime {
     };
   }
 
-
   private async withWriterContext(
-    context: (options: ZvecGrepContextOptions) => Promise<ZvecGrepContextResult>,
+    context: (
+      options: ZvecGrepContextOptions,
+    ) => Promise<ZvecGrepContextResult>,
     options: ZvecGrepContextOptions,
   ): Promise<ZvecGrepContextResult> {
     this.activeWriterSearches += 1;
@@ -296,7 +302,6 @@ export class RootRuntime {
     }
   }
 
-
   private async runInitialFreshnessProbe(
     probe: () => Promise<boolean>,
   ): Promise<"fresh" | "stale"> {
@@ -309,9 +314,9 @@ export class RootRuntime {
       return "stale";
     }
     if (
-      !fresh
-      || this.dirtyRevision !== revision
-      || this.watcherEpoch !== watcherEpoch
+      !fresh ||
+      this.dirtyRevision !== revision ||
+      this.watcherEpoch !== watcherEpoch
     ) {
       return "stale";
     }
@@ -319,8 +324,9 @@ export class RootRuntime {
     return "fresh";
   }
 
-
-  private async runGenerationSerial<T>(operation: () => Promise<T>): Promise<T> {
+  private async runGenerationSerial<T>(
+    operation: () => Promise<T>,
+  ): Promise<T> {
     const previous = this.generationTail;
     let release!: () => void;
     this.generationTail = new Promise<void>((resolve) => {

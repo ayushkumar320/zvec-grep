@@ -5,7 +5,6 @@ import { DaemonHttpServer } from "./http-server.js";
 import { DaemonInstanceLock } from "./server-controller.js";
 import { createDaemonLogger } from "./logger.js";
 
-
 export type RunDaemonOptions = {
   version: string;
   listen?: string;
@@ -15,11 +14,15 @@ export type RunDaemonOptions = {
   serviceOptions?: CreateZvecGrepOptions;
 };
 
-
-export async function runDaemonForeground(options: RunDaemonOptions): Promise<void> {
+export async function runDaemonForeground(
+  options: RunDaemonOptions,
+): Promise<void> {
   const listen = configuredListenAddress(options.listen);
   const displayAddress = `http://${displayHost(listen.host)}:${listen.port}/mcp`;
-  const instanceLock = await DaemonInstanceLock.acquire(options.home, displayAddress);
+  const instanceLock = await DaemonInstanceLock.acquire(
+    options.home,
+    displayAddress,
+  );
   const logger = createDaemonLogger(options.home);
   let auth;
   try {
@@ -39,7 +42,11 @@ export async function runDaemonForeground(options: RunDaemonOptions): Promise<vo
   });
   let requestStop: (() => void) | undefined;
   const httpServer = new DaemonHttpServer({
-    ...listen, token: auth.token, version: options.version, backend, logger,
+    ...listen,
+    token: auth.token,
+    version: options.version,
+    backend,
+    logger,
     onShutdown: () => requestStop?.(),
   });
   let address;
@@ -74,15 +81,20 @@ export async function runDaemonForeground(options: RunDaemonOptions): Promise<vo
     await stopped;
     throw error;
   }
-  logger.event("server.ready", { host: listen.host, port: address.port, pid: process.pid });
-  console.log(`zvec-grep server listening on http://${displayHost(address.address)}:${address.port}/mcp`);
+  logger.event("server.ready", {
+    host: listen.host,
+    port: address.port,
+    pid: process.pid,
+  });
+  console.log(
+    `zvec-grep server listening on http://${displayHost(address.address)}:${address.port}/mcp`,
+  );
   if (auth.tokenFile) {
     console.log(`Bearer token file: ${auth.tokenFile}`);
   }
 
   await stopped;
 }
-
 
 function displayHost(host: string): string {
   return host.includes(":") ? `[${host}]` : host;

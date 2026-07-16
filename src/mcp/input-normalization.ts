@@ -12,7 +12,6 @@ import type {
   ZvecGrepSearchInput,
 } from "./schemas.js";
 
-
 export type NormalizedSearchInput = {
   root: string;
   queries?: string[];
@@ -30,8 +29,9 @@ export type NormalizedSearchInput = {
   maxContentChars: number;
 };
 
-
-export function normalizeSearchInput(input: ZvecGrepSearchInput): NormalizedSearchInput {
+export function normalizeSearchInput(
+  input: ZvecGrepSearchInput,
+): NormalizedSearchInput {
   const common = normalizeSearchFields(input);
   return {
     root: input.root,
@@ -42,8 +42,9 @@ export function normalizeSearchInput(input: ZvecGrepSearchInput): NormalizedSear
   };
 }
 
-
-export function contextOptionsFromSearchInput(input: LegacySearchInput): ZvecGrepContextOptions {
+export function contextOptionsFromSearchInput(
+  input: LegacySearchInput,
+): ZvecGrepContextOptions {
   const normalized = normalizeSearchFields(input);
   return {
     queries: normalized.queries,
@@ -64,8 +65,9 @@ export function contextOptionsFromSearchInput(input: LegacySearchInput): ZvecGre
   };
 }
 
-
-export function contextOptionsFromRgInput(input: LegacyRgInput): ZvecGrepContextOptions {
+export function contextOptionsFromRgInput(
+  input: LegacyRgInput,
+): ZvecGrepContextOptions {
   const queries = [
     ...normalizeQueryList(input.pattern),
     ...normalizeQueryList(input.patterns),
@@ -95,12 +97,23 @@ export function contextOptionsFromRgInput(input: LegacyRgInput): ZvecGrepContext
   };
 }
 
-
-function normalizeSearchFields(input: Pick<
-  ZvecGrepSearchInput,
-  "query" | "queries" | "fts" | "vector" | "include" | "exclude" | "preferSymbol" |
-  "symbolTypes" | "modifiedAfter" | "modifiedBefore" | "limit" | "trace"
->) {
+function normalizeSearchFields(
+  input: Pick<
+    ZvecGrepSearchInput,
+    | "query"
+    | "queries"
+    | "fts"
+    | "vector"
+    | "include"
+    | "exclude"
+    | "preferSymbol"
+    | "symbolTypes"
+    | "modifiedAfter"
+    | "modifiedBefore"
+    | "limit"
+    | "trace"
+  >,
+) {
   const queries = [
     ...normalizeQueryList(input.query),
     ...normalizeQueryList(input.queries),
@@ -108,7 +121,9 @@ function normalizeSearchFields(input: Pick<
   const fts = normalizeQueryList(input.fts);
   const vector = normalizeQueryList(input.vector);
   if (queries.length === 0 && fts.length === 0 && vector.length === 0) {
-    throw new Error("zvec_grep_search requires query, queries, fts, or vector.");
+    throw new Error(
+      "zvec_grep_search requires query, queries, fts, or vector.",
+    );
   }
 
   const includePaths = normalizePathFilters(input.include);
@@ -126,10 +141,12 @@ function normalizeSearchFields(input: Pick<
     includePaths: includePaths.length > 0 ? includePaths : undefined,
     excludePaths: excludePaths.length > 0 ? excludePaths : undefined,
     modifiedAfter: normalizeModifiedTime(input.modifiedAfter, "modifiedAfter"),
-    modifiedBefore: normalizeModifiedTime(input.modifiedBefore, "modifiedBefore"),
+    modifiedBefore: normalizeModifiedTime(
+      input.modifiedBefore,
+      "modifiedBefore",
+    ),
   };
 }
-
 
 function pathFiltersFromRgGlobs(value: StringListInput): {
   includePaths?: string[];
@@ -154,44 +171,40 @@ function pathFiltersFromRgGlobs(value: StringListInput): {
   };
 }
 
-
 export function normalizeQueryList(value: StringListInput): string[] {
   return normalizePlainStringList(value) ?? [];
 }
 
-
-export function normalizePlainStringList(value: StringListInput): string[] | undefined {
-  const items = value === undefined
-    ? []
-    : Array.isArray(value)
-      ? value
-      : [value];
+export function normalizePlainStringList(
+  value: StringListInput,
+): string[] | undefined {
+  const items =
+    value === undefined ? [] : Array.isArray(value) ? value : [value];
   const normalized = items
     .map((item) => item.trim())
     .filter((item) => item.length > 0);
   return normalized.length > 0 ? normalized : undefined;
 }
 
-
 export function normalizePathFilters(value: StringListInput): string[] {
-  const items = value === undefined
-    ? []
-    : Array.isArray(value)
-      ? value
-      : [value];
+  const items =
+    value === undefined ? [] : Array.isArray(value) ? value : [value];
   return items.flatMap(splitPathFilters);
 }
 
-
-export function normalizeModifiedTime(value: TimeInput, option: string): number | undefined {
+export function normalizeModifiedTime(
+  value: TimeInput,
+  option: string,
+): number | undefined {
   if (value === undefined) {
     return undefined;
   }
   return typeof value === "number" ? value : parseModifiedTime(value, option);
 }
 
-
-export function normalizeOptionalString(value: string | undefined): string | undefined {
+export function normalizeOptionalString(
+  value: string | undefined,
+): string | undefined {
   const normalized = value?.trim() ?? "";
   return normalized.length > 0 ? normalized : undefined;
 }

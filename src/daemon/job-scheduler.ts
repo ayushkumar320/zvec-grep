@@ -3,9 +3,10 @@ import type { IndexProgress } from "../engine/types.js";
 import { DaemonError } from "./errors.js";
 import { rootIdentity, type DaemonLogger } from "./logger.js";
 
-
-export type JobState = "queued" | "running" | "succeeded" | "failed" | "cancelled";
-export type JobReason = "watch" | "reconcile" | "background_reconcile" | "manual" | "fresh_query";
+export type JobState =
+  "queued" | "running" | "succeeded" | "failed" | "cancelled";
+export type JobReason =
+  "watch" | "reconcile" | "background_reconcile" | "manual" | "fresh_query";
 
 export type IndexJobSnapshot = {
   id: string;
@@ -47,7 +48,6 @@ type ScheduledJob = IndexJobSnapshot & {
   followup?: ScheduledJob;
 };
 
-
 export class JobScheduler {
   private readonly jobs = new Map<string, ScheduledJob>();
   private readonly activeByRoot = new Map<string, ScheduledJob>();
@@ -62,7 +62,6 @@ export class JobScheduler {
   private closeResolve?: () => void;
   private readonly logger?: DaemonLogger;
 
-
   constructor(options: JobSchedulerOptions = {}) {
     this.concurrency = options.concurrency ?? 1;
     this.maxAttempts = options.maxAttempts ?? 3;
@@ -70,10 +69,13 @@ export class JobScheduler {
     this.logger = options.logger;
   }
 
-
   submit(input: SubmitIndexJob): SubmitIndexJobResult {
     if (this.closed) {
-      throw new DaemonError("DAEMON_SHUTTING_DOWN", "The daemon is shutting down.", true);
+      throw new DaemonError(
+        "DAEMON_SHUTTING_DOWN",
+        "The daemon is shutting down.",
+        true,
+      );
     }
     const active = this.activeByRoot.get(input.canonicalRoot);
     if (active) {
@@ -100,23 +102,19 @@ export class JobScheduler {
     return { job: snapshot(job), reused: false };
   }
 
-
   getByRoot(canonicalRoot: string): IndexJobSnapshot | undefined {
     const job = this.latestByRoot.get(canonicalRoot);
     return job ? snapshot(job) : undefined;
   }
 
-
   hasActiveRoot(canonicalRoot: string): boolean {
     return this.activeByRoot.has(canonicalRoot);
   }
-
 
   get(jobId: string): IndexJobSnapshot | undefined {
     const job = this.jobs.get(jobId);
     return job ? snapshot(job) : undefined;
   }
-
 
   async wait(jobId: string): Promise<IndexJobSnapshot> {
     const job = this.jobs.get(jobId);
@@ -125,7 +123,6 @@ export class JobScheduler {
     }
     return job.completion;
   }
-
 
   async waitForRootIdle(canonicalRoot: string): Promise<void> {
     while (true) {
@@ -137,14 +134,13 @@ export class JobScheduler {
     }
   }
 
-
   snapshot(): { queued: number; running: number } {
     return {
-      queued: [...this.jobs.values()].filter((job) => job.state === "queued").length,
+      queued: [...this.jobs.values()].filter((job) => job.state === "queued")
+        .length,
       running: this.running,
     };
   }
-
 
   async close(): Promise<void> {
     if (this.closed) {
@@ -170,9 +166,12 @@ export class JobScheduler {
     return this.closePromise;
   }
 
-
   private pump(): void {
-    while (!this.closed && this.running < this.concurrency && this.queue.length > 0) {
+    while (
+      !this.closed &&
+      this.running < this.concurrency &&
+      this.queue.length > 0
+    ) {
       const job = this.queue.shift()!;
       if (job.state !== "queued" || job.retryTimer) {
         continue;
@@ -192,7 +191,6 @@ export class JobScheduler {
     }
   }
 
-
   private async runJob(job: ScheduledJob): Promise<void> {
     try {
       await job.run((progress) => {
@@ -200,10 +198,14 @@ export class JobScheduler {
       });
       this.finish(job, "succeeded");
     } catch (error) {
-      if (!this.closed && isRetryable(error) && job.attempt < this.maxAttempts) {
+      if (
+        !this.closed &&
+        isRetryable(error) &&
+        job.attempt < this.maxAttempts
+      ) {
         job.state = "queued";
         job.error = errorInfo(error);
-        const delay = this.retryBaseDelayMs * (2 ** (job.attempt - 1));
+        const delay = this.retryBaseDelayMs * 2 ** (job.attempt - 1);
         this.logger?.event("job.retry", {
           root_id: rootIdentity(job.canonicalRoot),
           job_id: job.id,
@@ -229,8 +231,10 @@ export class JobScheduler {
     }
   }
 
-
-  private finish(job: ScheduledJob, state: Extract<JobState, "succeeded" | "failed" | "cancelled">): void {
+  private finish(
+    job: ScheduledJob,
+    state: Extract<JobState, "succeeded" | "failed" | "cancelled">,
+  ): void {
     job.state = state;
     job.finishedAt = Date.now();
     this.logger?.event("job.finished", {
@@ -244,9 +248,10 @@ export class JobScheduler {
     if (this.activeByRoot.get(job.canonicalRoot) === job) {
       this.activeByRoot.delete(job.canonicalRoot);
     }
-    const followup = !this.closed && state !== "cancelled" && job.followup?.state === "queued"
-      ? job.followup
-      : undefined;
+    const followup =
+      !this.closed && state !== "cancelled" && job.followup?.state === "queued"
+        ? job.followup
+        : undefined;
     job.followup = undefined;
     if (followup) {
       this.activate(followup);
@@ -254,13 +259,11 @@ export class JobScheduler {
     job.resolveCompletion(snapshot(job));
   }
 
-
   private enqueue(input: SubmitIndexJob): ScheduledJob {
     const job = this.createJob(input);
     this.activate(job);
     return job;
   }
-
 
   private createJob(input: SubmitIndexJob): ScheduledJob {
     let resolveCompletion!: (value: IndexJobSnapshot) => void;
@@ -282,7 +285,6 @@ export class JobScheduler {
     return job;
   }
 
-
   private activate(job: ScheduledJob): void {
     this.activeByRoot.set(job.canonicalRoot, job);
     this.latestByRoot.set(job.canonicalRoot, job);
@@ -291,24 +293,29 @@ export class JobScheduler {
     this.pump();
   }
 
-
   private sortQueue(): void {
-    this.queue.sort((left, right) =>
-      priority(right.reason) - priority(left.reason) || left.createdAt - right.createdAt);
+    this.queue.sort(
+      (left, right) =>
+        priority(right.reason) - priority(left.reason) ||
+        left.createdAt - right.createdAt,
+    );
   }
 }
-
 
 function priority(reason: JobReason): number {
   switch (reason) {
-    case "manual": return 4;
-    case "fresh_query": return 3;
-    case "watch": return 2;
-    case "background_reconcile": return 1;
-    case "reconcile": return 1;
+    case "manual":
+      return 4;
+    case "fresh_query":
+      return 3;
+    case "watch":
+      return 2;
+    case "background_reconcile":
+      return 1;
+    case "reconcile":
+      return 1;
   }
 }
-
 
 function mergeQueuedJob(current: ScheduledJob, incoming: SubmitIndexJob): void {
   current.run = combineRuns(current.run, incoming.run);
@@ -316,7 +323,6 @@ function mergeQueuedJob(current: ScheduledJob, incoming: SubmitIndexJob): void {
     current.reason = incoming.reason;
   }
 }
-
 
 function combineRuns(
   first: SubmitIndexJob["run"],
@@ -327,7 +333,6 @@ function combineRuns(
     await second(report);
   };
 }
-
 
 function snapshot(job: ScheduledJob): IndexJobSnapshot {
   return {
@@ -344,37 +349,49 @@ function snapshot(job: ScheduledJob): IndexJobSnapshot {
   };
 }
 
-
 function isRetryable(error: unknown): boolean {
   if (error instanceof DaemonError) {
     return error.retryable;
   }
   return Boolean(
-    error
-    && typeof error === "object"
-    && "code" in error
-    && error.code === "ZVEC_GREP.ENGINE.LOCK.BUSY",
+    error &&
+    typeof error === "object" &&
+    "code" in error &&
+    error.code === "ZVEC_GREP.ENGINE.LOCK.BUSY",
   );
 }
-
 
 function errorInfo(error: unknown): { code: string; message: string } {
   if (error instanceof DaemonError) {
     return { code: error.code, message: redactMessage(error.message) };
   }
-  if (error && typeof error === "object" && "code" in error && typeof error.code === "string") {
-    return { code: error.code, message: redactMessage(error instanceof Error ? error.message : String(error)) };
+  if (
+    error &&
+    typeof error === "object" &&
+    "code" in error &&
+    typeof error.code === "string"
+  ) {
+    return {
+      code: error.code,
+      message: redactMessage(
+        error instanceof Error ? error.message : String(error),
+      ),
+    };
   }
   return {
     code: "INDEX_FAILED",
-    message: redactMessage(error instanceof Error ? error.message : String(error)),
+    message: redactMessage(
+      error instanceof Error ? error.message : String(error),
+    ),
   };
 }
-
 
 function redactMessage(message: string): string {
   return message
     .replace(/Bearer\s+\S+/gi, "Bearer [redacted]")
-    .replace(/(api[_ -]?key|token|authorization)\s*[:=]\s*\S+/gi, "$1=[redacted]")
+    .replace(
+      /(api[_ -]?key|token|authorization)\s*[:=]\s*\S+/gi,
+      "$1=[redacted]",
+    )
     .slice(0, 512);
 }

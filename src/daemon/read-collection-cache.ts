@@ -8,7 +8,6 @@ export type ReadCollectionCacheOptions<T extends ClosableReadHandle> = {
   serializeOperations?: boolean;
 };
 
-
 export class ReadCollectionCache<T extends ClosableReadHandle> {
   private handle?: T;
   private openPromise?: Promise<T>;
@@ -20,9 +19,7 @@ export class ReadCollectionCache<T extends ClosableReadHandle> {
   private closeResolve?: () => void;
   private closed = false;
 
-
   constructor(private readonly options: ReadCollectionCacheOptions<T>) {}
-
 
   async withRead<R>(operation: (handle: T) => Promise<R>): Promise<R> {
     if (this.closed) {
@@ -50,7 +47,6 @@ export class ReadCollectionCache<T extends ClosableReadHandle> {
     }
   }
 
-
   async close(): Promise<void> {
     if (this.closed && !this.handle && !this.openPromise) {
       return;
@@ -72,14 +68,12 @@ export class ReadCollectionCache<T extends ClosableReadHandle> {
     await this.closeHandle();
   }
 
-
   snapshot(): { open: boolean; activeReaders: number } {
     return {
       open: this.handle !== undefined || this.openPromise !== undefined,
       activeReaders: this.activeReaders,
     };
   }
-
 
   private async getOrOpen(): Promise<T> {
     if (this.handle) {
@@ -93,7 +87,6 @@ export class ReadCollectionCache<T extends ClosableReadHandle> {
       this.openPromise = undefined;
     }
   }
-
 
   private async runSerial<R>(operation: () => Promise<R>): Promise<R> {
     const previous = this.operationTail;
@@ -109,7 +102,6 @@ export class ReadCollectionCache<T extends ClosableReadHandle> {
     }
   }
 
-
   private scheduleIdleClose(): void {
     const idleTtlMs = this.options.idleTtlMs ?? 60_000;
     const lastReadAt = this.lastReadAt;
@@ -124,7 +116,6 @@ export class ReadCollectionCache<T extends ClosableReadHandle> {
     }, idleTtlMs);
     this.idleTimer.unref?.();
   }
-
 
   private async closeHandle(): Promise<void> {
     const handle = this.handle;

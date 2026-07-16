@@ -1,11 +1,9 @@
 import type { CliOptions } from "../cli/types.js";
 
-
 export type ServerSearchPolicy = {
   freshness: "eventual" | "wait_for_fresh";
   autoUpdate: boolean;
 };
-
 
 export function resolveServerSearchPolicy(
   options: Pick<CliOptions, "fresh" | "noAutoUpdate">,

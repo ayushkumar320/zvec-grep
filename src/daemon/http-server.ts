@@ -1,11 +1,15 @@
 import { timingSafeEqual } from "node:crypto";
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import {
+  createServer,
+  type IncomingMessage,
+  type Server,
+  type ServerResponse,
+} from "node:http";
 import type { AddressInfo } from "node:net";
 import type { ZvecGrepDaemonBackend } from "../mcp/tools.js";
 import { handleMcpPost } from "../mcp/http-transport.js";
 import { isLoopbackHost, type ServerListenAddress } from "./config.js";
 import { requestId, type DaemonLogger } from "./logger.js";
-
 
 const MAX_REQUEST_BYTES = 1024 * 1024;
 
@@ -17,17 +21,14 @@ export type DaemonHttpServerOptions = ServerListenAddress & {
   logger?: DaemonLogger;
 };
 
-
 export class DaemonHttpServer {
   private server?: Server;
-
 
   constructor(private readonly options: DaemonHttpServerOptions) {
     if (!isLoopbackHost(options.host)) {
       throw new Error("Daemon HTTP server requires a loopback host.");
     }
   }
-
 
   async start(): Promise<AddressInfo> {
     if (this.server) {
@@ -36,29 +37,31 @@ export class DaemonHttpServer {
     this.server = createServer((request, response) => {
       const id = requestId();
       const startedAt = Date.now();
-      void this.handleRequest(request, response, id).catch((error) => {
-        this.options.logger?.event("request.failed", {
-          request_id: id,
-          error_code: errorCode(error),
-        });
-        if (!response.headersSent) {
-          writeJson(response, 500, {
-            jsonrpc: "2.0",
-            error: { code: -32603, message: "Internal server error." },
-            id: null,
+      void this.handleRequest(request, response, id)
+        .catch((error) => {
+          this.options.logger?.event("request.failed", {
+            request_id: id,
+            error_code: errorCode(error),
           });
-        } else if (!response.writableEnded) {
-          response.end();
-        }
-      }).finally(() => {
-        this.options.logger?.event("request.completed", {
-          request_id: id,
-          method: request.method,
-          path: safeRequestPath(request.url),
-          status: response.statusCode,
-          duration_ms: Date.now() - startedAt,
+          if (!response.headersSent) {
+            writeJson(response, 500, {
+              jsonrpc: "2.0",
+              error: { code: -32603, message: "Internal server error." },
+              id: null,
+            });
+          } else if (!response.writableEnded) {
+            response.end();
+          }
+        })
+        .finally(() => {
+          this.options.logger?.event("request.completed", {
+            request_id: id,
+            method: request.method,
+            path: safeRequestPath(request.url),
+            status: response.statusCode,
+            duration_ms: Date.now() - startedAt,
+          });
         });
-      });
     });
     try {
       await new Promise<void>((resolve, reject) => {
@@ -75,7 +78,6 @@ export class DaemonHttpServer {
     return this.address();
   }
 
-
   address(): AddressInfo {
     const address = this.server?.address();
     if (!address || typeof address === "string") {
@@ -84,7 +86,6 @@ export class DaemonHttpServer {
     return address;
   }
 
-
   async close(): Promise<void> {
     const server = this.server;
     this.server = undefined;
@@ -92,13 +93,19 @@ export class DaemonHttpServer {
       return;
     }
     await new Promise<void>((resolve, reject) => {
-      server.close((error) => error ? reject(error) : resolve());
+      server.close((error) => (error ? reject(error) : resolve()));
     });
   }
 
-
-  private async handleRequest(request: IncomingMessage, response: ServerResponse, id: string): Promise<void> {
-    const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
+  private async handleRequest(
+    request: IncomingMessage,
+    response: ServerResponse,
+    id: string,
+  ): Promise<void> {
+    const url = new URL(
+      request.url ?? "/",
+      `http://${request.headers.host ?? "localhost"}`,
+    );
     if (url.pathname === "/healthz") {
       if (request.method !== "GET") {
         writeJson(response, 405, { error: "method_not_allowed" });
@@ -109,7 +116,10 @@ export class DaemonHttpServer {
     }
 
     if (url.pathname === "/control/shutdown") {
-      if (!validHost(request.headers.host) || !validRequestToken(request.headers.authorization, this.options.token)) {
+      if (
+        !validHost(request.headers.host) ||
+        !validRequestToken(request.headers.authorization, this.options.token)
+      ) {
         writeJson(response, 401, { error: "unauthorized" });
         return;
       }
@@ -118,7 +128,9 @@ export class DaemonHttpServer {
         return;
       }
       writeJson(response, 202, { status: "stopping" });
-      setImmediate(() => { void this.options.onShutdown?.(); });
+      setImmediate(() => {
+        void this.options.onShutdown?.();
+      });
       return;
     }
 
@@ -126,7 +138,10 @@ export class DaemonHttpServer {
       writeJson(response, 404, { error: "not_found" });
       return;
     }
-    if (!validHost(request.headers.host) || !validOrigin(request.headers.origin)) {
+    if (
+      !validHost(request.headers.host) ||
+      !validOrigin(request.headers.origin)
+    ) {
       writeJson(response, 403, { error: "forbidden_origin" });
       return;
     }
@@ -151,7 +166,10 @@ export class DaemonHttpServer {
       const tooLarge = error instanceof RequestBodyTooLargeError;
       writeJson(response, tooLarge ? 413 : 400, {
         jsonrpc: "2.0",
-        error: { code: -32700, message: tooLarge ? "Request body too large." : "Invalid JSON." },
+        error: {
+          code: -32700,
+          message: tooLarge ? "Request body too large." : "Invalid JSON.",
+        },
         id: null,
       });
       return;
@@ -161,22 +179,28 @@ export class DaemonHttpServer {
       client_id: request.headers["x-client-id"] as string | undefined,
       tool: toolName(body),
     });
-    await handleMcpPost(request, response, this.options.backend, this.options.version, body);
+    await handleMcpPost(
+      request,
+      response,
+      this.options.backend,
+      this.options.version,
+      body,
+    );
   }
 }
-
 
 function validHost(hostHeader: string | undefined): boolean {
   if (!hostHeader) {
     return false;
   }
   try {
-    return isLoopbackHost(new URL(`http://${hostHeader}`).hostname.replace(/^\[|\]$/g, ""));
+    return isLoopbackHost(
+      new URL(`http://${hostHeader}`).hostname.replace(/^\[|\]$/g, ""),
+    );
   } catch {
     return false;
   }
 }
-
 
 function validOrigin(originHeader: string | undefined): boolean {
   if (!originHeader) {
@@ -184,27 +208,36 @@ function validOrigin(originHeader: string | undefined): boolean {
   }
   try {
     const origin = new URL(originHeader);
-    return origin.protocol === "http:" && isLoopbackHost(origin.hostname.replace(/^\[|\]$/g, ""));
+    return (
+      origin.protocol === "http:" &&
+      isLoopbackHost(origin.hostname.replace(/^\[|\]$/g, ""))
+    );
   } catch {
     return false;
   }
 }
 
-
-function validBearerToken(header: string | undefined, expected: string): boolean {
+function validBearerToken(
+  header: string | undefined,
+  expected: string,
+): boolean {
   if (!header?.startsWith("Bearer ")) {
     return false;
   }
   const actual = Buffer.from(header.slice("Bearer ".length), "utf8");
   const expectedBuffer = Buffer.from(expected, "utf8");
-  return actual.length === expectedBuffer.length && timingSafeEqual(actual, expectedBuffer);
+  return (
+    actual.length === expectedBuffer.length &&
+    timingSafeEqual(actual, expectedBuffer)
+  );
 }
 
-
-function validRequestToken(header: string | undefined, expected: string | undefined): boolean {
+function validRequestToken(
+  header: string | undefined,
+  expected: string | undefined,
+): boolean {
   return expected === undefined || validBearerToken(header, expected);
 }
-
 
 async function readJsonBody(request: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
@@ -220,17 +253,18 @@ async function readJsonBody(request: IncomingMessage): Promise<unknown> {
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
-
-function writeJson(response: ServerResponse, status: number, body: unknown): void {
+function writeJson(
+  response: ServerResponse,
+  status: number,
+  body: unknown,
+): void {
   response.statusCode = status;
   response.setHeader("Content-Type", "application/json");
   response.setHeader("Cache-Control", "no-store");
   response.end(JSON.stringify(body));
 }
 
-
 class RequestBodyTooLargeError extends Error {}
-
 
 function safeRequestPath(value: string | undefined): string {
   try {
@@ -240,18 +274,24 @@ function safeRequestPath(value: string | undefined): string {
   }
 }
 
-
 function toolName(body: unknown): string | undefined {
-  if (typeof body !== "object" || body === null || Array.isArray(body)) return undefined;
+  if (typeof body !== "object" || body === null || Array.isArray(body))
+    return undefined;
   const value = body as { method?: unknown; params?: { name?: unknown } };
   return value.method === "tools/call" && typeof value.params?.name === "string"
     ? value.params.name
-    : typeof value.method === "string" ? value.method : undefined;
+    : typeof value.method === "string"
+      ? value.method
+      : undefined;
 }
 
-
 function errorCode(error: unknown): string {
-  if (typeof error === "object" && error !== null && "code" in error && typeof error.code === "string") {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    typeof error.code === "string"
+  ) {
     return error.code;
   }
   return "INTERNAL_ERROR";

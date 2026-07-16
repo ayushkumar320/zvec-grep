@@ -1,8 +1,7 @@
 import type { IndexProgress } from "../engine/types.js";
 import { ChangeSet, type ChangeSetSnapshot } from "./change-set.js";
-import { JobScheduler, type IndexJobSnapshot } from "./job-scheduler.js";
-import { RootRuntime } from "./root-runtime.js";
-
+import type { JobScheduler, IndexJobSnapshot } from "./job-scheduler.js";
+import type { RootRuntime } from "./root-runtime.js";
 
 export type IndexCoordinatorOptions = {
   runtime: RootRuntime;
@@ -16,24 +15,25 @@ export type IndexCoordinatorOptions = {
   minRatioChangedPaths?: number;
 };
 
-
 export class IndexCoordinator {
   private pending = new ChangeSet();
   private targetRevision = 0;
 
-
   constructor(private readonly options: IndexCoordinatorOptions) {}
 
-
-  enqueue(changes: ChangeSetSnapshot, reason: "watch" | "reconcile" = "watch"): IndexJobSnapshot {
+  enqueue(
+    changes: ChangeSetSnapshot,
+    reason: "watch" | "reconcile" = "watch",
+  ): IndexJobSnapshot {
     const indexedFiles = this.options.getIndexedFileCount?.();
-    const changedPathCount = changes.touchedFiles.length
-      + changes.rescanDirectories.length
-      + changes.deletedPrefixes.length;
+    const changedPathCount =
+      changes.touchedFiles.length +
+      changes.rescanDirectories.length +
+      changes.deletedPrefixes.length;
     if (
-      indexedFiles
-      && changedPathCount >= (this.options.minRatioChangedPaths ?? 10)
-      && changedPathCount / indexedFiles > (this.options.fullReconcileRatio ?? 0.2)
+      indexedFiles &&
+      changedPathCount >= (this.options.minRatioChangedPaths ?? 10) &&
+      changedPathCount / indexedFiles > (this.options.fullReconcileRatio ?? 0.2)
     ) {
       changes = { ...changes, forceFullReconcile: true };
     }
@@ -46,29 +46,32 @@ export class IndexCoordinator {
       canonicalRoot: this.options.runtime.canonicalRoot,
       reason,
       followupIfRunning: true,
-      run: (report) => this.options.runtime.withWrite(async () => {
-        if (!jobChanges) {
-          jobChanges = this.pending.snapshot();
-          jobRevision = this.targetRevision;
-          this.pending = new ChangeSet();
-        }
-        if (
-          !jobChanges.forceFullReconcile
-          && jobChanges.touchedFiles.length === 0
-          && jobChanges.rescanDirectories.length === 0
-          && jobChanges.deletedPrefixes.length === 0
-        ) {
+      run: (report) =>
+        this.options.runtime.withWrite(async () => {
+          if (!jobChanges) {
+            jobChanges = this.pending.snapshot();
+            jobRevision = this.targetRevision;
+            this.pending = new ChangeSet();
+          }
+          if (
+            !jobChanges.forceFullReconcile &&
+            jobChanges.touchedFiles.length === 0 &&
+            jobChanges.rescanDirectories.length === 0 &&
+            jobChanges.deletedPrefixes.length === 0
+          ) {
+            this.options.runtime.markIndexed(jobRevision);
+            return;
+          }
+          await this.options.run(jobChanges, report);
           this.options.runtime.markIndexed(jobRevision);
-          return;
-        }
-        await this.options.run(jobChanges, report);
-        this.options.runtime.markIndexed(jobRevision);
-      }),
+        }),
     });
     if (!submitted.reused) {
-      void this.options.scheduler.waitForRootIdle(this.options.runtime.canonicalRoot).finally(() => {
-        this.options.runtime.setWriterPending(false);
-      });
+      void this.options.scheduler
+        .waitForRootIdle(this.options.runtime.canonicalRoot)
+        .finally(() => {
+          this.options.runtime.setWriterPending(false);
+        });
     }
     return submitted.job;
   }

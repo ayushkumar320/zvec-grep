@@ -5,9 +5,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createZvecGrepMcpServer } from "../dist/mcp/tools.js";
 
-
 const root = resolve("test/fixtures/repository");
-
 
 function createBackend() {
   return {
@@ -22,29 +20,33 @@ function createBackend() {
       freshness: "possibly_stale",
       updateJobId: "job-2",
       result: {
-        query: input.queries?.join(" ") ?? input.routes.map((route) => route.query).join(" "),
+        query:
+          input.queries?.join(" ") ??
+          input.routes.map((route) => route.query).join(" "),
         root: input.root,
         source: "index",
         coverage: "ranked_sample",
         diagnostics: {},
-        items: [{
-          kind: "indexed_entity",
-          rank: 1,
-          file: {
-            absolutePath: `${input.root}/src/index.ts`,
-            relativePath: "src/index.ts",
+        items: [
+          {
+            kind: "indexed_entity",
+            rank: 1,
+            file: {
+              absolutePath: `${input.root}/src/index.ts`,
+              relativePath: "src/index.ts",
+            },
+            range: {
+              kind: "text",
+              startLine: 1,
+              endLine: 2,
+              startOffset: 0,
+              endOffset: 80,
+            },
+            content: "x".repeat(100),
+            status: "possibly_stale",
+            matchedBy: "fts+vector",
           },
-          range: {
-            kind: "text",
-            startLine: 1,
-            endLine: 2,
-            startOffset: 0,
-            endOffset: 80,
-          },
-          content: "x".repeat(100),
-          status: "possibly_stale",
-          matchedBy: "fts+vector",
-        }],
+        ],
       },
     }),
     indexStatus: async (input) => ({
@@ -77,18 +79,17 @@ function createBackend() {
   };
 }
 
-
 async function connect(backend = createBackend()) {
   const server = createZvecGrepMcpServer(backend, "1.0.0");
   const client = new Client({ name: "mcp-contract-test", version: "1.0.0" });
-  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const [clientTransport, serverTransport] =
+    InMemoryTransport.createLinkedPair();
   await Promise.all([
     server.connect(serverTransport),
     client.connect(clientTransport),
   ]);
   return { client, server };
 }
-
 
 test("server contract exposes exactly the four final tools with stable annotations", async (t) => {
   const { client, server } = await connect();
@@ -98,15 +99,22 @@ test("server contract exposes exactly the four final tools with stable annotatio
   });
 
   const listed = await client.listTools();
-  const tools = listed.tools.toSorted((left, right) => left.name.localeCompare(right.name));
-  assert.deepEqual(tools.map((tool) => tool.name), [
-    "zvec_grep_index",
-    "zvec_grep_index_status",
-    "zvec_grep_search",
-    "zvec_grep_server_status",
-  ]);
+  const tools = listed.tools.toSorted((left, right) =>
+    left.name.localeCompare(right.name),
+  );
+  assert.deepEqual(
+    tools.map((tool) => tool.name),
+    [
+      "zvec_grep_index",
+      "zvec_grep_index_status",
+      "zvec_grep_search",
+      "zvec_grep_server_status",
+    ],
+  );
 
-  const annotations = Object.fromEntries(tools.map((tool) => [tool.name, tool.annotations]));
+  const annotations = Object.fromEntries(
+    tools.map((tool) => [tool.name, tool.annotations]),
+  );
   assert.equal(annotations.zvec_grep_index.readOnlyHint, false);
   assert.equal(annotations.zvec_grep_search.readOnlyHint, false);
   assert.equal(annotations.zvec_grep_index_status.readOnlyHint, true);
@@ -115,7 +123,6 @@ test("server contract exposes exactly the four final tools with stable annotatio
     assert.ok(tool.outputSchema, `${tool.name} must declare structured output`);
   }
 });
-
 
 test("index contract documents background submission as the default", async (t) => {
   const { client, server } = await connect();
@@ -127,10 +134,15 @@ test("index contract documents background submission as the default", async (t) 
   const listed = await client.listTools();
   const index = listed.tools.find((tool) => tool.name === "zvec_grep_index");
   assert.ok(index);
-  assert.match(index.inputSchema.properties.wait.description, /Defaults to false/);
-  assert.match(index.inputSchema.properties.wait.description, /zvec_grep_index_status/);
+  assert.match(
+    index.inputSchema.properties.wait.description,
+    /Defaults to false/,
+  );
+  assert.match(
+    index.inputSchema.properties.wait.description,
+    /zvec_grep_index_status/,
+  );
 });
-
 
 test("root tools require an absolute root", async (t) => {
   const { client, server } = await connect();
@@ -139,7 +151,10 @@ test("root tools require an absolute root", async (t) => {
     await server.close();
   });
 
-  const missing = await client.callTool({ name: "zvec_grep_index", arguments: {} });
+  const missing = await client.callTool({
+    name: "zvec_grep_index",
+    arguments: {},
+  });
   assert.equal(missing.isError, true);
   assert.match(missing.content[0].text, /root/i);
 
@@ -157,7 +172,6 @@ test("root tools require an absolute root", async (t) => {
   assert.equal(searchRelative.isError, true);
   assert.match(searchRelative.content[0].text, /absolute path/i);
 });
-
 
 test("search normalizes query, path and time inputs before calling the backend", async (t) => {
   let received;
@@ -193,7 +207,6 @@ test("search normalizes query, path and time inputs before calling the backend",
   assert.equal(received.autoUpdate, true);
 });
 
-
 test("search can return the current index without scheduling an update", async (t) => {
   let received;
   const backend = createBackend();
@@ -215,7 +228,6 @@ test("search can return the current index without scheduling an update", async (
   assert.equal(received.freshness, "eventual");
   assert.equal(received.autoUpdate, false);
 });
-
 
 test("input upper bounds are enforced", async (t) => {
   const { client, server } = await connect();
@@ -246,7 +258,10 @@ test("input upper bounds are enforced", async (t) => {
 
   const excessiveQueryGroups = await client.callTool({
     name: "zvec_grep_search",
-    arguments: { root, queries: Array.from({ length: 33 }, (_, index) => `query-${index}`) },
+    arguments: {
+      root,
+      queries: Array.from({ length: 33 }, (_, index) => `query-${index}`),
+    },
   });
   assert.equal(excessiveQueryGroups.isError, true);
 
@@ -267,7 +282,6 @@ test("input upper bounds are enforced", async (t) => {
   assert.equal(excessivePathFilters.isError, true);
 });
 
-
 test("all tools return output-schema-compatible structured content", async (t) => {
   const { client, server } = await connect();
   t.after(async () => {
@@ -287,7 +301,10 @@ test("all tools return output-schema-compatible structured content", async (t) =
     assert.ok(result.structuredContent, `${name} omitted structured content`);
   }
 
-  const status = await client.callTool({ name: "zvec_grep_index_status", arguments: { root } });
+  const status = await client.callTool({
+    name: "zvec_grep_index_status",
+    arguments: { root },
+  });
   assert.equal(status.structuredContent.persistent.home, `${root}/.zvec-grep`);
   assert.equal(status.structuredContent.persistent.files.indexed, 1);
 
@@ -295,6 +312,9 @@ test("all tools return output-schema-compatible structured content", async (t) =
     name: "zvec_grep_search",
     arguments: { root, query: "query", maxContentChars: 20 },
   });
-  assert.match(search.structuredContent.result.items[0].content, /truncated 80 chars/);
+  assert.match(
+    search.structuredContent.result.items[0].content,
+    /truncated 80 chars/,
+  );
   assert.equal(search.structuredContent.update_job_id, "job-2");
 });

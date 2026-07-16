@@ -16,7 +16,6 @@ import type {
   TimingEntry,
 } from "../types.js";
 
-
 export type CreateZvecGrepOptions = {
   root?: string;
   home?: string;
@@ -32,7 +31,6 @@ export type CreateZvecGrepOptions = {
   defaultEmbedding?: boolean;
 };
 
-
 export type ZvecGrepIndexOptions = {
   root?: string;
   rootPaths?: readonly (string | RootPath)[];
@@ -43,19 +41,19 @@ export type ZvecGrepIndexOptions = {
   embeddingConcurrency?: number;
   onProgress?: (progress: IndexProgress) => void;
   changedPaths?: readonly string[];
-  onWriterContext?: (context: ZvecGrepWriterContext) => void | (() => void | Promise<void>);
+  onWriterContext?: (
+    context: ZvecGrepWriterContext,
+  ) => void | (() => void | Promise<void>);
 };
 
 export type ZvecGrepWriterContext = (
   options: ZvecGrepContextOptions,
 ) => Promise<ZvecGrepContextResult>;
 
-
 export type ZvecGrepInfoOptions = {
   root?: string;
   includeStatus?: boolean;
 };
-
 
 export type ZvecGrepInfoResult = {
   root: string;
@@ -69,14 +67,9 @@ export type ZvecGrepInfoResult = {
   suggestion?: string;
 };
 
-
 export type ZvecGrepContextRoute = SearchPlanRoute;
 
-
-export type ZvecGrepFallbackPolicy =
-  | "auto"
-  | "disabled";
-
+export type ZvecGrepFallbackPolicy = "auto" | "disabled";
 
 export type ZvecGrepContextOptions = {
   query?: string;
@@ -102,7 +95,6 @@ export type ZvecGrepContextOptions = {
   embeddingConcurrency?: number;
 };
 
-
 export type ZvecGrepSearchOptions = {
   extraArgs?: readonly string[];
   fixedStrings?: boolean;
@@ -113,18 +105,10 @@ export type ZvecGrepSearchOptions = {
   hidden?: boolean;
 };
 
-
-export type ZvecGrepContextSource =
-  | "index"
-  | "rg"
-  | "lexical_fallback";
-
+export type ZvecGrepContextSource = "index" | "rg" | "lexical_fallback";
 
 export type ZvecGrepContextCoverage =
-  | "ranked_sample"
-  | "lexical_exhaustive"
-  | "lexical_truncated";
-
+  "ranked_sample" | "lexical_exhaustive" | "lexical_truncated";
 
 export type ZvecGrepContextFile = {
   absolutePath: string;
@@ -132,18 +116,13 @@ export type ZvecGrepContextFile = {
   rootPath?: string;
 };
 
-
-export type ZvecGrepContextItemKind =
-  | "indexed_entity"
-  | "lexical_match";
-
+export type ZvecGrepContextItemKind = "indexed_entity" | "lexical_match";
 
 export type ZvecGrepContextContainer = {
   entityId: string;
   range: Range;
   metadata?: EntityMetadata;
 };
-
 
 export type ZvecGrepContextItem = {
   kind: ZvecGrepContextItemKind;
@@ -163,14 +142,12 @@ export type ZvecGrepContextItem = {
   trace?: SearchHitTrace;
 };
 
-
 export type ZvecGrepContextCollection = {
   id: string;
   name: string;
   path: string;
   anonymous: boolean;
 };
-
 
 export type ZvecGrepLexicalFallbackDiagnostics = {
   backend: "bundled-rg" | "rg";
@@ -183,7 +160,6 @@ export type ZvecGrepLexicalFallbackDiagnostics = {
   truncated: boolean;
 };
 
-
 export type ZvecGrepStructureEnrichmentDiagnostics = {
   source: "structural_extraction";
   fileLimit: number;
@@ -195,7 +171,6 @@ export type ZvecGrepStructureEnrichmentDiagnostics = {
   truncated: boolean;
 };
 
-
 export type ZvecGrepIndexDiagnostics = {
   hitsReturned: number;
   routes: readonly {
@@ -205,15 +180,17 @@ export type ZvecGrepIndexDiagnostics = {
   }[];
 };
 
-
 export type ZvecGrepContextDiagnostics = {
-  emptyReason?: "no_matches" | "no_searchable_files" | "index_unavailable" | "search_failed";
+  emptyReason?:
+    | "no_matches"
+    | "no_searchable_files"
+    | "index_unavailable"
+    | "search_failed";
   index?: ZvecGrepIndexDiagnostics;
   fallback?: ZvecGrepLexicalFallbackDiagnostics;
   structure?: ZvecGrepStructureEnrichmentDiagnostics;
   timings?: readonly TimingEntry[];
 };
-
 
 export type ZvecGrepContextResult = {
   query: string;
@@ -225,7 +202,6 @@ export type ZvecGrepContextResult = {
   diagnostics: ZvecGrepContextDiagnostics;
 };
 
-
 export type ZvecGrepCollectionIndexOptions = {
   rebuild?: boolean;
   resetPaths?: boolean;
@@ -234,7 +210,6 @@ export type ZvecGrepCollectionIndexOptions = {
   embeddingConcurrency?: number;
   onProgress?: (progress: IndexProgress) => void;
 };
-
 
 export type ZvecGrepCollections = {
   list(): Promise<CollectionInfo[]>;
@@ -248,7 +223,6 @@ export type ZvecGrepCollections = {
   remove(name: string): Promise<boolean>;
 };
 
-
 export type ZvecGrep = {
   readonly root: string;
   readonly collections: ZvecGrepCollections;
@@ -258,6 +232,5 @@ export type ZvecGrep = {
   context(options: ZvecGrepContextOptions): Promise<ZvecGrepContextResult>;
   close(): Promise<void>;
 };
-
 
 export type ZvecGrepContent = Content;

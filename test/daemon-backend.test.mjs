@@ -7,9 +7,10 @@ import { DaemonBackend } from "../dist/daemon/backend.js";
 import { EmbeddingModel } from "../dist/engine/models/embeddings.js";
 import { createZvecGrep } from "../dist/index.js";
 
-
 test("index releases its model lease when service creation fails", async () => {
-  const temporaryDirectory = await mkdtemp(join(tmpdir(), "zvec-grep-backend-"));
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-backend-"),
+  );
   const root = join(temporaryDirectory, "repo");
   await mkdir(root);
   const backend = new DaemonBackend({
@@ -41,16 +42,23 @@ test("index releases its model lease when service creation fails", async () => {
   }
 });
 
-
 test("wait_for_fresh reports a failed reconciliation instead of returning stale results", async () => {
-  const temporaryDirectory = await mkdtemp(join(tmpdir(), "zvec-grep-freshness-"));
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-freshness-"),
+  );
   const root = join(temporaryDirectory, "repo");
   await mkdir(root);
   await writeFile(join(root, "answer.ts"), "export const answer = 42;\n");
-  const service = await createZvecGrep({ root, embeddingModel: new TestEmbeddingModel() });
+  const service = await createZvecGrep({
+    root,
+    embeddingModel: new TestEmbeddingModel(),
+  });
   await service.index();
   await service.close();
-  await writeFile(join(root, "answer.ts"), "export const changedAnswer = 43;\n");
+  await writeFile(
+    join(root, "answer.ts"),
+    "export const changedAnswer = 43;\n",
+  );
   const backend = new DaemonBackend({
     version: "1.0.0",
     modelPoolOptions: { createModel: () => new TestEmbeddingModel() },
@@ -59,26 +67,33 @@ test("wait_for_fresh reports a failed reconciliation instead of returning stale 
     },
   });
   try {
-    await assert.rejects(backend.search({
-      root,
-      queries: ["answer"],
-      routes: [],
-      freshness: "wait_for_fresh",
-      maxContentChars: 1_200,
-    }), /reconciliation failed/);
+    await assert.rejects(
+      backend.search({
+        root,
+        queries: ["answer"],
+        routes: [],
+        freshness: "wait_for_fresh",
+        maxContentChars: 1_200,
+      }),
+      /reconciliation failed/,
+    );
   } finally {
     await backend.close();
     await rm(temporaryDirectory, { recursive: true, force: true });
   }
 });
 
-
 test("wait_for_fresh skips reconciliation when the initial probe is fresh", async () => {
-  const temporaryDirectory = await mkdtemp(join(tmpdir(), "zvec-grep-probe-fresh-"));
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-probe-fresh-"),
+  );
   const root = join(temporaryDirectory, "repo");
   await mkdir(root);
   await writeFile(join(root, "answer.ts"), "export const answer = 42;\n");
-  const service = await createZvecGrep({ root, embeddingModel: new TestEmbeddingModel() });
+  const service = await createZvecGrep({
+    root,
+    embeddingModel: new TestEmbeddingModel(),
+  });
   await service.index();
   await service.close();
   const events = [];
@@ -99,9 +114,13 @@ test("wait_for_fresh skips reconciliation when the initial probe is fresh", asyn
     },
   });
   try {
-    const result = await backend.search(searchInput(root, "answer", "wait_for_fresh"));
+    const result = await backend.search(
+      searchInput(root, "answer", "wait_for_fresh"),
+    );
     assert.equal(result.freshness, "fresh");
-    assert.ok(events.some((event) => event.name === "runtime.initial_probe_fresh"));
+    assert.ok(
+      events.some((event) => event.name === "runtime.initial_probe_fresh"),
+    );
     assert.equal(backend.scheduler.getByRoot(await realpath(root)), undefined);
   } finally {
     await backend.close();
@@ -109,16 +128,23 @@ test("wait_for_fresh skips reconciliation when the initial probe is fresh", asyn
   }
 });
 
-
 test("eventual search can skip background reconciliation", async () => {
-  const temporaryDirectory = await mkdtemp(join(tmpdir(), "zvec-grep-no-update-"));
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-no-update-"),
+  );
   const root = join(temporaryDirectory, "repo");
   await mkdir(root);
   await writeFile(join(root, "answer.ts"), "export const answer = 42;\n");
-  const service = await createZvecGrep({ root, embeddingModel: new TestEmbeddingModel() });
+  const service = await createZvecGrep({
+    root,
+    embeddingModel: new TestEmbeddingModel(),
+  });
   await service.index();
   await service.close();
-  await writeFile(join(root, "answer.ts"), "export const changedAnswer = 43;\n");
+  await writeFile(
+    join(root, "answer.ts"),
+    "export const changedAnswer = 43;\n",
+  );
   const backend = new DaemonBackend({
     version: "1.0.0",
     modelPoolOptions: { createModel: () => new TestEmbeddingModel() },
@@ -140,14 +166,18 @@ test("eventual search can skip background reconciliation", async () => {
   }
 });
 
-
 test("wait_for_fresh queues a full reconciliation behind a running watch job", async () => {
-  const temporaryDirectory = await mkdtemp(join(tmpdir(), "zvec-grep-fresh-followup-"));
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-fresh-followup-"),
+  );
   const root = join(temporaryDirectory, "repo");
   await mkdir(root);
   const source = join(root, "answer.ts");
   await writeFile(source, "export const answer = 42;\n");
-  const service = await createZvecGrep({ root, embeddingModel: new TestEmbeddingModel() });
+  const service = await createZvecGrep({
+    root,
+    embeddingModel: new TestEmbeddingModel(),
+  });
   await service.index();
   await service.close();
   const backend = new DaemonBackend({
@@ -169,12 +199,13 @@ test("wait_for_fresh queues a full reconciliation behind a running watch job", a
     const watchJob = backend.scheduler.submit({
       canonicalRoot,
       reason: "watch",
-      run: () => new Promise((resolve) => {
-        releaseWatch = () => {
-          runtime.markIndexed(watchRevision);
-          resolve();
-        };
-      }),
+      run: () =>
+        new Promise((resolve) => {
+          releaseWatch = () => {
+            runtime.markIndexed(watchRevision);
+            resolve();
+          };
+        }),
     });
     await waitFor(() => releaseWatch !== undefined);
     const search = backend.search({
@@ -188,14 +219,19 @@ test("wait_for_fresh queues a full reconciliation behind a running watch job", a
     const result = await search;
     assert.equal(result.freshness, "fresh");
     assert.match(result.result.items[0].content, /changedAnswer/);
-    assert.notEqual(backend.scheduler.getByRoot(canonicalRoot).id, watchJob.job.id);
-    assert.equal(backend.scheduler.getByRoot(canonicalRoot).reason, "fresh_query");
+    assert.notEqual(
+      backend.scheduler.getByRoot(canonicalRoot).id,
+      watchJob.job.id,
+    );
+    assert.equal(
+      backend.scheduler.getByRoot(canonicalRoot).reason,
+      "fresh_query",
+    );
   } finally {
     await backend.close();
     await rm(temporaryDirectory, { recursive: true, force: true });
   }
 });
-
 
 test("concurrent backend close calls wait for the same shutdown drain", async () => {
   const backend = new DaemonBackend({ version: "1.0.0" });
@@ -203,14 +239,19 @@ test("concurrent backend close calls wait for the same shutdown drain", async ()
   backend.scheduler.submit({
     canonicalRoot: "/repo",
     reason: "manual",
-    run: () => new Promise((resolve) => { release = resolve; }),
+    run: () =>
+      new Promise((resolve) => {
+        release = resolve;
+      }),
   });
   while (!release) {
     await new Promise((resolve) => setImmediate(resolve));
   }
   let secondClosed = false;
   const first = backend.close();
-  const second = backend.close().then(() => { secondClosed = true; });
+  const second = backend.close().then(() => {
+    secondClosed = true;
+  });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(secondClosed, false);
   release();
@@ -218,14 +259,18 @@ test("concurrent backend close calls wait for the same shutdown drain", async ()
   assert.equal(secondClosed, true);
 });
 
-
 test("watch changes use the path-level index pipeline and advance revisions", async () => {
-  const temporaryDirectory = await mkdtemp(join(tmpdir(), "zvec-grep-watch-backend-"));
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-watch-backend-"),
+  );
   const root = join(temporaryDirectory, "repo");
   await mkdir(root);
   const source = join(root, "answer.ts");
   await writeFile(source, "export const answer = 42;\n");
-  const service = await createZvecGrep({ root, embeddingModel: new TestEmbeddingModel() });
+  const service = await createZvecGrep({
+    root,
+    embeddingModel: new TestEmbeddingModel(),
+  });
   await service.index();
   await service.close();
   let watcherOptions;
@@ -233,8 +278,12 @@ test("watch changes use the path-level index pipeline and advance revisions", as
   const indexedPathBatches = [];
   let markPathIndexStarted;
   let releasePathIndex;
-  const pathIndexStarted = new Promise((resolve) => { markPathIndexStarted = resolve; });
-  const pathIndexReleased = new Promise((resolve) => { releasePathIndex = resolve; });
+  const pathIndexStarted = new Promise((resolve) => {
+    markPathIndexStarted = resolve;
+  });
+  const pathIndexReleased = new Promise((resolve) => {
+    releasePathIndex = resolve;
+  });
   const backend = new DaemonBackend({
     version: "1.0.0",
     modelPoolOptions: { createModel: () => new TestEmbeddingModel() },
@@ -264,7 +313,9 @@ test("watch changes use the path-level index pipeline and advance revisions", as
       return {
         start() {},
         flushPending: async () => {},
-        close: async () => { watcherCloses += 1; },
+        close: async () => {
+          watcherCloses += 1;
+        },
       };
     },
   });
@@ -302,13 +353,17 @@ test("watch changes use the path-level index pipeline and advance revisions", as
   }
 });
 
-
 test("daemon restart forgets runtimes and jobs but preserves index discovery", async () => {
-  const temporaryDirectory = await mkdtemp(join(tmpdir(), "zvec-grep-restart-"));
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-restart-"),
+  );
   const root = join(temporaryDirectory, "repo");
   await mkdir(root);
   await writeFile(join(root, "answer.ts"), "export const answer = 42;\n");
-  const service = await createZvecGrep({ root, embeddingModel: new TestEmbeddingModel() });
+  const service = await createZvecGrep({
+    root,
+    embeddingModel: new TestEmbeddingModel(),
+  });
   await service.index();
   await service.close();
   const options = {
@@ -338,7 +393,6 @@ test("daemon restart forgets runtimes and jobs but preserves index discovery", a
   }
 });
 
-
 class TestEmbeddingModel extends EmbeddingModel {
   ref = { provider: "test", model: "deterministic" };
   dimension = 8;
@@ -351,7 +405,6 @@ class TestEmbeddingModel extends EmbeddingModel {
   }
 }
 
-
 function searchInput(root, query, freshness) {
   return {
     root,
@@ -362,7 +415,6 @@ function searchInput(root, query, freshness) {
     maxContentChars: 1_200,
   };
 }
-
 
 async function waitFor(predicate) {
   for (let attempt = 0; attempt < 200; attempt++) {

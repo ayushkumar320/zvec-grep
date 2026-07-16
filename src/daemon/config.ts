@@ -4,7 +4,6 @@ import { readGlobalConfig } from "../engine/config.js";
 import { defaultHome } from "../engine/utils/path.js";
 import { DaemonError } from "./errors.js";
 
-
 export const DEFAULT_SERVER_HOST = "127.0.0.1";
 export const DEFAULT_SERVER_PORT = 7_999;
 
@@ -13,23 +12,21 @@ export type ServerListenAddress = {
   port: number;
 };
 
-
 export function daemonHome(home?: string): string {
   return join(home ?? defaultHome(), "daemon");
 }
-
 
 export function daemonTokenPath(home?: string): string {
   return join(daemonHome(home), "token");
 }
 
-
 export function configuredListenAddress(listen?: string): ServerListenAddress {
   if (listen) return parseListenAddress(listen);
   const configured = readGlobalConfig().server;
-  return parseListenAddress(`${configured?.host ?? DEFAULT_SERVER_HOST}:${configured?.port ?? DEFAULT_SERVER_PORT}`);
+  return parseListenAddress(
+    `${configured?.host ?? DEFAULT_SERVER_HOST}:${configured?.port ?? DEFAULT_SERVER_PORT}`,
+  );
 }
-
 
 export function configuredServerUrl(): string {
   const config = readGlobalConfig();
@@ -39,43 +36,56 @@ export function configuredServerUrl(): string {
   return `http://${host}:${listen.port}/mcp`;
 }
 
-
 export function parseListenAddress(value?: string): ServerListenAddress {
   const listen = value ?? `${DEFAULT_SERVER_HOST}:${DEFAULT_SERVER_PORT}`;
   const separator = listen.lastIndexOf(":");
   if (separator <= 0 || separator === listen.length - 1) {
-    throw new DaemonError("INVALID_LISTEN_ADDRESS", "listen must use host:port format.");
+    throw new DaemonError(
+      "INVALID_LISTEN_ADDRESS",
+      "listen must use host:port format.",
+    );
   }
   const host = listen.slice(0, separator).replace(/^\[|\]$/g, "");
   const port = Number(listen.slice(separator + 1));
   if (!isLoopbackHost(host)) {
-    throw new DaemonError("LOOPBACK_REQUIRED", "Server MVP only supports loopback listen addresses.");
+    throw new DaemonError(
+      "LOOPBACK_REQUIRED",
+      "Server MVP only supports loopback listen addresses.",
+    );
   }
   if (!Number.isInteger(port) || port < 1 || port > 65_535) {
-    throw new DaemonError("INVALID_LISTEN_ADDRESS", "listen port must be between 1 and 65535.");
+    throw new DaemonError(
+      "INVALID_LISTEN_ADDRESS",
+      "listen port must be between 1 and 65535.",
+    );
   }
   return { host, port };
 }
 
-
 export function isLoopbackHost(host: string): boolean {
   const normalized = host.toLowerCase();
-  return normalized === "127.0.0.1" || normalized === "::1" || normalized === "localhost";
+  return (
+    normalized === "127.0.0.1" ||
+    normalized === "::1" ||
+    normalized === "localhost"
+  );
 }
 
-
-export async function resolveServerToken(options: {
-  token?: string;
-  tokenFile?: string;
-  home?: string;
-} = {}): Promise<{ token?: string; tokenFile?: string }> {
+export async function resolveServerToken(
+  options: {
+    token?: string;
+    tokenFile?: string;
+    home?: string;
+  } = {},
+): Promise<{ token?: string; tokenFile?: string }> {
   const explicit = options.token ?? process.env.ZVEC_GREP_SERVER_TOKEN;
   if (explicit) {
     validateToken(explicit);
     return { token: explicit };
   }
 
-  const tokenFile = options.tokenFile ?? process.env.ZVEC_GREP_SERVER_TOKEN_FILE;
+  const tokenFile =
+    options.tokenFile ?? process.env.ZVEC_GREP_SERVER_TOKEN_FILE;
   if (!tokenFile) return {};
   const token = (await readFile(tokenFile, "utf8")).trim();
   validateToken(token);
@@ -83,17 +93,19 @@ export async function resolveServerToken(options: {
   return { token, tokenFile };
 }
 
-
-export async function resolveClientToken(options: {
-  tokenFile?: string;
-  home?: string;
-} = {}): Promise<string | undefined> {
+export async function resolveClientToken(
+  options: {
+    tokenFile?: string;
+    home?: string;
+  } = {},
+): Promise<string | undefined> {
   const explicit = process.env.ZVEC_GREP_SERVER_TOKEN;
   if (explicit) {
     validateToken(explicit);
     return explicit;
   }
-  const configuredTokenFile = options.tokenFile ?? process.env.ZVEC_GREP_SERVER_TOKEN_FILE;
+  const configuredTokenFile =
+    options.tokenFile ?? process.env.ZVEC_GREP_SERVER_TOKEN_FILE;
   const tokenFile = configuredTokenFile ?? daemonTokenPath(options.home);
   try {
     const token = (await readFile(tokenFile, "utf8")).trim();
@@ -105,9 +117,11 @@ export async function resolveClientToken(options: {
   }
 }
 
-
 function validateToken(token: string): void {
   if (token.length < 32) {
-    throw new DaemonError("INVALID_TOKEN", "Server token must contain at least 32 characters.");
+    throw new DaemonError(
+      "INVALID_TOKEN",
+      "Server token must contain at least 32 characters.",
+    );
   }
 }

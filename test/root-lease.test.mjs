@@ -1,5 +1,13 @@
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { hostname } from "node:os";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,7 +19,6 @@ import {
 } from "../dist/engine/utils/daemon-lease.js";
 import { createZvecGrep } from "../dist/index.js";
 import { printError } from "../dist/cli/errors.js";
-
 
 test("daemon root lease blocks Direct index writes and is removed on release", async () => {
   const temporaryDirectory = await mkdtemp(join(tmpdir(), "zvec-grep-lease-"));
@@ -36,7 +43,9 @@ test("daemon root lease blocks Direct index writes and is removed on release", a
     });
     const output = [];
     const originalError = console.error;
-    console.error = (...values) => { output.push(values.join(" ")); };
+    console.error = (...values) => {
+      output.push(values.join(" "));
+    };
     try {
       printError(leaseError, { color: "never" });
     } finally {
@@ -54,27 +63,43 @@ test("daemon root lease blocks Direct index writes and is removed on release", a
   }
 });
 
-
 test("concurrent stale lease takeover leaves exactly one new owner", async () => {
-  const temporaryDirectory = await mkdtemp(join(tmpdir(), "zvec-grep-stale-lease-"));
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-stale-lease-"),
+  );
   const root = join(temporaryDirectory, "repo");
   await mkdir(join(root, ".zvec-grep", "locks"), { recursive: true });
-  await writeFile(daemonLeasePath(root), `${JSON.stringify({
-    pid: 2_147_483_647,
-    hostname: hostname(),
-    instanceToken: "stale",
-    createdAt: 1,
-    updatedAt: 1,
-  })}\n`);
+  await writeFile(
+    daemonLeasePath(root),
+    `${JSON.stringify({
+      pid: 2_147_483_647,
+      hostname: hostname(),
+      instanceToken: "stale",
+      createdAt: 1,
+      updatedAt: 1,
+    })}\n`,
+  );
   const managers = [new RootLeaseManager(), new RootLeaseManager()];
   try {
-    const outcomes = await Promise.allSettled(managers.map((manager) => manager.acquire(root)));
-    assert.equal(outcomes.filter((outcome) => outcome.status === "fulfilled").length, 1);
-    assert.equal(outcomes.filter((outcome) => outcome.status === "rejected").length, 1);
+    const outcomes = await Promise.allSettled(
+      managers.map((manager) => manager.acquire(root)),
+    );
+    assert.equal(
+      outcomes.filter((outcome) => outcome.status === "fulfilled").length,
+      1,
+    );
+    assert.equal(
+      outcomes.filter((outcome) => outcome.status === "rejected").length,
+      1,
+    );
     const owner = JSON.parse(await readFile(daemonLeasePath(root), "utf8"));
-    const winner = managers.find((manager) => manager.instanceToken === owner.instanceToken);
+    const winner = managers.find(
+      (manager) => manager.instanceToken === owner.instanceToken,
+    );
     assert.ok(winner);
-    const fulfilled = outcomes.find((outcome) => outcome.status === "fulfilled");
+    const fulfilled = outcomes.find(
+      (outcome) => outcome.status === "fulfilled",
+    );
     await fulfilled.value.release();
   } finally {
     await Promise.all(managers.map((manager) => manager.close()));
@@ -82,13 +107,14 @@ test("concurrent stale lease takeover leaves exactly one new owner", async () =>
   }
 });
 
-
 test("an abandoned malformed lease can be replaced safely", async () => {
-  const temporaryDirectory = await mkdtemp(join(tmpdir(), "zvec-grep-malformed-lease-"));
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-malformed-lease-"),
+  );
   const root = join(temporaryDirectory, "repo");
   await mkdir(join(root, ".zvec-grep", "locks"), { recursive: true });
   const path = daemonLeasePath(root);
-  await writeFile(path, "{\"pid\":");
+  await writeFile(path, '{"pid":');
   const old = new Date(Date.now() - 60_000);
   await utimes(path, old, old);
   const manager = new RootLeaseManager();
@@ -109,16 +135,20 @@ test("an abandoned malformed lease can be replaced safely", async () => {
   }
 });
 
-
 test("a Direct write permit prevents daemon activation until the write completes", async () => {
-  const temporaryDirectory = await mkdtemp(join(tmpdir(), "zvec-grep-direct-permit-"));
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-direct-permit-"),
+  );
   const root = join(temporaryDirectory, "repo");
   await mkdir(root);
   const manager = new RootLeaseManager();
   const permit = assertDaemonWriteAllowed(root);
   try {
     assert.ok(permit);
-    await assert.rejects(manager.acquire(root), /changing the root lease|INDEX_BUSY/i);
+    await assert.rejects(
+      manager.acquire(root),
+      /changing the root lease|INDEX_BUSY/i,
+    );
     permit.release();
     const lease = await manager.acquire(root);
     await lease.release();

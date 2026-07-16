@@ -6,7 +6,6 @@ import { join } from "node:path";
 import test from "node:test";
 import { WatchManager } from "../dist/daemon/watch-manager.js";
 
-
 test("watch manager debounces file changes and reports overflow reconciliation", async () => {
   const temporaryDirectory = await mkdtemp(join(tmpdir(), "zvec-grep-watch-"));
   const root = join(temporaryDirectory, "repo");
@@ -25,7 +24,9 @@ test("watch manager debounces file changes and reports overflow reconciliation",
       listener = callback;
       return watcher;
     },
-    onChanges: (changes) => { batches.push(changes); },
+    onChanges: (changes) => {
+      batches.push(changes);
+    },
   });
   try {
     manager.start();
@@ -42,9 +43,10 @@ test("watch manager debounces file changes and reports overflow reconciliation",
   }
 });
 
-
 test("watch manager falls back to per-directory watchers when recursive watch is unavailable", async () => {
-  const temporaryDirectory = await mkdtemp(join(tmpdir(), "zvec-grep-watch-fallback-"));
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-watch-fallback-"),
+  );
   const root = join(temporaryDirectory, "repo");
   const nested = join(root, "src");
   await mkdir(nested, { recursive: true });
@@ -63,7 +65,9 @@ test("watch manager falls back to per-directory watchers when recursive watch is
       listeners.set(directory, callback);
       return fallback;
     },
-    onChanges: (changes) => { batches.push(changes); },
+    onChanges: (changes) => {
+      batches.push(changes);
+    },
   });
   try {
     manager.start();
@@ -77,13 +81,17 @@ test("watch manager falls back to per-directory watchers when recursive watch is
   }
 });
 
-
 test("watch manager collapses an event storm into one full reconciliation", async () => {
-  const temporaryDirectory = await mkdtemp(join(tmpdir(), "zvec-grep-watch-storm-"));
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-watch-storm-"),
+  );
   const root = join(temporaryDirectory, "repo");
   await mkdir(root);
   for (let index = 0; index < 4; index++) {
-    await writeFile(join(root, `${index}.ts`), `export const value${index} = ${index};\n`);
+    await writeFile(
+      join(root, `${index}.ts`),
+      `export const value${index} = ${index};\n`,
+    );
   }
   let listener;
   const watcher = new EventEmitter();
@@ -99,7 +107,9 @@ test("watch manager collapses an event storm into one full reconciliation", asyn
       listener = callback;
       return watcher;
     },
-    onChanges: (changes) => { batches.push(changes); },
+    onChanges: (changes) => {
+      batches.push(changes);
+    },
   });
   try {
     manager.start();
@@ -113,9 +123,10 @@ test("watch manager collapses an event storm into one full reconciliation", asyn
   }
 });
 
-
 test("fallback watcher reattaches after a directory is deleted and recreated", async () => {
-  const temporaryDirectory = await mkdtemp(join(tmpdir(), "zvec-grep-watch-recreate-"));
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-watch-recreate-"),
+  );
   const root = join(temporaryDirectory, "repo");
   const nested = join(root, "src");
   await mkdir(nested, { recursive: true });
@@ -152,9 +163,10 @@ test("fallback watcher reattaches after a directory is deleted and recreated", a
   }
 });
 
-
 test("resume drift requests reconciliation and pending state spans debounce", async () => {
-  const temporaryDirectory = await mkdtemp(join(tmpdir(), "zvec-grep-watch-resume-"));
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-watch-resume-"),
+  );
   const root = join(temporaryDirectory, "repo");
   await mkdir(root);
   await writeFile(join(root, "a.ts"), "export const a = 1;\n");
@@ -193,9 +205,10 @@ test("resume drift requests reconciliation and pending state spans debounce", as
   }
 });
 
-
 test("watcher errors trigger reconciliation and replace the failed watcher", async () => {
-  const temporaryDirectory = await mkdtemp(join(tmpdir(), "zvec-grep-watch-error-"));
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-watch-error-"),
+  );
   const root = join(temporaryDirectory, "repo");
   await mkdir(root);
   const watchers = [];
@@ -226,9 +239,10 @@ test("watcher errors trigger reconciliation and replace the failed watcher", asy
   }
 });
 
-
 test("close waits for an in-flight async change callback", async () => {
-  const temporaryDirectory = await mkdtemp(join(tmpdir(), "zvec-grep-watch-close-"));
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-watch-close-"),
+  );
   const root = join(temporaryDirectory, "repo");
   await mkdir(root);
   await writeFile(join(root, "a.ts"), "export const a = 1;\n");
@@ -247,16 +261,19 @@ test("close waits for an in-flight async change callback", async () => {
       listener = callback;
       return watcher;
     },
-    onChanges: () => new Promise((resolve) => {
-      started = true;
-      release = resolve;
-    }),
+    onChanges: () =>
+      new Promise((resolve) => {
+        started = true;
+        release = resolve;
+      }),
   });
   manager.start();
   listener("change", "a.ts");
   await waitFor(() => started);
   let closed = false;
-  const closing = manager.close().then(() => { closed = true; });
+  const closing = manager.close().then(() => {
+    closed = true;
+  });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(closed, false);
   release();
@@ -264,7 +281,6 @@ test("close waits for an in-flight async change callback", async () => {
   assert.equal(closed, true);
   await rm(temporaryDirectory, { recursive: true, force: true });
 });
-
 
 async function waitFor(predicate) {
   for (let attempt = 0; attempt < 100; attempt++) {

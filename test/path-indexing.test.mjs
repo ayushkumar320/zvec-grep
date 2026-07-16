@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  rm,
+  symlink,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -10,9 +17,10 @@ import {
 } from "../dist/engine/pipeline/indexing/scanner/index.js";
 import { createZvecGrep } from "../dist/index.js";
 
-
 test("path scanners rebuild gitignore rules and stay inside the requested subtree", async () => {
-  const temporaryDirectory = await mkdtemp(join(tmpdir(), "zvec-grep-path-scan-"));
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-path-scan-"),
+  );
   const root = join(temporaryDirectory, "repo");
   const src = join(root, "src");
   const other = join(root, "other");
@@ -24,21 +32,33 @@ test("path scanners rebuild gitignore rules and stay inside the requested subtre
   await writeFile(join(other, "outside.ts"), "export const outside = true;\n");
   const rootPaths = [{ absolutePath: root, recursive: true }];
   try {
-    const ignored = await scanFilePath("collection", rootPaths, join(src, "ignored.ts"));
+    const ignored = await scanFilePath(
+      "collection",
+      rootPaths,
+      join(src, "ignored.ts"),
+    );
     assert.equal(ignored.files.length, 0);
     const subtree = await scanDirectoryPath("collection", rootPaths, src);
-    assert.deepEqual(subtree.files.map((file) => file.relativePath), ["src/kept.ts"]);
+    assert.deepEqual(
+      subtree.files.map((file) => file.relativePath),
+      ["src/kept.ts"],
+    );
     await writeFile(join(root, ".gitignore"), "");
-    const included = await scanFilePath("collection", rootPaths, join(src, "ignored.ts"));
+    const included = await scanFilePath(
+      "collection",
+      rootPaths,
+      join(src, "ignored.ts"),
+    );
     assert.equal(included.files[0].relativePath, "src/ignored.ts");
   } finally {
     await rm(temporaryDirectory, { recursive: true, force: true });
   }
 });
 
-
 test("path scanners do not follow symlinks outside the indexed root", async (t) => {
-  const temporaryDirectory = await mkdtemp(join(tmpdir(), "zvec-grep-path-symlink-"));
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-path-symlink-"),
+  );
   const root = join(temporaryDirectory, "repo");
   const external = join(temporaryDirectory, "external");
   await mkdir(root);
@@ -56,16 +76,30 @@ test("path scanners do not follow symlinks outside the indexed root", async (t) 
   }
   const rootPaths = [{ absolutePath: root, recursive: true }];
   try {
-    assert.equal((await scanFilePath("collection", rootPaths, join(root, "linked.ts"))).files.length, 0);
-    assert.equal((await scanDirectoryPath("collection", rootPaths, join(root, "linked-directory"))).files.length, 0);
+    assert.equal(
+      (await scanFilePath("collection", rootPaths, join(root, "linked.ts")))
+        .files.length,
+      0,
+    );
+    assert.equal(
+      (
+        await scanDirectoryPath(
+          "collection",
+          rootPaths,
+          join(root, "linked-directory"),
+        )
+      ).files.length,
+      0,
+    );
   } finally {
     await rm(temporaryDirectory, { recursive: true, force: true });
   }
 });
 
-
 test("changedPaths indexes and deletes only the affected paths", async () => {
-  const temporaryDirectory = await mkdtemp(join(tmpdir(), "zvec-grep-path-index-"));
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-path-index-"),
+  );
   const root = join(temporaryDirectory, "repo");
   const removedDirectory = join(root, "removed");
   await mkdir(removedDirectory, { recursive: true });
@@ -89,7 +123,10 @@ test("changedPaths indexes and deletes only the affected paths", async () => {
 
     const addedDirectory = join(root, "added");
     await mkdir(addedDirectory);
-    await writeFile(join(addedDirectory, "new.ts"), "export const newlyAdded = true;\n");
+    await writeFile(
+      join(addedDirectory, "new.ts"),
+      "export const newlyAdded = true;\n",
+    );
     const added = await service.index({ changedPaths: [addedDirectory] });
     assert.equal(added.filesAdded, 1);
 
@@ -103,7 +140,6 @@ test("changedPaths indexes and deletes only the affected paths", async () => {
     await rm(temporaryDirectory, { recursive: true, force: true });
   }
 });
-
 
 class CountingEmbeddingModel extends EmbeddingModel {
   ref = { provider: "test", model: "counting" };

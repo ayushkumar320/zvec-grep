@@ -4,7 +4,6 @@ import { join } from "node:path";
 import test from "node:test";
 import { ChangeSet } from "../dist/daemon/change-set.js";
 
-
 test("change set folds child paths and invalidates gitignore subtrees", () => {
   const root = join(tmpdir(), "change-set-repo");
   const changes = new ChangeSet();
@@ -19,7 +18,6 @@ test("change set folds child paths and invalidates gitignore subtrees", () => {
     forceFullReconcile: false,
   });
 });
-
 
 test("change set collapses deleted prefixes and upgrades event storms", () => {
   const root = join(tmpdir(), "change-set-storm-repo");

@@ -7,7 +7,6 @@ import type { EmbeddingModel } from "../engine/models/embeddings.js";
 import type { CollectionEmbeddingSchema } from "../engine/types.js";
 import { opaqueIdentity, type DaemonLogger } from "./logger.js";
 
-
 export type ModelLeaseRequest = {
   schema: CollectionEmbeddingSchema;
   root: string;
@@ -29,7 +28,9 @@ export type EmbeddingModelPoolOptions = {
   idleTtlMs?: number;
   maxLoadedModels?: number;
   serviceOptions?: CreateZvecGrepOptions;
-  createModel?: (request: ModelLeaseRequest) => EmbeddingModel | Promise<EmbeddingModel>;
+  createModel?: (
+    request: ModelLeaseRequest,
+  ) => EmbeddingModel | Promise<EmbeddingModel>;
   keyForRequest?: (request: ModelLeaseRequest) => string;
   logger?: DaemonLogger;
 };
@@ -44,36 +45,41 @@ type ModelEntry = {
   retired: boolean;
 };
 
-
 export class EmbeddingModelPool {
   private readonly entries = new Map<string, ModelEntry>();
   private readonly idleTtlMs: number;
   private readonly maxLoadedModels: number;
-  private readonly createModel: (request: ModelLeaseRequest) => EmbeddingModel | Promise<EmbeddingModel>;
+  private readonly createModel: (
+    request: ModelLeaseRequest,
+  ) => EmbeddingModel | Promise<EmbeddingModel>;
   private readonly keyForRequest: (request: ModelLeaseRequest) => string;
   private closed = false;
   private closePromise?: Promise<void>;
   private readonly logger?: DaemonLogger;
 
-
   constructor(options: EmbeddingModelPoolOptions = {}) {
     this.idleTtlMs = options.idleTtlMs ?? 15 * 60_000;
     this.maxLoadedModels = options.maxLoadedModels ?? 1;
-    this.createModel = options.createModel ?? ((request) => createEmbeddingModelForSchema(
-      request.schema,
-      request.root,
-      request.registryHome,
-      options.serviceOptions,
-    ));
-    this.keyForRequest = options.keyForRequest ?? ((request) => embeddingModelPoolKeyForSchema(
-      request.schema,
-      request.root,
-      request.registryHome,
-      options.serviceOptions,
-    ));
+    this.createModel =
+      options.createModel ??
+      ((request) =>
+        createEmbeddingModelForSchema(
+          request.schema,
+          request.root,
+          request.registryHome,
+          options.serviceOptions,
+        ));
+    this.keyForRequest =
+      options.keyForRequest ??
+      ((request) =>
+        embeddingModelPoolKeyForSchema(
+          request.schema,
+          request.root,
+          request.registryHome,
+          options.serviceOptions,
+        ));
     this.logger = options.logger;
   }
-
 
   async acquire(request: ModelLeaseRequest): Promise<ModelLease> {
     if (this.closed) {
@@ -145,11 +151,9 @@ export class EmbeddingModelPool {
     };
   }
 
-
   keyFor(request: ModelLeaseRequest): string {
     return this.keyForRequest(request);
   }
-
 
   snapshot(): ModelPoolSnapshot {
     let activeLeases = 0;
@@ -163,7 +167,6 @@ export class EmbeddingModelPool {
     return { loaded, activeLeases };
   }
 
-
   close(): Promise<void> {
     if (!this.closePromise) {
       this.closed = true;
@@ -172,9 +175,11 @@ export class EmbeddingModelPool {
     return this.closePromise;
   }
 
-
   private async closeEntries(): Promise<void> {
-    await Promise.allSettled([...this.entries.values()].map((entry) => entry.loading));
+    const loadings = [...this.entries.values()].flatMap((entry) =>
+      entry.loading ? [entry.loading] : [],
+    );
+    await Promise.allSettled(loadings);
     const disposals: Promise<void>[] = [];
     for (const entry of this.entries.values()) {
       if (entry.idleTimer) {
@@ -192,7 +197,6 @@ export class EmbeddingModelPool {
       }
     }
   }
-
 
   private release(entry: ModelEntry): void {
     entry.leases = Math.max(0, entry.leases - 1);
@@ -215,7 +219,6 @@ export class EmbeddingModelPool {
     entry.idleTimer.unref?.();
   }
 
-
   private async trimIdleEntries(exceptKey: string): Promise<void> {
     const loaded = [...this.entries.values()].filter((entry) => entry.model);
     if (loaded.length <= this.maxLoadedModels) {
@@ -225,11 +228,13 @@ export class EmbeddingModelPool {
     const candidates = loaded
       .filter((entry) => entry.key !== exceptKey && entry.leases === 0)
       .sort((left, right) => left.lastUsedAt - right.lastUsedAt);
-    while (this.snapshot().loaded > this.maxLoadedModels && candidates.length > 0) {
+    while (
+      this.snapshot().loaded > this.maxLoadedModels &&
+      candidates.length > 0
+    ) {
       await this.disposeEntry(candidates.shift()!);
     }
   }
-
 
   private async disposeEntry(entry: ModelEntry): Promise<void> {
     if (entry.leases > 0 || !entry.model) {
@@ -243,6 +248,8 @@ export class EmbeddingModelPool {
     entry.model = undefined;
     this.entries.delete(entry.key);
     await model.dispose();
-    this.logger?.event("model.evicted", { model_id: opaqueIdentity(entry.key) });
+    this.logger?.event("model.evicted", {
+      model_id: opaqueIdentity(entry.key),
+    });
   }
 }

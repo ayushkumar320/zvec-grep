@@ -1,21 +1,9 @@
-import type {
-  CodeSymbolType,
-  ZvecGrepContextRoute,
-} from "../index.js";
+import type { CodeSymbolType, ZvecGrepContextRoute } from "../index.js";
 import type { ZvecGrepClientMode } from "../engine/config.js";
 
+export type ColorMode = "auto" | "always" | "never";
 
-export type ColorMode =
-  | "auto"
-  | "always"
-  | "never";
-
-
-export type PreviewMode =
-  | "none"
-  | "short"
-  | "full";
-
+export type PreviewMode = "none" | "short" | "full";
 
 export type CliOptions = {
   help?: boolean;
@@ -71,7 +59,6 @@ export type CliOptions = {
   embeddingConcurrency?: number;
 };
 
-
 export type CliRgOptions = {
   patterns?: string[];
   extraArgs?: string[];
@@ -83,15 +70,12 @@ export type CliRgOptions = {
   hidden?: boolean;
 };
 
-
 export type ParsedArgs = {
   options: CliOptions;
   positionals: string[];
 };
 
-
 export const DEFAULT_LIMIT = 10;
-
 
 export const VALID_SYMBOL_TYPES = new Set<CodeSymbolType>([
   "module",

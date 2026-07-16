@@ -37,11 +37,9 @@ import type {
   StoredEntityFragment,
 } from "./index.js";
 
-
 type FileRecord = FileInfo & {
   entityIds: string[];
 };
-
 
 const ENTITY_VECTOR_FIELD = "embedding";
 const ENTITY_TEXT_FIELD = "text";
@@ -53,9 +51,7 @@ const ZVEC_OPEN_RETRY_ATTEMPTS = 8;
 const ZVEC_OPEN_RETRY_BASE_DELAY_MS = 100;
 const ZVEC_OPEN_RETRY_MAX_DELAY_MS = 1000;
 
-
 let zvecInitialized = false;
-
 
 export class ZvecCollectionStorage implements CollectionStorage {
   private readonly collection: ZVecCollection;
@@ -63,7 +59,6 @@ export class ZvecCollectionStorage implements CollectionStorage {
   private readonly filesById = new Map<string, FileRecord>();
   private readonly filesByAbsolutePath = new Map<string, FileRecord>();
   private needsOptimize = false;
-
 
   constructor(
     private readonly collectionPath: string,
@@ -84,11 +79,8 @@ export class ZvecCollectionStorage implements CollectionStorage {
 
     const zvecPath = join(collectionPath, ZVEC_PATH);
     if (existsSync(zvecPath)) {
-      this.collection = openZvecCollection(
-        zvecPath,
-        readOnly,
-        "open",
-        () => ZVecOpen(zvecPath, { readOnly }),
+      this.collection = openZvecCollection(zvecPath, readOnly, "open", () =>
+        ZVecOpen(zvecPath, { readOnly }),
       );
     } else if (readOnly) {
       throw new EngineError("zvec collection storage does not exist", {
@@ -96,15 +88,11 @@ export class ZvecCollectionStorage implements CollectionStorage {
         context: `path=${zvecPath}`,
       });
     } else {
-      this.collection = openZvecCollection(
-        zvecPath,
-        readOnly,
-        "create",
-        () => ZVecCreateAndOpen(zvecPath, createSchema(embedding)),
+      this.collection = openZvecCollection(zvecPath, readOnly, "create", () =>
+        ZVecCreateAndOpen(zvecPath, createSchema(embedding)),
       );
     }
   }
-
 
   getFileById(fileId: string): FileInfo | null {
     const file = this.filesById.get(fileId);
@@ -112,13 +100,11 @@ export class ZvecCollectionStorage implements CollectionStorage {
     return file ? fileRecordToInfo(file) : null;
   }
 
-
   getFileByPath(absolutePath: string): FileInfo | null {
     const file = this.filesByAbsolutePath.get(normalizePath(absolutePath));
 
     return file ? fileRecordToInfo(file) : null;
   }
-
 
   listFilesByPathPrefix(absolutePath: string): FileInfo[] {
     const prefix = normalizePath(absolutePath);
@@ -128,15 +114,13 @@ export class ZvecCollectionStorage implements CollectionStorage {
       .map(([, file]) => fileRecordToInfo(file));
   }
 
-
   listFiles(): FileInfo[] {
     return [...this.filesById.values()].map(fileRecordToInfo);
   }
 
-
   listEntitiesByFile(
     fileId: string,
-    options: { limit?: number; offset?: number; } = {},
+    options: { limit?: number; offset?: number } = {},
   ): StoredEntity[] {
     const file = this.filesById.get(fileId);
     if (!file) {
@@ -150,18 +134,20 @@ export class ZvecCollectionStorage implements CollectionStorage {
     return this.fetchStoredEntities(ids);
   }
 
-
   getEntity(
     entityId: string,
-    options: { includeVector?: boolean; } = {},
-  ): (StoredEntity & { vector?: number[]; }) | null {
+    options: { includeVector?: boolean } = {},
+  ): (StoredEntity & { vector?: number[] }) | null {
     const fragment = this.getFragment(entityId, options);
 
     if (!fragment) {
       return null;
     }
 
-    if (fragment.fragment.group && fragment.fragment.group !== fragment.fragment.id) {
+    if (
+      fragment.fragment.group &&
+      fragment.fragment.group !== fragment.fragment.id
+    ) {
       return this.getEntity(fragment.fragment.group, options);
     }
 
@@ -172,11 +158,10 @@ export class ZvecCollectionStorage implements CollectionStorage {
       : { file: fragment.file, entity };
   }
 
-
   private getFragment(
     fragmentId: string,
-    options: { includeVector?: boolean; } = {},
-  ): (StoredEntityFragment & { vector?: number[]; }) | null {
+    options: { includeVector?: boolean } = {},
+  ): (StoredEntityFragment & { vector?: number[] }) | null {
     const docs = this.collection.fetchSync({
       ids: fragmentId,
       includeVector: options.includeVector ?? false,
@@ -199,17 +184,19 @@ export class ZvecCollectionStorage implements CollectionStorage {
     return vector ? { ...stored, vector } : stored;
   }
 
-
   upsertFile(
     file: FileInfo,
     fragments: readonly EntityFragment[],
     vectors: readonly number[][],
   ): void {
     if (fragments.length !== vectors.length) {
-      throw new EngineError("Storage received mismatched entity/vector counts", {
-        code: "ZVEC_GREP.ENGINE.STORAGE.ENTITY_VECTOR_COUNT_MISMATCH",
-        context: `fileId=${file.id} fragmentCount=${fragments.length} vectorCount=${vectors.length}`,
-      });
+      throw new EngineError(
+        "Storage received mismatched entity/vector counts",
+        {
+          code: "ZVEC_GREP.ENGINE.STORAGE.ENTITY_VECTOR_COUNT_MISMATCH",
+          context: `fileId=${file.id} fragmentCount=${fragments.length} vectorCount=${vectors.length}`,
+        },
+      );
     }
 
     validateFragmentGroups(file.id, fragments);
@@ -246,7 +233,6 @@ export class ZvecCollectionStorage implements CollectionStorage {
     this.persistFile(indexedFile);
   }
 
-
   private upsertDocs(fileId: string, docs: readonly ZVecDocInput[]): void {
     for (let start = 0; start < docs.length; start += ZVEC_UPSERT_BATCH_SIZE) {
       const batch = docs.slice(start, start + ZVEC_UPSERT_BATCH_SIZE);
@@ -261,7 +247,6 @@ export class ZvecCollectionStorage implements CollectionStorage {
       }
     }
   }
-
 
   markFileFailed(file: FileInfo, error: string): void {
     this.deleteFileDocuments(file.id);
@@ -279,7 +264,6 @@ export class ZvecCollectionStorage implements CollectionStorage {
     this.persistFile(this.filesById.get(file.id)!);
   }
 
-
   deleteFile(fileId: string): void {
     const existing = this.filesById.get(fileId);
 
@@ -291,7 +275,6 @@ export class ZvecCollectionStorage implements CollectionStorage {
     }
     this.files.deleteFile(fileId);
   }
-
 
   searchFts(
     query: string,
@@ -310,7 +293,6 @@ export class ZvecCollectionStorage implements CollectionStorage {
     return docsToHits(docs, "fts", this);
   }
 
-
   searchVector(
     vector: readonly number[],
     limit: number,
@@ -328,14 +310,12 @@ export class ZvecCollectionStorage implements CollectionStorage {
     return docsToHits(docs, "vector", this);
   }
 
-
   async optimize(): Promise<void> {
     if (this.needsOptimize) {
       await this.collection.optimize();
       this.needsOptimize = false;
     }
   }
-
 
   close(): void {
     if (this.needsOptimize) {
@@ -346,7 +326,6 @@ export class ZvecCollectionStorage implements CollectionStorage {
     this.files.close();
     this.collection.closeSync();
   }
-
 
   private fetchStoredEntities(ids: readonly string[]): StoredEntity[] {
     if (ids.length === 0) {
@@ -371,7 +350,6 @@ export class ZvecCollectionStorage implements CollectionStorage {
     return entities;
   }
 
-
   docToStoredEntity(doc: ZVecDoc): StoredEntity | null {
     const stored = this.docToStoredFragment(doc);
 
@@ -389,7 +367,6 @@ export class ZvecCollectionStorage implements CollectionStorage {
     };
   }
 
-
   docToStoredFragment(doc: ZVecDoc): StoredEntityFragment | null {
     const fileId = readStringField(doc, "file_id");
     const file = this.filesById.get(fileId);
@@ -402,7 +379,8 @@ export class ZvecCollectionStorage implements CollectionStorage {
       file: fileRecordToInfo(file),
       fragment: {
         id: doc.id,
-        group: readNullableStringFieldFromFields(doc.fields, "group") ?? undefined,
+        group:
+          readNullableStringFieldFromFields(doc.fields, "group") ?? undefined,
         fileId,
         range: parseRange(readStringField(doc, "range_json")),
         content: parseContent(doc.fields),
@@ -410,7 +388,6 @@ export class ZvecCollectionStorage implements CollectionStorage {
       },
     };
   }
-
 
   private rememberFile(file: FileRecord): void {
     const normalized = {
@@ -421,7 +398,6 @@ export class ZvecCollectionStorage implements CollectionStorage {
     this.filesById.set(normalized.id, normalized);
     this.filesByAbsolutePath.set(normalized.absolutePath, normalized);
   }
-
 
   private markFileDirty(file: FileInfo): void {
     this.rememberFile({
@@ -436,23 +412,21 @@ export class ZvecCollectionStorage implements CollectionStorage {
     this.persistFile(this.filesById.get(file.id)!);
   }
 
-
   private deleteFileDocuments(fileId: string): void {
-    this.collection.deleteByFilterSync(`file_id = ${quoteFilterString(fileId)}`);
+    this.collection.deleteByFilterSync(
+      `file_id = ${quoteFilterString(fileId)}`,
+    );
     this.needsOptimize = true;
   }
-
 
   private persistFile(file: FileRecord): void {
     this.files.upsertFile(file);
   }
 }
 
-
 export class ZvecFileMetaStore {
   private readonly collection: ZVecCollection;
   private needsOptimize = false;
-
 
   constructor(
     private readonly path: string,
@@ -464,11 +438,8 @@ export class ZvecFileMetaStore {
     }
 
     if (existsSync(path)) {
-      this.collection = openZvecCollection(
-        path,
-        readOnly,
-        "open",
-        () => ZVecOpen(path, { readOnly }),
+      this.collection = openZvecCollection(path, readOnly, "open", () =>
+        ZVecOpen(path, { readOnly }),
       );
     } else if (readOnly) {
       throw new EngineError("zvec file metadata storage does not exist", {
@@ -476,15 +447,11 @@ export class ZvecFileMetaStore {
         context: `path=${path}`,
       });
     } else {
-      this.collection = openZvecCollection(
-        path,
-        readOnly,
-        "create",
-        () => ZVecCreateAndOpen(path, createFilesSchema()),
+      this.collection = openZvecCollection(path, readOnly, "create", () =>
+        ZVecCreateAndOpen(path, createFilesSchema()),
       );
     }
   }
-
 
   list(collectionId: string): FileRecord[] {
     const topk = Math.max(this.collection.stats.docCount, 1);
@@ -496,9 +463,10 @@ export class ZvecFileMetaStore {
 
     return docs
       .map((doc) => docToFileRecord(doc))
-      .sort((left, right) => left.relativePath.localeCompare(right.relativePath));
+      .sort((left, right) =>
+        left.relativePath.localeCompare(right.relativePath),
+      );
   }
-
 
   upsertFile(file: FileRecord): void {
     this.assertWritable("upsertFile");
@@ -509,22 +477,23 @@ export class ZvecFileMetaStore {
     this.needsOptimize = true;
   }
 
-
   deleteFile(fileId: string): void {
     this.assertWritable("deleteFile");
-    const status = this.collection.deleteByFilterSync(`file_id = ${quoteFilterString(fileId)}`);
+    const status = this.collection.deleteByFilterSync(
+      `file_id = ${quoteFilterString(fileId)}`,
+    );
     assertZvecStatus(status, "file metadata delete", fileId);
     this.needsOptimize = true;
   }
 
-
   deleteCollection(collectionId: string): void {
     this.assertWritable("deleteCollection");
-    const status = this.collection.deleteByFilterSync(`collection_id = ${quoteFilterString(collectionId)}`);
+    const status = this.collection.deleteByFilterSync(
+      `collection_id = ${quoteFilterString(collectionId)}`,
+    );
     assertZvecStatus(status, "file metadata collection delete", collectionId);
     this.needsOptimize = true;
   }
-
 
   close(): void {
     if (this.needsOptimize) {
@@ -535,7 +504,6 @@ export class ZvecFileMetaStore {
     this.collection.closeSync();
   }
 
-
   private assertWritable(operation: string): void {
     if (this.readOnly) {
       throw new EngineError("Cannot update read-only file metadata storage", {
@@ -545,7 +513,6 @@ export class ZvecFileMetaStore {
     }
   }
 }
-
 
 function createFilesSchema(): ZVecCollectionSchema {
   return new ZVecCollectionSchema({
@@ -595,7 +562,6 @@ function createFilesSchema(): ZVecCollectionSchema {
   });
 }
 
-
 function fileRecordToDoc(file: FileRecord): ZVecDocInput {
   const fields: Record<string, string | number | boolean> = {
     file_id: file.id,
@@ -616,7 +582,10 @@ function fileRecordToDoc(file: FileRecord): ZVecDocInput {
     fields.content_hash = file.contentHash;
   }
 
-  if (file.indexStatus?.indexedTime !== null && file.indexStatus?.indexedTime !== undefined) {
+  if (
+    file.indexStatus?.indexedTime !== null &&
+    file.indexStatus?.indexedTime !== undefined
+  ) {
     fields.indexed_time = file.indexStatus.indexedTime;
   }
 
@@ -634,7 +603,6 @@ function fileRecordToDoc(file: FileRecord): ZVecDocInput {
   };
 }
 
-
 function docToFileRecord(doc: ZVecDoc): FileRecord {
   const fields = doc.fields;
   const hasIndexStatus = readBooleanFieldFromFields(fields, "has_index_status");
@@ -650,7 +618,8 @@ function docToFileRecord(doc: ZVecDoc): FileRecord {
     rootPath: readStringField(doc, "root_path"),
     sizeBytes: readNumberFieldFromFields(fields, "size_bytes"),
     lastModifiedTime: readNumberFieldFromFields(fields, "last_modified_time"),
-    contentHash: readNullableStringFieldFromFields(fields, "content_hash") ?? undefined,
+    contentHash:
+      readNullableStringFieldFromFields(fields, "content_hash") ?? undefined,
     kind: readStringField(doc, "kind") as FileInfo["kind"],
     format: readStringField(doc, "format"),
     indexStatus: hasIndexStatus
@@ -665,16 +634,11 @@ function docToFileRecord(doc: ZVecDoc): FileRecord {
   };
 }
 
-
 function fileRecordToInfo(file: FileRecord): FileInfo {
-  const {
-    entityIds: _entityIds,
-    ...info
-  } = file;
+  const { entityIds: _entityIds, ...info } = file;
 
   return info;
 }
-
 
 function fragmentToEntity(fragment: EntityFragment): Entity {
   return {
@@ -686,11 +650,9 @@ function fragmentToEntity(fragment: EntityFragment): Entity {
   };
 }
 
-
 function publicEntityId(fragment: EntityFragment): string {
   return fragment.group ?? fragment.id;
 }
-
 
 function publicEntityIds(fragments: readonly EntityFragment[]): string[] {
   const ids = new Set<string>();
@@ -703,7 +665,6 @@ function publicEntityIds(fragments: readonly EntityFragment[]): string[] {
 
   return [...ids];
 }
-
 
 function validateFragmentGroups(
   fileId: string,
@@ -737,17 +698,21 @@ function validateFragmentGroups(
   }
 
   for (const [groupId, group] of groups) {
-    const majorCount = group.filter((fragment) => fragment.id === groupId).length;
+    const majorCount = group.filter(
+      (fragment) => fragment.id === groupId,
+    ).length;
 
     if (majorCount !== 1) {
-      throw new EngineError("Fragment group must have exactly one major fragment", {
-        code: "ZVEC_GREP.ENGINE.STORAGE.INVALID_FRAGMENT_GROUP",
-        context: `fileId=${fileId} group=${groupId} majorCount=${majorCount}`,
-      });
+      throw new EngineError(
+        "Fragment group must have exactly one major fragment",
+        {
+          code: "ZVEC_GREP.ENGINE.STORAGE.INVALID_FRAGMENT_GROUP",
+          context: `fileId=${fileId} group=${groupId} majorCount=${majorCount}`,
+        },
+      );
     }
   }
 }
-
 
 export function initializeZvec(): void {
   if (zvecInitialized) {
@@ -757,7 +722,6 @@ export function initializeZvec(): void {
   ZVecInitialize({ logLevel: ZVecLogLevel.WARN });
   zvecInitialized = true;
 }
-
 
 export function openZvecCollection(
   zvecPath: string,
@@ -775,8 +739,8 @@ export function openZvecCollection(
       lastError = error;
 
       if (
-        attempt + 1 >= ZVEC_OPEN_RETRY_ATTEMPTS
-        || !isRetryableZvecOpenError(error, lockWritable)
+        attempt + 1 >= ZVEC_OPEN_RETRY_ATTEMPTS ||
+        !isRetryableZvecOpenError(error, lockWritable)
       ) {
         break;
       }
@@ -791,7 +755,6 @@ export function openZvecCollection(
     cause: lastError,
   });
 }
-
 
 function canTouchZvecLock(zvecPath: string): boolean {
   const lockPath = join(zvecPath, ZVEC_LOCK_FILE);
@@ -808,8 +771,10 @@ function canTouchZvecLock(zvecPath: string): boolean {
   }
 }
 
-
-function isRetryableZvecOpenError(error: unknown, lockWritable: boolean): boolean {
+function isRetryableZvecOpenError(
+  error: unknown,
+  lockWritable: boolean,
+): boolean {
   if (!lockWritable) {
     return false;
   }
@@ -823,12 +788,10 @@ function isRetryableZvecOpenError(error: unknown, lockWritable: boolean): boolea
   return !/permission|access denied|eacces|eperm|read-only/i.test(message);
 }
 
-
 function zvecOpenRetryDelayMs(attempt: number): number {
   const exponential = ZVEC_OPEN_RETRY_BASE_DELAY_MS * 2 ** attempt;
   return Math.min(exponential, ZVEC_OPEN_RETRY_MAX_DELAY_MS);
 }
-
 
 function sleepSync(ms: number): void {
   const buffer = new SharedArrayBuffer(4);
@@ -836,8 +799,9 @@ function sleepSync(ms: number): void {
   Atomics.wait(values, 0, 0, ms);
 }
 
-
-function createSchema(embedding: CollectionEmbeddingSchema): ZVecCollectionSchema {
+function createSchema(
+  embedding: CollectionEmbeddingSchema,
+): ZVecCollectionSchema {
   return new ZVecCollectionSchema({
     name: "zvec_grep_entities",
     fields: [
@@ -890,7 +854,6 @@ function createSchema(embedding: CollectionEmbeddingSchema): ZVecCollectionSchem
   });
 }
 
-
 function indexedStringField(name: string, nullable = false) {
   return {
     name,
@@ -900,7 +863,6 @@ function indexedStringField(name: string, nullable = false) {
   };
 }
 
-
 function stringField(name: string, nullable = false) {
   return {
     name,
@@ -908,7 +870,6 @@ function stringField(name: string, nullable = false) {
     nullable,
   };
 }
-
 
 function metricToZvec(metric: string): ZVecMetricType {
   if (metric === "cosine") {
@@ -928,7 +889,6 @@ function metricToZvec(metric: string): ZVecMetricType {
     context: `metric=${metric}`,
   });
 }
-
 
 function fragmentToFields(
   file: FileRecord,
@@ -951,7 +911,6 @@ function fragmentToFields(
   };
 }
 
-
 function contentToFields(content: Content): Record<string, unknown> {
   if (content.kind === "text") {
     return {
@@ -966,8 +925,9 @@ function contentToFields(content: Content): Record<string, unknown> {
   };
 }
 
-
-function metadataToFields(metadata: EntityMetadata | undefined): Record<string, unknown> {
+function metadataToFields(
+  metadata: EntityMetadata | undefined,
+): Record<string, unknown> {
   if (!metadata) {
     return {};
   }
@@ -981,7 +941,8 @@ function metadataToFields(metadata: EntityMetadata | undefined): Record<string, 
         symbol_scope: metadata.scope,
         symbol_signature: metadata.signature,
         symbol_doc: metadata.doc,
-        symbol_modifiers: metadata.modifiers.length > 0 ? metadata.modifiers.join(" ") : null,
+        symbol_modifiers:
+          metadata.modifiers.length > 0 ? metadata.modifiers.join(" ") : null,
         node_type: metadata.nodeType,
       }),
     };
@@ -997,7 +958,6 @@ function metadataToFields(metadata: EntityMetadata | undefined): Record<string, 
   };
 }
 
-
 function optionalFields(
   fields: Record<string, string | number | null | undefined>,
 ): Record<string, string | number> {
@@ -1012,7 +972,6 @@ function optionalFields(
   return result;
 }
 
-
 function parseContent(fields: Record<string, unknown>): Content {
   const kind = fields.content_kind;
 
@@ -1026,7 +985,10 @@ function parseContent(fields: Record<string, unknown>): Content {
   if (kind === "image") {
     return {
       kind: "image",
-      data: Buffer.from(readStringFieldFromFields(fields, "content_base64"), "base64"),
+      data: Buffer.from(
+        readStringFieldFromFields(fields, "content_base64"),
+        "base64",
+      ),
       format: readStringFieldFromFields(fields, "image_format") as ImageFormat,
     };
   }
@@ -1037,20 +999,26 @@ function parseContent(fields: Record<string, unknown>): Content {
   });
 }
 
-
-function parseMetadata(fields: Record<string, unknown>): EntityMetadata | undefined {
+function parseMetadata(
+  fields: Record<string, unknown>,
+): EntityMetadata | undefined {
   const kind = fields.metadata_kind;
 
   if (kind === "code") {
     return {
       kind: "code",
-      symbolType: readStringFieldFromFields(fields, "symbol_type") as CodeSymbolType,
+      symbolType: readStringFieldFromFields(
+        fields,
+        "symbol_type",
+      ) as CodeSymbolType,
       symbolName: readNullableStringFieldFromFields(fields, "symbol_name"),
       scope: readNullableStringFieldFromFields(fields, "symbol_scope"),
       nodeType: readNullableStringFieldFromFields(fields, "node_type"),
       signature: readNullableStringFieldFromFields(fields, "symbol_signature"),
       doc: readNullableStringFieldFromFields(fields, "symbol_doc"),
-      modifiers: readCodeModifiers(readNullableStringFieldFromFields(fields, "symbol_modifiers")),
+      modifiers: readCodeModifiers(
+        readNullableStringFieldFromFields(fields, "symbol_modifiers"),
+      ),
     };
   }
 
@@ -1066,28 +1034,28 @@ function parseMetadata(fields: Record<string, unknown>): EntityMetadata | undefi
   return undefined;
 }
 
-
 function readCodeModifiers(value: string | null): CodeEntityModifier[] {
   if (!value) {
     return [];
   }
 
-  return value.split(/\s+/).filter((item): item is CodeEntityModifier =>
-    item === "exported"
-    || item === "async"
-    || item === "static"
-    || item === "public"
-    || item === "private"
-    || item === "protected"
-    || item === "internal",
-  );
+  return value
+    .split(/\s+/)
+    .filter(
+      (item): item is CodeEntityModifier =>
+        item === "exported" ||
+        item === "async" ||
+        item === "static" ||
+        item === "public" ||
+        item === "private" ||
+        item === "protected" ||
+        item === "internal",
+    );
 }
-
 
 function parseRange(value: string): Range {
   return JSON.parse(value) as Range;
 }
-
 
 function docsToHits(
   docs: readonly ZVecDoc[],
@@ -1111,7 +1079,6 @@ function docsToHits(
   return hits;
 }
 
-
 function assertZvecStatusOrNotFound(
   status: ZVecStatus,
   operation: string,
@@ -1124,13 +1091,14 @@ function assertZvecStatusOrNotFound(
   assertZvecStatus(status, operation, context);
 }
 
-
 function readStringField(doc: ZVecDoc, field: string): string {
   return readStringFieldFromFields(doc.fields, field);
 }
 
-
-export function readStringFieldFromFields(fields: Record<string, unknown>, field: string): string {
+export function readStringFieldFromFields(
+  fields: Record<string, unknown>,
+  field: string,
+): string {
   const value = fields[field];
 
   if (typeof value === "string") {
@@ -1144,8 +1112,10 @@ export function readStringFieldFromFields(fields: Record<string, unknown>, field
   return String(value);
 }
 
-
-export function readNumberFieldFromFields(fields: Record<string, unknown>, field: string): number {
+export function readNumberFieldFromFields(
+  fields: Record<string, unknown>,
+  field: string,
+): number {
   const value = fields[field];
 
   if (typeof value === "number" && Number.isFinite(value)) {
@@ -1162,8 +1132,10 @@ export function readNumberFieldFromFields(fields: Record<string, unknown>, field
   return 0;
 }
 
-
-function readBooleanFieldFromFields(fields: Record<string, unknown>, field: string): boolean {
+function readBooleanFieldFromFields(
+  fields: Record<string, unknown>,
+  field: string,
+): boolean {
   const value = fields[field];
 
   if (typeof value === "boolean") {
@@ -1177,7 +1149,6 @@ function readBooleanFieldFromFields(fields: Record<string, unknown>, field: stri
   return Boolean(value);
 }
 
-
 export function readNullableStringFieldFromFields(
   fields: Record<string, unknown>,
   field: string,
@@ -1190,7 +1161,6 @@ export function readNullableStringFieldFromFields(
 
   return String(value);
 }
-
 
 export function readNullableNumberFieldFromFields(
   fields: Record<string, unknown>,
@@ -1210,7 +1180,6 @@ export function readNullableNumberFieldFromFields(
   return null;
 }
 
-
 function readVector(vector: ZVecVector | undefined): number[] | undefined {
   if (!vector) {
     return undefined;
@@ -1221,12 +1190,11 @@ function readVector(vector: ZVecVector | undefined): number[] | undefined {
   }
 
   if (ArrayBuffer.isView(vector)) {
-    return [...vector as Float32Array | Int8Array];
+    return [...(vector as Float32Array | Int8Array)];
   }
 
   return undefined;
 }
-
 
 function parseStringArray(value: string): string[] {
   try {
@@ -1239,8 +1207,11 @@ function parseStringArray(value: string): string[] {
   }
 }
 
-
-export function assertZvecStatus(status: ZVecStatus, operation: string, context: string): void {
+export function assertZvecStatus(
+  status: ZVecStatus,
+  operation: string,
+  context: string,
+): void {
   if (status.ok) {
     return;
   }
@@ -1251,8 +1222,9 @@ export function assertZvecStatus(status: ZVecStatus, operation: string, context:
   });
 }
 
-
-function buildFilter(filter: StorageSearchFilter | undefined): string | undefined {
+function buildFilter(
+  filter: StorageSearchFilter | undefined,
+): string | undefined {
   if (!filter) {
     return undefined;
   }
@@ -1278,11 +1250,12 @@ function buildFilter(filter: StorageSearchFilter | undefined): string | undefine
   return clauses.length > 0 ? clauses.join(" AND ") : undefined;
 }
 
-
-function buildNonEmptyInFilter(field: string, values: readonly string[]): string {
+function buildNonEmptyInFilter(
+  field: string,
+  values: readonly string[],
+): string {
   return values.length > 0 ? buildInFilter(field, values) : NO_MATCH_FILTER;
 }
-
 
 function buildInFilter(field: string, values: readonly string[]): string {
   if (values.length === 1) {
@@ -1291,7 +1264,6 @@ function buildInFilter(field: string, values: readonly string[]): string {
 
   return `(${values.map((value) => `${field} = ${quoteFilterString(value)}`).join(" OR ")})`;
 }
-
 
 export function quoteFilterString(value: string): string {
   return `'${value.replaceAll("\\", "\\\\").replaceAll("'", "\\'")}'`;

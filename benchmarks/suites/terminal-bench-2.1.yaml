@@ -1,0 +1,6 @@
+name: terminal-bench-2.1
+dataset: terminal-bench/terminal-bench-2-1@6
+tiers:
+  smoke:
+    tasks:
+      - terminal-bench/regex-log

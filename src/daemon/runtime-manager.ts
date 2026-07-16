@@ -1,14 +1,15 @@
 import { access, realpath, stat } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import { isAbsolute } from "node:path";
-import { createZvecGrep, type ZvecGrepInfoResult } from "../engine/service/index.js";
+import {
+  createZvecGrep,
+  type ZvecGrepInfoResult,
+} from "../engine/service/index.js";
 import type { CreateZvecGrepOptions } from "../engine/service/types.js";
 import { DaemonError } from "./errors.js";
-import { EmbeddingModelPool } from "./model-pool.js";
+import type { EmbeddingModelPool, ModelLeaseRequest } from "./model-pool.js";
 import { RootRuntime } from "./root-runtime.js";
 import { RootLeaseManager } from "./root-lease.js";
-import type { ModelLeaseRequest } from "./model-pool.js";
-
 
 export type RuntimeManagerOptions = {
   modelPool: EmbeddingModelPool;
@@ -28,37 +29,44 @@ export type RuntimeManagerSnapshot = {
   activeRuntimes: number;
 };
 
-
 export class RuntimeManager {
   private readonly runtimes = new Map<string, RootRuntime>();
   private readonly creating = new Map<string, Promise<RootRuntime>>();
   private readonly aliases = new Map<string, string>();
   private readonly rootLeaseManager: RootLeaseManager;
-  private readonly idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly idleTimers = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >();
   private closed = false;
-
 
   constructor(private readonly options: RuntimeManagerOptions) {
     this.rootLeaseManager = options.rootLeaseManager ?? new RootLeaseManager();
   }
 
-
   get instanceToken(): string {
     return this.rootLeaseManager.instanceToken;
   }
 
-
   async activate(requestedRoot: string): Promise<RootRuntime> {
     if (this.closed) {
-      throw new DaemonError("DAEMON_SHUTTING_DOWN", "The daemon is shutting down.", true);
+      throw new DaemonError(
+        "DAEMON_SHUTTING_DOWN",
+        "The daemon is shutting down.",
+        true,
+      );
     }
-    const canonicalRequestedRoot = await resolveRequestedRoot(requestedRoot, false);
+    const canonicalRequestedRoot = await resolveRequestedRoot(
+      requestedRoot,
+      false,
+    );
     const activeRequestedRoot = this.runtimes.get(
       this.aliases.get(canonicalRequestedRoot) ?? canonicalRequestedRoot,
     );
     if (
-      activeRequestedRoot
-      && (activeRequestedRoot.snapshot().writerPending || activeRequestedRoot.needsReconciliation())
+      activeRequestedRoot &&
+      (activeRequestedRoot.snapshot().writerPending ||
+        activeRequestedRoot.needsReconciliation())
     ) {
       return activeRequestedRoot;
     }
@@ -68,7 +76,11 @@ export class RuntimeManager {
     if (creatingRequestedRoot) {
       return creatingRequestedRoot;
     }
-    const info = await inspectRoot(requestedRoot, this.options.serviceOptions, false);
+    const info = await inspectRoot(
+      requestedRoot,
+      this.options.serviceOptions,
+      false,
+    );
     if (!info.indexed || !info.collection?.embedding) {
       throw new DaemonError(
         "INDEX_MISSING",
@@ -84,12 +96,18 @@ export class RuntimeManager {
     });
   }
 
-
   async activateForIndex(requestedRoot: string): Promise<RootRuntime> {
     if (this.closed) {
-      throw new DaemonError("DAEMON_SHUTTING_DOWN", "The daemon is shutting down.", true);
+      throw new DaemonError(
+        "DAEMON_SHUTTING_DOWN",
+        "The daemon is shutting down.",
+        true,
+      );
     }
-    const canonicalRequestedRoot = await resolveRequestedRoot(requestedRoot, true);
+    const canonicalRequestedRoot = await resolveRequestedRoot(
+      requestedRoot,
+      true,
+    );
     const activeRequestedRoot = this.runtimes.get(
       this.aliases.get(canonicalRequestedRoot) ?? canonicalRequestedRoot,
     );
@@ -102,29 +120,33 @@ export class RuntimeManager {
     if (creatingRequestedRoot) {
       return creatingRequestedRoot;
     }
-    const info = await inspectRoot(canonicalRequestedRoot, this.options.serviceOptions, false);
+    const info = await inspectRoot(
+      canonicalRequestedRoot,
+      this.options.serviceOptions,
+      false,
+    );
     const canonicalRoot = await resolveRequestedRoot(info.root, true);
     this.aliases.set(canonicalRequestedRoot, canonicalRoot);
     return this.getOrCreate(canonicalRoot);
   }
 
-
   async peek(requestedRoot: string): Promise<RootRuntime | undefined> {
-    const info = await inspectRoot(requestedRoot, this.options.serviceOptions, false);
+    const info = await inspectRoot(
+      requestedRoot,
+      this.options.serviceOptions,
+      false,
+    );
     const canonicalRoot = await realpath(info.root);
     return this.runtimes.get(canonicalRoot);
   }
-
 
   getByCanonicalRoot(canonicalRoot: string): RootRuntime | undefined {
     return this.runtimes.get(canonicalRoot);
   }
 
-
   snapshot(): RuntimeManagerSnapshot {
     return { activeRuntimes: this.runtimes.size };
   }
-
 
   async close(): Promise<void> {
     if (this.closed) {
@@ -140,7 +162,6 @@ export class RuntimeManager {
     await Promise.all(runtimes.map((runtime) => runtime.close()));
     await this.rootLeaseManager.close();
   }
-
 
   private async getOrCreate(
     canonicalRoot: string,
@@ -171,7 +192,6 @@ export class RuntimeManager {
     }
   }
 
-
   private async createRuntime(
     canonicalRoot: string,
     modelRequest?: ModelLeaseRequest,
@@ -196,13 +216,16 @@ export class RuntimeManager {
     }
     if (this.closed) {
       await runtime.close();
-      throw new DaemonError("DAEMON_SHUTTING_DOWN", "The daemon is shutting down.", true);
+      throw new DaemonError(
+        "DAEMON_SHUTTING_DOWN",
+        "The daemon is shutting down.",
+        true,
+      );
     }
     this.runtimes.set(canonicalRoot, runtime);
     this.touchRuntime(canonicalRoot);
     return runtime;
   }
-
 
   private touchRuntime(canonicalRoot: string): void {
     const idleTtlMs = this.options.runtimeIdleTtlMs ?? 30 * 60_000;
@@ -211,11 +234,13 @@ export class RuntimeManager {
     if (idleTtlMs <= 0 || this.closed) {
       return;
     }
-    const timer = setTimeout(() => void this.evictIfIdle(canonicalRoot), idleTtlMs);
+    const timer = setTimeout(
+      () => void this.evictIfIdle(canonicalRoot),
+      idleTtlMs,
+    );
     timer.unref?.();
     this.idleTimers.set(canonicalRoot, timer);
   }
-
 
   private async evictIfIdle(canonicalRoot: string): Promise<void> {
     this.idleTimers.delete(canonicalRoot);
@@ -224,7 +249,11 @@ export class RuntimeManager {
       return;
     }
     const snapshot = runtime.snapshot();
-    if (snapshot.activeReaders > 0 || snapshot.writerPending || snapshot.watcherPending) {
+    if (
+      snapshot.activeReaders > 0 ||
+      snapshot.writerPending ||
+      snapshot.watcherPending
+    ) {
       this.touchRuntime(canonicalRoot);
       return;
     }
@@ -237,13 +266,15 @@ export class RuntimeManager {
   }
 }
 
-
 export async function inspectRoot(
   requestedRoot: string,
   serviceOptions: CreateZvecGrepOptions = {},
   includeStatus = true,
 ): Promise<ZvecGrepInfoResult> {
-  const canonicalRequestedRoot = await resolveRequestedRoot(requestedRoot, false);
+  const canonicalRequestedRoot = await resolveRequestedRoot(
+    requestedRoot,
+    false,
+  );
   const service = await createZvecGrep({
     ...serviceOptions,
     root: canonicalRequestedRoot,
@@ -255,10 +286,15 @@ export async function inspectRoot(
   }
 }
 
-
-export async function resolveRequestedRoot(requestedRoot: string, writable: boolean): Promise<string> {
+export async function resolveRequestedRoot(
+  requestedRoot: string,
+  writable: boolean,
+): Promise<string> {
   if (!isAbsolute(requestedRoot)) {
-    throw new DaemonError("ROOT_NOT_ABSOLUTE", "root must be an absolute path.");
+    throw new DaemonError(
+      "ROOT_NOT_ABSOLUTE",
+      "root must be an absolute path.",
+    );
   }
   let rootStat;
   try {
@@ -274,9 +310,15 @@ export async function resolveRequestedRoot(requestedRoot: string, writable: bool
     throw new DaemonError("ROOT_NOT_FOUND", "root is not a directory.");
   }
   try {
-    await access(requestedRoot, writable ? fsConstants.R_OK | fsConstants.W_OK : fsConstants.R_OK);
+    await access(
+      requestedRoot,
+      writable ? fsConstants.R_OK | fsConstants.W_OK : fsConstants.R_OK,
+    );
   } catch {
-    throw new DaemonError("ROOT_PERMISSION_DENIED", writable ? "root is not writable." : "root is not readable.");
+    throw new DaemonError(
+      "ROOT_PERMISSION_DENIED",
+      writable ? "root is not writable." : "root is not readable.",
+    );
   }
 
   return realpath(requestedRoot);

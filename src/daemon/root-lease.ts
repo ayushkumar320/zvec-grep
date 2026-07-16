@@ -11,7 +11,6 @@ import {
 } from "../engine/utils/daemon-lease.js";
 import { DaemonError } from "./errors.js";
 
-
 export type RootLease = {
   readonly root: string;
   release(): Promise<void>;
@@ -25,11 +24,9 @@ type ManagedLease = {
   stopped: boolean;
 };
 
-
 export class RootLeaseManager {
   readonly instanceToken = randomUUID();
   private readonly leases = new Map<string, ManagedLease>();
-
 
   async acquire(root: string): Promise<RootLease> {
     let managed = this.leases.get(root);
@@ -57,18 +54,18 @@ export class RootLeaseManager {
     };
   }
 
-
   async close(): Promise<void> {
     const leases = [...this.leases.entries()];
     this.leases.clear();
-    await Promise.all(leases.map(async ([root, managed]) => {
-      managed.stopped = true;
-      if (managed.heartbeat) clearInterval(managed.heartbeat);
-      await managed.heartbeatInFlight;
-      await this.removeOwnedLease(root, managed.record);
-    }));
+    await Promise.all(
+      leases.map(async ([root, managed]) => {
+        managed.stopped = true;
+        if (managed.heartbeat) clearInterval(managed.heartbeat);
+        await managed.heartbeatInFlight;
+        await this.removeOwnedLease(root, managed.record);
+      }),
+    );
   }
-
 
   private async createLease(root: string): Promise<DaemonLeaseRecord> {
     const path = daemonLeasePath(root);
@@ -84,7 +81,11 @@ export class RootLeaseManager {
 
     const guard = acquireDaemonLeaseGuard(root, this.instanceToken);
     if (!guard) {
-      throw new DaemonError("INDEX_BUSY", "Another daemon is changing the root lease.", true);
+      throw new DaemonError(
+        "INDEX_BUSY",
+        "Another daemon is changing the root lease.",
+        true,
+      );
     }
     try {
       try {
@@ -100,10 +101,17 @@ export class RootLeaseManager {
           throw error;
         }
         const existing = await readLeaseFile(path);
-        if (existing?.pid === process.pid && existing.instanceToken === this.instanceToken) {
+        if (
+          existing?.pid === process.pid &&
+          existing.instanceToken === this.instanceToken
+        ) {
           return existing;
         }
-        if (existing && existing.hostname === hostname() && !processIsAlive(existing.pid)) {
+        if (
+          existing &&
+          existing.hostname === hostname() &&
+          !processIsAlive(existing.pid)
+        ) {
           await unlink(path).catch(() => undefined);
           const handle = await open(path, "wx", 0o600);
           try {
@@ -123,13 +131,16 @@ export class RootLeaseManager {
           }
           return record;
         }
-        throw new DaemonError("INDEX_BUSY", "Another daemon owns index writes for this root.", true);
+        throw new DaemonError(
+          "INDEX_BUSY",
+          "Another daemon owns index writes for this root.",
+          true,
+        );
       }
     } finally {
       guard.release();
     }
   }
-
 
   private async release(root: string, managed: ManagedLease): Promise<void> {
     managed.refs -= 1;
@@ -143,32 +154,42 @@ export class RootLeaseManager {
     await this.removeOwnedLease(root, managed.record);
   }
 
-
-  private startHeartbeat(root: string, managed: ManagedLease): ReturnType<typeof setInterval> {
+  private startHeartbeat(
+    root: string,
+    managed: ManagedLease,
+  ): ReturnType<typeof setInterval> {
     const timer = setInterval(() => {
       const heartbeat = (async () => {
         if (managed.stopped) return;
         const current = await readLeaseFile(daemonLeasePath(root));
         if (
-          managed.stopped
-          || current?.pid !== managed.record.pid
-          || current.instanceToken !== managed.record.instanceToken
-        ) return;
+          managed.stopped ||
+          current?.pid !== managed.record.pid ||
+          current.instanceToken !== managed.record.instanceToken
+        )
+          return;
         managed.record.updatedAt = Date.now();
         if (managed.stopped) return;
-        await writeFile(daemonLeasePath(root), `${JSON.stringify(managed.record)}\n`, { mode: 0o600 });
+        await writeFile(
+          daemonLeasePath(root),
+          `${JSON.stringify(managed.record)}\n`,
+          { mode: 0o600 },
+        );
       })().catch(() => undefined);
       managed.heartbeatInFlight = heartbeat;
       void heartbeat.finally(() => {
-        if (managed.heartbeatInFlight === heartbeat) managed.heartbeatInFlight = undefined;
+        if (managed.heartbeatInFlight === heartbeat)
+          managed.heartbeatInFlight = undefined;
       });
     }, 5_000);
     timer.unref?.();
     return timer;
   }
 
-
-  private async removeOwnedLease(root: string, expected: DaemonLeaseRecord): Promise<void> {
+  private async removeOwnedLease(
+    root: string,
+    expected: DaemonLeaseRecord,
+  ): Promise<void> {
     let guard;
     for (let attempt = 0; attempt < 10 && !guard; attempt++) {
       guard = acquireDaemonLeaseGuard(root, this.instanceToken);
@@ -177,14 +198,18 @@ export class RootLeaseManager {
       }
     }
     if (!guard) {
-      throw new DaemonError("INDEX_BUSY", "Could not remove the owned daemon lease.", true);
+      throw new DaemonError(
+        "INDEX_BUSY",
+        "Could not remove the owned daemon lease.",
+        true,
+      );
     }
     const path = daemonLeasePath(root);
     try {
       const current = await readLeaseFile(path);
       if (
-        current?.pid === expected.pid
-        && current.instanceToken === expected.instanceToken
+        current?.pid === expected.pid &&
+        current.instanceToken === expected.instanceToken
       ) {
         await unlink(path).catch(() => undefined);
       }
@@ -194,16 +219,19 @@ export class RootLeaseManager {
   }
 }
 
-
-async function readLeaseFile(path: string): Promise<DaemonLeaseRecord | undefined> {
+async function readLeaseFile(
+  path: string,
+): Promise<DaemonLeaseRecord | undefined> {
   try {
-    const parsed = JSON.parse(await readFile(path, "utf8")) as Partial<DaemonLeaseRecord>;
+    const parsed = JSON.parse(
+      await readFile(path, "utf8"),
+    ) as Partial<DaemonLeaseRecord>;
     if (
-      typeof parsed.pid !== "number"
-      || typeof parsed.hostname !== "string"
-      || typeof parsed.instanceToken !== "string"
-      || typeof parsed.createdAt !== "number"
-      || typeof parsed.updatedAt !== "number"
+      typeof parsed.pid !== "number" ||
+      typeof parsed.hostname !== "string" ||
+      typeof parsed.instanceToken !== "string" ||
+      typeof parsed.createdAt !== "number" ||
+      typeof parsed.updatedAt !== "number"
     ) {
       return undefined;
     }
