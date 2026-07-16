@@ -106,7 +106,7 @@ class ZvecGrepMixin:
             index_result = await self.exec_as_agent(
                 environment,
                 command=(
-                    "zg --index --embedding " f"{shlex.quote(self._embedding_model)}"
+                    "zg index --embedding " f"{shlex.quote(self._embedding_model)}"
                 ),
                 cwd=workdir,
             )
@@ -118,7 +118,7 @@ class ZvecGrepMixin:
 
             status_result = await self.exec_as_agent(
                 environment,
-                command="zg --status",
+                command="zg status",
                 cwd=workdir,
             )
             metadata["index_status"] = self._bounded_output(status_result.stdout)
@@ -127,7 +127,7 @@ class ZvecGrepMixin:
             )
             if not self._index_is_ready(metadata["index_status"]):
                 raise RuntimeError(
-                    "zvec-grep index setup completed but zg --status did not "
+                    "zvec-grep index setup completed but zg status did not "
                     "report state ready"
                 )
             metadata["status"] = "ready"
@@ -156,7 +156,7 @@ class ZvecGrepMixin:
             expected = shlex.quote(expected_version)
             install_command = (
                 "if command -v zg >/dev/null 2>&1 && "
-                f"[ \"$(zg --version)\" = {expected} ] && "
+                f"[ \"$(zg version -v)\" = {expected} ] && "
                 f"npm list -g --depth=0 {binding_package} >/dev/null 2>&1; "
                 "then reused=1; else "
                 f"npm install -g {package} {binding_package} "
@@ -192,10 +192,12 @@ class ZvecGrepMixin:
                 f"ln -sf {shlex.quote(node_path)} /usr/local/bin/node"
             )
         await self.exec_as_root(environment, command=" && ".join(link_commands))
-        version_result = await self.exec_as_agent(environment, command="zg --version")
+        version_result = await self.exec_as_agent(
+            environment, command="zg version -v"
+        )
         version = (version_result.stdout or "").strip()
         if not version:
-            raise RuntimeError("zg --version returned no version")
+            raise RuntimeError("zg version -v returned no version")
         return version, reused == "1"
 
     async def _upload_embedding_config(self, environment: BaseEnvironment) -> None:

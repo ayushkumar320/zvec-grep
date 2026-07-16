@@ -6,7 +6,7 @@ QWEN_CODE_DASHSCOPE_MODEL = "qwen3.7-max"
 QWEN_CODE_DASHSCOPE_BASE_URL = (
     "https://dashscope.aliyuncs.com/compatible-mode/v1"
 )
-ZVEC_GREP_PACKAGE = "@zvec/zvec-grep@0.1.4"
+ZVEC_GREP_PACKAGE = "@zvec/zvec-grep@0.1.5"
 ZVEC_GREP_BINDING_PACKAGE = "@zvec/bindings-linux-x64@0.5.0"
 ZVEC_GREP_EMBEDDING = "qwen/text-embedding-v4"
 ZVEC_GREP_API_KEY_ENV_VARS = (
