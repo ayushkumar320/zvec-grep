@@ -35,6 +35,11 @@ import {
   normalizePathPattern,
   pathPatternMatches,
 } from "../../utils/glob.js";
+import {
+  matchesFileSelection,
+  resolveFileTypePatterns,
+  type FileTypePatterns,
+} from "../../utils/file-selection.js";
 
 type SearchContext = {
   collection: CollectionInfo;
@@ -92,8 +97,14 @@ export async function searchPlanCollection(
     const limit = normalized.limit ?? DEFAULT_LIMIT;
     const trace =
       normalized.trace === true || normalized.trackEntityId !== undefined;
+    const fileTypePatterns = await timings.time("search_file_types", () =>
+      resolveFileTypePatterns(
+        normalized.fileTypes,
+        normalized.excludedFileTypes,
+      ),
+    );
     const filter = timings.timeSync("search_filter", () =>
-      searchPlanToStorageFilter(normalized, ctx.storage),
+      searchPlanToStorageFilter(normalized, ctx.storage, fileTypePatterns),
     );
     const hasSearchableFiles = !filterMatchesNoFiles(filter);
     const candidates = new Map<string, Candidate>();
@@ -283,6 +294,16 @@ function validateSearchPlan(plan: SearchPlan): ResolvedSearchPlan {
     routes,
     includePaths: normalizePathFilters(plan.includePaths, "includePaths"),
     excludePaths: normalizePathFilters(plan.excludePaths, "excludePaths"),
+    globs: normalizeStringFilters(plan.globs, "globs"),
+    insensitiveGlobs: normalizeStringFilters(
+      plan.insensitiveGlobs,
+      "insensitiveGlobs",
+    ),
+    fileTypes: normalizeStringFilters(plan.fileTypes, "fileTypes"),
+    excludedFileTypes: normalizeStringFilters(
+      plan.excludedFileTypes,
+      "excludedFileTypes",
+    ),
     modifiedAfter,
     modifiedBefore,
   };
@@ -360,6 +381,31 @@ function normalizePathFilters(
   }
 
   return patterns.length > 0 ? patterns : undefined;
+}
+
+function normalizeStringFilters(
+  value: readonly string[] | undefined,
+  field: string,
+): string[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    throw new EngineError("Search plan filters must be arrays", {
+      code: "ZVEC_GREP.ENGINE.SEARCH_PLAN.INVALID_FILTERS",
+      context: `field=${field}`,
+    });
+  }
+  const values = value.map((item, index) => {
+    if (typeof item !== "string" || !item.trim()) {
+      throw new EngineError("Search plan filters must contain strings", {
+        code: "ZVEC_GREP.ENGINE.SEARCH_PLAN.INVALID_FILTER",
+        context: `field=${field} index=${index}`,
+      });
+    }
+    return item.trim();
+  });
+  return values.length > 0 ? values : undefined;
 }
 
 function normalizeModifiedTime(
@@ -987,8 +1033,13 @@ function restrictFilterToFile(
 function searchPlanToStorageFilter(
   plan: SearchPlan,
   storage: CollectionStorage,
+  fileTypePatterns: FileTypePatterns,
 ): StorageSearchFilter | undefined {
-  const fileIds = resolveFilteredFileIds(plan, storage.listFiles());
+  const fileIds = resolveFilteredFileIds(
+    plan,
+    storage.listFiles(),
+    fileTypePatterns,
+  );
   const symbolTypes =
     plan.symbolTypes && plan.symbolTypes.length > 0
       ? plan.symbolTypes
@@ -1013,16 +1064,23 @@ function filterMatchesNoFiles(
 function resolveFilteredFileIds(
   plan: SearchPlan,
   files: readonly FileInfo[],
+  fileTypePatterns: FileTypePatterns,
 ): string[] | undefined {
   const includeMatchers = (plan.includePaths ?? []).map(compilePathFilter);
   const excludeMatchers = (plan.excludePaths ?? []).map(compilePathFilter);
   const hasModifiedFilter =
     plan.modifiedAfter !== undefined || plan.modifiedBefore !== undefined;
+  const hasSharedSelection =
+    (plan.globs?.length ?? 0) > 0 ||
+    (plan.insensitiveGlobs?.length ?? 0) > 0 ||
+    fileTypePatterns.include.length > 0 ||
+    fileTypePatterns.exclude.length > 0;
 
   if (
     includeMatchers.length === 0 &&
     excludeMatchers.length === 0 &&
-    !hasModifiedFilter
+    !hasModifiedFilter &&
+    !hasSharedSelection
   ) {
     return undefined;
   }
@@ -1034,7 +1092,12 @@ function resolveFilteredFileIds(
         includeMatchers.some((matcher) => matcher(file));
       const excluded = excludeMatchers.some((matcher) => matcher(file));
 
-      return included && !excluded && matchesModifiedTimeFilter(file, plan);
+      return (
+        included &&
+        !excluded &&
+        matchesFileSelection(file.relativePath, plan, fileTypePatterns) &&
+        matchesModifiedTimeFilter(file, plan)
+      );
     })
     .map((file) => file.id);
 }

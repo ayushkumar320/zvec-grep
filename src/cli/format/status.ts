@@ -60,13 +60,13 @@ export function printCollectionInfo(
       printField(
         theme,
         "suggestion",
-        theme.accent(`zg --collections index ${shellArg(info.name)}`),
+        theme.accent(`zg collections index ${shellArg(info.name)}`),
       );
     }
     printFailedFilesNote(
       theme,
       status,
-      `zg --collections index ${shellArg(info.name)}`,
+      `zg collections index ${shellArg(info.name)}`,
     );
   }
 }
@@ -121,14 +121,14 @@ export function printAnonymousInfo(
 
   const suggestion =
     info.status && statusNeedsRefresh(info.status)
-      ? "zg --index"
+      ? "zg index"
       : info.suggestion;
   if (suggestion) {
     printField(theme, "suggestion", theme.accent(suggestion));
   }
 
   if (info.status) {
-    printFailedFilesNote(theme, info.status, "zg --index");
+    printFailedFilesNote(theme, info.status, "zg index");
   }
 }
 
@@ -212,8 +212,10 @@ export function printIndexResult(
 
 export function printIndexPathFilterTip(options: CliOptions): void {
   if (
-    options.includePaths !== undefined ||
-    options.excludePaths !== undefined
+    options.globs !== undefined ||
+    options.insensitiveGlobs !== undefined ||
+    options.fileTypes !== undefined ||
+    options.excludedFileTypes !== undefined
   ) {
     return;
   }
@@ -223,7 +225,7 @@ export function printIndexPathFilterTip(options: CliOptions): void {
     theme,
     "tip",
     theme.warning(
-      "Default indexing skips common noise. For large or remote-embedding indexes, inspect this long-lived workspace and choose high-value --include/--exclude paths.",
+      "Default indexing skips common noise. For large or remote-embedding indexes, inspect this long-lived workspace and choose focused -g/--glob and -t/--type filters.",
     ),
   );
 }
@@ -416,6 +418,28 @@ function formatRootPath(root: CollectionInfo["rootPaths"][number]): string {
     root.exclude && root.exclude.length > 0
       ? `exclude=${root.exclude.join("|")}`
       : undefined,
+    root.globs && root.globs.length > 0
+      ? `glob=${root.globs.join("|")}`
+      : undefined,
+    root.insensitiveGlobs && root.insensitiveGlobs.length > 0
+      ? `iglob=${root.insensitiveGlobs.join("|")}`
+      : undefined,
+    root.fileTypes && root.fileTypes.length > 0
+      ? `type=${root.fileTypes.join("|")}`
+      : undefined,
+    root.excludedFileTypes && root.excludedFileTypes.length > 0
+      ? `type-not=${root.excludedFileTypes.join("|")}`
+      : undefined,
+    root.hidden ? "hidden" : undefined,
+    root.noIgnore ? "no-ignore" : undefined,
+    root.ignoreFiles && root.ignoreFiles.length > 0
+      ? `ignore-file=${root.ignoreFiles.join("|")}`
+      : undefined,
+    root.maxDepth !== undefined ? `max-depth=${root.maxDepth}` : undefined,
+    root.maxFileSizeBytes !== undefined
+      ? `max-filesize=${root.maxFileSizeBytes}`
+      : undefined,
+    root.follow ? "follow" : undefined,
   ].filter((part): part is string => part !== undefined);
 
   return filters.length > 0

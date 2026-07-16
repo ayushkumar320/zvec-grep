@@ -15,9 +15,14 @@ test("MCP exposes and executes indexed and no-index search tools", async (t) => 
   const root = join(temporaryDirectory, "repo");
   const home = join(temporaryDirectory, "home");
   await mkdir(root, { recursive: true });
+  await mkdir(join(root, "nested"), { recursive: true });
   await writeFile(
     join(root, "sample.ts"),
     "export const McpIndexedSymbol = 42;\n",
+  );
+  await writeFile(
+    join(root, "nested", "literal-name.ts"),
+    "export const McpNestedRgSymbol = 43;\n",
   );
   const endpoint = await createFakeEmbeddingServer(t);
   const env = {
@@ -31,7 +36,7 @@ test("MCP exposes and executes indexed and no-index search tools", async (t) => 
   };
   await runCli(
     [
-      "--index",
+      "index",
       "--embedding",
       "qwen/text-embedding-v4",
       "--api-key",
@@ -75,6 +80,21 @@ test("MCP exposes and executes indexed and no-index search tools", async (t) => 
   assert.match(
     lexical.content.map((item) => item.text ?? "").join("\n"),
     /McpIndexedSymbol/,
+  );
+
+  const literalGlob = await client.callTool({
+    name: "zvec_grep_rg",
+    arguments: {
+      root,
+      pattern: "McpNestedRgSymbol",
+      fixedStrings: true,
+      glob: "literal-name.ts",
+    },
+  });
+  assert.equal(literalGlob.isError, undefined);
+  assert.match(
+    literalGlob.content.map((item) => item.text ?? "").join("\n"),
+    /nested\/literal-name\.ts/,
   );
 
   const indexed = await client.callTool({

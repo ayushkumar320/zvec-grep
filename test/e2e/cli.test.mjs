@@ -23,32 +23,44 @@ test("CLI completes index, search, automatic refresh, status, and rg workflows",
 
   const indexed = await runCli(
     [
-      "--index",
+      "index",
       "--embedding",
       "qwen/text-embedding-v4",
       "--api-key",
       "test-key",
       "--endpoint",
       endpoint,
+      "-g",
+      "src/**",
+      "-t",
+      "ts",
       root,
     ],
     { cwd: root, env, timeout: 120_000 },
   );
   assert.match(indexed.stdout, /Indexed|index/i);
 
-  const first = await runCli(["FirstWorkflowSymbol", "--limit", "5"], {
-    cwd: root,
-    env,
-    timeout: 120_000,
-  });
+  const first = await runCli(
+    [
+      "query",
+      "FirstWorkflowSymbol",
+      "--limit",
+      "5",
+      "-g",
+      "src/**",
+      "-t",
+      "ts",
+    ],
+    { cwd: root, env, timeout: 120_000 },
+  );
   assert.match(first.stdout, /example\.ts/);
 
   await writeFile(
     join(root, "src", "example.ts"),
-    "export const RefreshedWorkflowSymbol = 42;\n",
+    "export const RefreshedWorkflowSymbol = 42;\nexport const OtherWorkflowSymbol = 43;\n",
   );
   const refreshed = await runCli(
-    ["--fts", "RefreshedWorkflowSymbol", "--limit", "5"],
+    ["query", "--fts", "RefreshedWorkflowSymbol", "--limit", "5"],
     {
       cwd: root,
       env,
@@ -58,24 +70,100 @@ test("CLI completes index, search, automatic refresh, status, and rg workflows",
   assert.match(refreshed.stdout, /RefreshedWorkflowSymbol/);
   assert.doesNotMatch(refreshed.stdout, /FirstWorkflowSymbol/);
 
-  const status = await runCli(["--status", root], { cwd: root, env });
+  const status = await runCli(["status", root], { cwd: root, env });
   assert.match(status.stdout, /enabled|indexed/i);
+  assert.match(status.stdout, /glob=src\/\*\*/);
+  assert.match(status.stdout, /type=ts/);
+
+  await writeFile(
+    join(root, "outside.ts"),
+    "export const OutsideStoredFilterSymbol = 44;\n",
+  );
+  const reindexed = await runCli(["index", root], {
+    cwd: root,
+    env,
+    timeout: 120_000,
+  });
+  assert.match(reindexed.stdout, /glob=src\/\*\*/);
+  assert.match(reindexed.stdout, /type=ts/);
+  const outside = await runCli(
+    ["query", "--fts", "OutsideStoredFilterSymbol", "--no-auto-update"],
+    { cwd: root, env },
+  );
+  assert.doesNotMatch(outside.stdout, /outside\.ts/);
 
   const lexical = await runCli(
-    ["--rg", "-F", "RefreshedWorkflowSymbol", "src"],
+    [
+      "query",
+      "--rg",
+      "-F",
+      "-i",
+      "-C1",
+      "-m1",
+      "-g",
+      "src/**",
+      "-t",
+      "ts",
+      "RefreshedWorkflowSymbol",
+      "src",
+    ],
     { cwd: root, env },
   );
   assert.match(lexical.stdout, /RefreshedWorkflowSymbol/);
+
+  const inverted = await runCli(
+    ["query", "--rg", "-F", "-v", "RefreshedWorkflowSymbol", "src/example.ts"],
+    { cwd: root, env },
+  );
+  assert.match(inverted.stdout, /OtherWorkflowSymbol/);
+
+  const multiline = await runCli(
+    [
+      "query",
+      "--rg",
+      "-F",
+      "-U",
+      "RefreshedWorkflowSymbol = 42;\nexport const OtherWorkflowSymbol",
+      "src/example.ts",
+    ],
+    { cwd: root, env },
+  );
+  assert.match(multiline.stdout, /example\.ts:1-2/);
+
+  await writeFile(join(root, "patterns.txt"), "RefreshedWorkflowSymbol\n");
+  const patternFile = await runCli(
+    ["query", "--rg", "-f", "patterns.txt", "-t", "ts", "src"],
+    { cwd: root, env },
+  );
+  assert.match(patternFile.stdout, /RefreshedWorkflowSymbol/);
+
+  const dropped = await runCli(["index", root, "--drop", "--yes"], {
+    cwd: root,
+    env,
+  });
+  assert.match(dropped.stdout, /Dropped index/);
+  const droppedStatus = await runCli(["status", root], { cwd: root, env });
+  assert.match(droppedStatus.stdout, /indexed\s+no/i);
 });
 
 test("CLI exposes stable help, version, and failure behavior", async () => {
-  const help = await runCli(["--help"]);
+  const help = await runCli(["help"]);
   assert.match(help.stdout, /Usage:/);
-  const version = await runCli(["--version"]);
+  const version = await runCli(["version"]);
   assert.match(version.stdout.trim(), /^\d+\.\d+\.\d+/);
+  const verboseVersion = await runCli(["version", "-v"]);
+  assert.equal(verboseVersion.stdout, version.stdout);
   await assert.rejects(runCli(["--definitely-invalid"]), (error) => {
     assert.equal(error.code, 1);
-    assert.match(error.stderr, /Unknown option/);
+    assert.match(error.stderr, /Unknown command/);
     return true;
   });
+  await assert.rejects(
+    runCli(["collections", "list", "extra"]),
+    /does not accept/,
+  );
+  await assert.rejects(
+    runCli(["collections", "list", "--rebuild"]),
+    /only be used with zg collections index/,
+  );
 });

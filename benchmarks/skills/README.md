@@ -6,4 +6,3 @@ environment, the benchmark should use that command and remove this local skill.
 
 The runner will continue to build the task index separately because indexing
 represents user-owned setup rather than agent behavior.
-

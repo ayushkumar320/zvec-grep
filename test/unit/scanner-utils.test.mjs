@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
-import { link, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import {
+  link,
+  mkdir,
+  readFile,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -174,6 +181,75 @@ test("scanner applies ignore files, hidden and generated directories, size, bina
     implicit.files.some((item) => item.relativePath === "src/nested/child.ts"),
     false,
   );
+});
+
+test("scanner applies rg-style globs, types, discovery controls, and safe symlink following", async (t) => {
+  const root = await createTemporaryDirectory(t, "zvec-scanner-rg-options-");
+  await mkdir(join(root, "src", "deep"), { recursive: true });
+  await mkdir(join(root, ".hidden"), { recursive: true });
+  await writeFile(join(root, ".gitignore"), "ignored.ts\n");
+  await writeFile(join(root, "root.ts"), "export const root = 1;\n");
+  await writeFile(join(root, "ignored.ts"), "export const ignored = 1;\n");
+  await writeFile(join(root, "root.py"), "root = 1\n");
+  await writeFile(join(root, "skip.test.ts"), "export const skip = 1;\n");
+  await writeFile(
+    join(root, ".hidden", "secret.ts"),
+    "export const secret = 1;\n",
+  );
+  await writeFile(join(root, "src", "child.ts"), "export const child = 1;\n");
+  await writeFile(
+    join(root, "src", "deep", "grand.ts"),
+    "export const grand = 1;\n",
+  );
+  if (process.platform !== "win32") {
+    await symlink(join(root, "root.ts"), join(root, "linked.ts"));
+  }
+
+  const result = await scanRootPaths("collection", [
+    {
+      absolutePath: root,
+      recursive: true,
+      globs: ["**", "!**/*.test.ts"],
+      fileTypes: ["ts"],
+      hidden: true,
+      noIgnore: true,
+      maxDepth: 2,
+      maxFileSizeBytes: 1024,
+      follow: true,
+    },
+  ]);
+  assert.deepEqual(result.files.map((file) => file.relativePath).sort(), [
+    ".hidden/secret.ts",
+    "ignored.ts",
+    ...(process.platform === "win32" ? [] : ["linked.ts"]),
+    "root.ts",
+    "src/child.ts",
+  ]);
+
+  const rootOnly = await scanRootPaths("collection", [
+    {
+      absolutePath: root,
+      recursive: true,
+      globs: ["!*.ts", "root.ts"],
+      fileTypes: ["ts"],
+      noIgnore: true,
+      maxDepth: 1,
+    },
+  ]);
+  assert.deepEqual(
+    rootOnly.files.map((file) => file.relativePath),
+    ["root.ts"],
+  );
+
+  const depthZero = await scanRootPaths("collection", [
+    {
+      absolutePath: root,
+      recursive: true,
+      noIgnore: true,
+      maxDepth: 0,
+    },
+  ]);
+  assert.equal(depthZero.files.length, 0);
 });
 
 test("JSON helpers provide fallbacks, atomic replacement, modes, and parse failures", async (t) => {

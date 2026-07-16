@@ -30,17 +30,17 @@
 命令非常短：
 
 ```bash
-zg "where query auto update happens"
+zg query "where query auto update happens"
 ```
 
 > [!IMPORTANT]
-> **v0.1.4**
+> **命令接口**
 >
 > - **混合代码检索**：可以用自然语言、精确关键词，或两者组合来搜索代码。
-> - **明确的索引生命周期**：新仓库必须显式运行 `zg --index --embedding <model>`；agent 不会静默创建索引。
+> - **明确的索引生命周期**：新仓库必须显式运行 `zg index --embedding <model>`；agent 不会静默创建索引。
 > - **自动刷新**：已有匿名索引会在普通查询前自动检查并增量更新。
 > - **节省 Token 的输出**：agent 默认输出 `--preview none`；`--human` 默认展示完整源码 preview。
-> - **无索引文本搜索**：`zg --rg` 提供托管的 ripgrep 搜索，不需要先建索引。
+> - **无索引文本搜索**：`zg query --rg` 提供托管的 ripgrep 搜索，不需要先建索引。
 
 ## <a id="features"></a>💫 核心特性
 
@@ -48,9 +48,9 @@ zg "where query auto update happens"
 - **仓库本地索引**：匿名索引存放在 `<repo>/.zvec-grep/`，索引状态跟随仓库。
 - **Agent 友好输出**：默认按文件分组，并尽量减少源码 preview，降低上下文成本。
 - **人类阅读模式**：加 `--human` 后更适合终端阅读，并默认展示完整 preview。
-- **托管 ripgrep 通道**：`zg --rg` 支持常见 `rg` 参数，未建索引仓库也能使用。
+- **托管 ripgrep 通道**：`zg query --rg` 支持常见 `rg` 参数，未建索引仓库也能使用。
 - **显式模型选择**：第一次建索引必须指定模型，例如 `local/embeddinggemma-300m`、`local/qwen3-embedding-0.6b` 或 `qwen/text-embedding-v4`。
-- **Schema 复用**：已有索引再次运行 `zg --index` 会复用保存的 embedding schema，除非你显式切换模型。
+- **Schema 复用**：已有索引再次运行 `zg index` 会复用保存的 embedding schema，除非你显式切换模型。
 - **MCP Server**：运行 `zg serve --mcp`，向 MCP 客户端暴露索引搜索和无索引文本搜索工具；建索引和状态查看仍由 CLI 提供。
 - **库 API**：Node.js 工具、agent 或 MCP server 可以直接使用 `createZvecGrep()`。
 
@@ -60,13 +60,13 @@ zg "where query auto update happens"
 
 ```bash
 npm install -g @zvec/zvec-grep
-zg --version
+zg version
 ```
 
 也可以不全局安装，直接运行：
 
 ```bash
-npx @zvec/zvec-grep --help
+npx @zvec/zvec-grep help
 ```
 
 从最新源码构建，并将 `zg` 安装为全局命令：
@@ -77,7 +77,7 @@ cd zvec-grep
 npm ci
 npm run build
 npm install -g .
-zg --version
+zg version
 ```
 
 运行 stdio MCP server：
@@ -100,60 +100,62 @@ Codex MCP 工具调用默认超时为 600 秒，可在安装时通过 `--mcp-too
 - macOS、Linux 或 Windows
 - 使用索引检索时需要选择一个支持的 embedding 模型
 
-`zg --rg` 不需要 embedding 模型，也不需要索引。
+`zg query --rg` 不需要 embedding 模型，也不需要索引。
 
 ## <a id="quickstart"></a>⚡ 快速开始
 
 为仓库建索引，并显式指定 embedding 模型：
 
 ```bash
-zg --index \
+zg index \
   --embedding local/embeddinggemma-300m \
-  --include "src/**" \
-  --include "docs/**" \
-  --include "test/**" \
-  --exclude "dist/**,node_modules/**,coverage/**"
+  -g "src/**" \
+  -g "docs/**" \
+  -g "test/**" \
+  -g "!dist/**" \
+  -g "!node_modules/**" \
+  -g "!coverage/**"
 ```
 
 查看索引状态：
 
 ```bash
-zg --status
+zg status
 ```
 
 用自然语言搜索：
 
 ```bash
-zg "where query auto update happens"
+zg query "where query auto update happens"
 ```
 
 组合语义意图和精确锚点：
 
 ```bash
-zg "GPU fallback" --fts "usingCpuFallback" --include "src/**" --limit 5
+zg query "GPU fallback" --fts "usingCpuFallback" -g "src/**" -t ts --limit 5
 ```
 
 不依赖索引，做穷尽文本搜索：
 
 ```bash
-zg --rg -F "ZVEC_GREP_HOME" src
+zg query --rg -F "ZVEC_GREP_HOME" src
 ```
 
 切换到适合人看的输出：
 
 ```bash
-zg --human "root local index discovery" --limit 3
+zg query --human "root local index discovery" --limit 3
 ```
 
-在 MCP 客户端中可使用 `zvec_grep_search` 和 `zvec_grep_rg`。MCP 输入使用 JSON 友好的字段，例如 `include: ["src/**"]`；状态查看和建索引请使用 CLI 的 `zg --status` 与 `zg --index`。Codex installer 会向 `${CODEX_HOME:-$HOME/.codex}/config.toml` 和 `${CODEX_HOME:-$HOME/.codex}/AGENTS.md` 写入由 zvec-grep 管理的配置块。
+在 MCP 客户端中可使用 `zvec_grep_search` 和 `zvec_grep_rg`。MCP 输入使用 JSON 友好的字段，例如 `include: ["src/**"]`；状态查看和建索引请使用 CLI 的 `zg status` 与 `zg index`。Codex installer 会向 `${CODEX_HOME:-$HOME/.codex}/config.toml` 和 `${CODEX_HOME:-$HOME/.codex}/AGENTS.md` 写入由 zvec-grep 管理的配置块。
 
 ## <a id="models"></a>🧠 模型
 
 本地模型通过 `node-llama-cpp` 运行，适合把代码检索留在本机：
 
 ```bash
-zg --index --embedding local/embeddinggemma-300m
-zg --index --embedding local/qwen3-embedding-0.6b
+zg index --embedding local/embeddinggemma-300m
+zg index --embedding local/qwen3-embedding-0.6b
 ```
 
 在 Apple Silicon 上，本地构建默认使用更安静的 llama.cpp CMake 配置，避免无害的 OpenMP 和 ARM native 探测 warning。可以通过 `NODE_LLAMA_CPP_CMAKE_OPTION_<name>` 覆盖任意 llama.cpp CMake 选项，例如设置 `NODE_LLAMA_CPP_CMAKE_OPTION_GGML_NATIVE=ON` 重新启用 native CPU 优化。
@@ -161,7 +163,7 @@ zg --index --embedding local/qwen3-embedding-0.6b
 远程 Qwen embedding 适合希望使用托管 embedding 服务，或不想在本机配置模型的场景：
 
 ```bash
-zg --index \
+zg index \
   --embedding qwen/text-embedding-v4 \
   --api-key "$DASHSCOPE_API_KEY"
 ```
@@ -183,12 +185,12 @@ zg --index \
 }
 ```
 
-配置优先级为：显式 CLI 或库参数、环境变量、全局配置、内置默认值。仓库 root 和 include/exclude 规则仍保存在各仓库自己的 `.zvec-grep` 元数据中，不进入全局配置。
+配置优先级为：显式 CLI 或库参数、环境变量、全局配置、内置默认值。仓库 root 和文件选择规则仍保存在各仓库自己的 `.zvec-grep` 元数据中，不进入全局配置。
 
-对于已有索引，`zg --index` 不传 `--embedding` 会复用索引里保存的 schema。只有在你明确想切换模型时，才使用 `--rebuild --embedding <model>`：
+对于已有索引，`zg index` 不传 `--embedding` 会复用索引里保存的 schema。只有在你明确想切换模型时，才使用 `--rebuild --embedding <model>`：
 
 ```bash
-zg --index --rebuild --embedding local/qwen3-embedding-0.6b
+zg index --rebuild --embedding local/qwen3-embedding-0.6b
 ```
 
 ## 🔎 查询模式
@@ -196,31 +198,55 @@ zg --index --rebuild --embedding local/qwen3-embedding-0.6b
 多个带引号的 query 会作为多个搜索组分别检索：
 
 ```bash
-zg "request validation" "error handling" --limit 5
+zg query "request validation" "error handling" --limit 5
 ```
 
-尽早使用路径过滤，让结果保持聚焦：
+每个 route 参数只接收一个 query，并且可以重复使用。需要把所有搜索组合并成一个排序结果时，使用 `--fuse`：
 
 ```bash
-zg "cache invalidation" \
-  --include "src/**" \
-  --exclude "test/**,tests/**,fixtures/**,dist/**"
+zg query \
+  --hybrid "authentication flow" \
+  --fts "AuthService" \
+  --vector "where credentials are validated" \
+  --fuse \
+  --limit 10
 ```
+
+尽早使用与 ripgrep 一致的路径和文件类型过滤，让结果保持聚焦。普通 glob 表示包含，以 `!` 开头的 glob 表示排除：
+
+```bash
+zg query "cache invalidation" \
+  -g "src/**" \
+  -g "!test/**" \
+  -g "!tests/**" \
+  -g "!fixtures/**" \
+  -g "!dist/**" \
+  -t ts
+```
+
+文件类型过滤会在 glob 过滤之后继续缩小范围。例如，`-g "docs/**" -t ts`
+只会选择 `docs` 目录下的 TypeScript 文件，而不是该目录里的所有文件。
 
 使用 `--preview` 控制索引结果的源码展示量：
 
 ```bash
-zg "plugin lifecycle" --preview none
-zg "plugin lifecycle" --preview short --limit 5
-zg "plugin lifecycle" --preview full --limit 2
+zg query "plugin lifecycle" --preview none
+zg query "plugin lifecycle" --preview short --limit 5
+zg query "plugin lifecycle" --preview full --limit 2
 ```
 
 查精确文本、符号、配置项或错误码时，使用 `--fts` 或 `--rg`：
 
 ```bash
-zg "authentication flow" --fts "AuthService" "ForbiddenError"
-zg --rg -i -C 2 -g "*.ts" "needle text" src
+zg query "authentication flow" --fts "AuthService" --fts "ForbiddenError"
+zg query --rg -i -C 2 -g "*.ts" "needle text" src
 ```
+
+托管的 rg 模式支持常用的 ripgrep 匹配、上下文、文件类型、glob、ignore、
+深度、大小、符号链接、编码和正则引擎参数。结果格式由 zvec-grep 管理，
+因此 `--json`、`--count`、`--files`、`-l`、`-o`、`--replace` 和
+`--vimgrep` 等会改变输出形态的模式会被拒绝。`.git/**` 和
+`.zvec-grep/**` 始终保持排除。
 
 ## <a id="library-api"></a>🛠️ 库 API
 
@@ -237,7 +263,11 @@ const result = await zvecGrep.context({
 });
 
 for (const item of result.items) {
-  console.log(`${item.file.relativePath}:${item.range.startLine}`);
+  const location =
+    item.range.kind === "text"
+      ? `${item.file.relativePath}:${item.range.startLine}`
+      : item.file.relativePath;
+  console.log(location);
 }
 
 await zvecGrep.close();

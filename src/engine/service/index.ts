@@ -16,12 +16,11 @@ export type {
   ZvecGrepContextResult,
   ZvecGrepContextRoute,
   ZvecGrepContextSource,
-  ZvecGrepFallbackPolicy,
   ZvecGrepStructureEnrichmentDiagnostics,
   ZvecGrepIndexDiagnostics,
   ZvecGrepInfoOptions,
   ZvecGrepInfoResult,
   ZvecGrepIndexOptions,
-  ZvecGrepLexicalFallbackDiagnostics,
+  ZvecGrepRgDiagnostics,
   ZvecGrepSearchOptions,
 } from "./types.js";

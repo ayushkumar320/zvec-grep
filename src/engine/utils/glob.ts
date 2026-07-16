@@ -21,10 +21,55 @@ export function isAbsolutePathPattern(pattern: string): boolean {
 }
 
 export function hasPathGlob(pattern: string): boolean {
-  return pattern.includes("*") || pattern.includes("?");
+  return (
+    pattern.includes("*") || pattern.includes("?") || pattern.includes("[")
+  );
 }
 
 export function pathPatternMatches(pattern: string, path: string): boolean {
+  return pathPatternMatchesWithCase(pattern, path, false);
+}
+
+export function pathPatternMatchesCaseInsensitive(
+  pattern: string,
+  path: string,
+): boolean {
+  return pathPatternMatchesWithCase(pattern, path, true);
+}
+
+export function ripgrepGlobMatches(pattern: string, path: string): boolean {
+  return ripgrepGlobMatchesWithCase(pattern, path, false);
+}
+
+export function ripgrepGlobMatchesCaseInsensitive(
+  pattern: string,
+  path: string,
+): boolean {
+  return ripgrepGlobMatchesWithCase(pattern, path, true);
+}
+
+function ripgrepGlobMatchesWithCase(
+  pattern: string,
+  path: string,
+  caseInsensitive: boolean,
+): boolean {
+  const normalizedPattern = normalizePathPattern(pattern);
+  if (normalizedPattern.length === 0) {
+    return false;
+  }
+
+  return globPatternMatches(
+    normalizedPattern,
+    normalizePathForMatch(path),
+    caseInsensitive,
+  );
+}
+
+function pathPatternMatchesWithCase(
+  pattern: string,
+  path: string,
+  caseInsensitive: boolean,
+): boolean {
   const normalizedPattern = normalizePathPattern(pattern);
   const normalizedPath = normalizePathForMatch(path);
 
@@ -33,16 +78,22 @@ export function pathPatternMatches(pattern: string, path: string): boolean {
   }
 
   if (hasPathGlob(normalizedPattern)) {
-    return globPatternMatches(normalizedPattern, normalizedPath);
+    return globPatternMatches(
+      normalizedPattern,
+      normalizedPath,
+      caseInsensitive,
+    );
   }
 
-  const prefix = normalizedPattern.endsWith("/")
-    ? normalizedPattern
-    : `${normalizedPattern}/`;
+  const candidate = caseInsensitive
+    ? normalizedPath.toLowerCase()
+    : normalizedPath;
+  const expected = caseInsensitive
+    ? normalizedPattern.toLowerCase()
+    : normalizedPattern;
+  const expectedPrefix = expected.endsWith("/") ? expected : `${expected}/`;
 
-  return (
-    normalizedPath === normalizedPattern || normalizedPath.startsWith(prefix)
-  );
+  return candidate === expected || candidate.startsWith(expectedPrefix);
 }
 
 export function pathPatternMightMatchDescendant(
@@ -68,19 +119,31 @@ export function pathPatternMightMatchDescendant(
   );
 }
 
-function globPatternMatches(pattern: string, path: string): boolean {
+function globPatternMatches(
+  pattern: string,
+  path: string,
+  caseInsensitive: boolean,
+): boolean {
   if (pattern.endsWith("/**")) {
     const directoryPattern = pattern.slice(0, -3);
-    if (globToRegExp(directoryPattern).test(path)) {
+    if (globToRegExp(directoryPattern, caseInsensitive).test(path)) {
       return true;
     }
   }
 
-  return globToRegExp(pattern).test(path);
+  return globToRegExp(pattern, caseInsensitive).test(path);
 }
 
-function globToRegExp(pattern: string): RegExp {
+function globToRegExp(pattern: string, caseInsensitive = false): RegExp {
   let expression = pattern.includes("/") ? "^" : "^(?:.*/)?";
+
+  expression += globFragmentToRegExp(pattern);
+
+  return new RegExp(`${expression}$`, caseInsensitive ? "i" : undefined);
+}
+
+function globFragmentToRegExp(pattern: string): string {
+  let expression = "";
 
   for (let index = 0; index < pattern.length; index++) {
     const char = pattern[index];
@@ -97,12 +160,91 @@ function globToRegExp(pattern: string): RegExp {
       expression += "[^/]*";
     } else if (char === "?") {
       expression += "[^/]";
+    } else if (char === "[") {
+      const characterClass = readGlobCharacterClass(pattern, index);
+      if (characterClass) {
+        expression += characterClass.expression;
+        index = characterClass.endIndex;
+      } else {
+        expression += "\\[";
+      }
+    } else if (char === "{") {
+      const alternation = readGlobAlternation(pattern, index);
+      if (alternation) {
+        expression += `(?:${alternation.alternatives
+          .map(globFragmentToRegExp)
+          .join("|")})`;
+        index = alternation.endIndex;
+      } else {
+        expression += "\\{";
+      }
     } else {
       expression += escapeRegExp(char);
     }
   }
 
-  return new RegExp(`${expression}$`);
+  return expression;
+}
+
+function readGlobAlternation(
+  pattern: string,
+  startIndex: number,
+): { alternatives: string[]; endIndex: number } | undefined {
+  const alternatives: string[] = [];
+  let depth = 0;
+  let alternativeStart = startIndex + 1;
+
+  for (let index = startIndex + 1; index < pattern.length; index++) {
+    const char = pattern[index];
+    if (char === "{") {
+      depth++;
+      continue;
+    }
+    if (char === "}" && depth > 0) {
+      depth--;
+      continue;
+    }
+    if (char === "," && depth === 0) {
+      alternatives.push(pattern.slice(alternativeStart, index));
+      alternativeStart = index + 1;
+      continue;
+    }
+    if (char === "}" && depth === 0) {
+      if (alternatives.length === 0) {
+        return undefined;
+      }
+      alternatives.push(pattern.slice(alternativeStart, index));
+      return { alternatives, endIndex: index };
+    }
+  }
+
+  return undefined;
+}
+
+function readGlobCharacterClass(
+  pattern: string,
+  startIndex: number,
+): { expression: string; endIndex: number } | undefined {
+  const endIndex = pattern.indexOf("]", startIndex + 1);
+  if (endIndex < 0) {
+    return undefined;
+  }
+
+  let content = pattern.slice(startIndex + 1, endIndex);
+  if (!content || content === "!" || content === "^") {
+    return undefined;
+  }
+
+  const negated = content.startsWith("!") || content.startsWith("^");
+  if (negated) {
+    content = content.slice(1);
+  }
+  content = content.replaceAll("\\", "\\\\").replaceAll("/", "\\/");
+
+  return {
+    expression: `[${negated ? "^" : ""}${content}]`,
+    endIndex,
+  };
 }
 
 function patternPrefixMightMatchDescendant(

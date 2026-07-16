@@ -54,6 +54,13 @@ def collect_checks() -> list[Check]:
     docker = shutil.which("docker")
     if docker is None:
         checks.append(Check("Docker", False, "not found on PATH"))
+        checks.append(
+            Check(
+                "Docker Compose",
+                False,
+                "Docker is not found on PATH",
+            )
+        )
     else:
         ok, detail = _run_version(
             [docker, "version", "--format", "{{.Server.Version}}"]
@@ -65,6 +72,20 @@ def collect_checks() -> list[Check]:
                 f"server {detail}" if ok else f"daemon unavailable: {detail}",
             )
         )
+        compose_ok, compose_detail = _run_version(
+            [docker, "compose", "version"]
+        )
+        if compose_ok:
+            checks.append(Check("Docker Compose", True, compose_detail))
+        else:
+            failure = compose_detail.splitlines()[0] if compose_detail else "unavailable"
+            checks.append(
+                Check(
+                    "Docker Compose",
+                    False,
+                    f"{failure}; install the Docker Compose CLI plugin",
+                )
+            )
 
     machine = platform.machine() or "unknown"
     system = platform.system() or "unknown"

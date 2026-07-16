@@ -8,6 +8,7 @@ export default tseslint.config(
       "coverage/**",
       "dist/**",
       "node_modules/**",
+      "**/.venv/**",
       ".zvec-grep/**",
       "*.tgz",
     ],

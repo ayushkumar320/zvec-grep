@@ -47,6 +47,7 @@ type AgentInstaller = {
   label: string;
   description: string;
   install: (options: InstallAgentOptions) => Promise<InstallAgentResult>;
+  uninstall: () => Promise<InstallAgentResult>;
 };
 
 type InstallAgentOptions = {
@@ -64,6 +65,7 @@ const AGENT_INSTALLERS: readonly AgentInstaller[] = [
     label: "Codex",
     description: "configure zvec-grep MCP and Codex guidance",
     install: installCodexIntegration,
+    uninstall: uninstallCodexIntegration,
   },
 ];
 
@@ -74,41 +76,36 @@ const ZVEC_GREP_AGENTS_END = "<!-- ZVEC_GREP_END -->";
 const DEFAULT_MCP_TOOL_TIMEOUT_SECONDS = 600;
 
 export async function runParsedCommand(parsed: ParsedArgs): Promise<void> {
-  if (parsed.options.install) {
-    await runInstall(parsed);
-    return;
+  switch (parsed.command) {
+    case "query":
+      await runQuery(parsed);
+      return;
+    case "index":
+      await runIndex(parsed);
+      return;
+    case "status":
+      await runStatus(parsed);
+      return;
+    case "collections":
+      await runCollections(parsed);
+      return;
+    case "install":
+      await runInstall(parsed);
+      return;
+    case "uninstall":
+      await runUninstall(parsed);
+      return;
+    case "serve":
+      await runServe(parsed);
+      return;
+    case "help":
+    case "version":
+      throw new Error(`${parsed.command} must be handled before dispatch`);
   }
-
-  if (parsed.options.index) {
-    await runIndex(parsed);
-    return;
-  }
-
-  if (parsed.options.disableIndex) {
-    await runDisableIndex(parsed);
-    return;
-  }
-
-  if (parsed.options.status) {
-    await runStatus(parsed);
-    return;
-  }
-
-  if (parsed.options.collections) {
-    await runCollections(parsed);
-    return;
-  }
-
-  if (parsed.options.serve) {
-    await runServe(parsed);
-    return;
-  }
-
-  await runQuery(parsed);
 }
 
 async function runInstall(parsed: ParsedArgs): Promise<void> {
-  const installers = await resolveInstallers(parsed);
+  const installers = await resolveInstallers(parsed, "install");
   if (installers.length === 0) {
     console.log("No agents selected.");
     return;
@@ -136,6 +133,29 @@ async function runInstall(parsed: ParsedArgs): Promise<void> {
   if (installers.some((installer) => installer.id === "codex")) {
     console.log("Codex MCP server: zg serve --mcp");
   }
+}
+
+async function runUninstall(parsed: ParsedArgs): Promise<void> {
+  const installers = await resolveInstallers(parsed, "uninstall");
+  if (installers.length === 0) {
+    console.log("No agents selected.");
+    return;
+  }
+
+  console.log(
+    `Removing zvec-grep from: ${installers.map((installer) => installer.label).join(", ")}`,
+  );
+  for (const installer of installers) {
+    const result = await installer.uninstall();
+    console.log(`Removed ${installer.label} integration:`);
+    for (const file of result.files) {
+      console.log(`  ${file}`);
+    }
+  }
+
+  console.log(
+    "Restart the selected agent or start a new session to apply the change.",
+  );
 }
 
 async function installCodexIntegration(
@@ -167,8 +187,28 @@ async function installCodexIntegration(
   return { files: [configPath, agentsPath] };
 }
 
+async function uninstallCodexIntegration(): Promise<InstallAgentResult> {
+  const codexHome = resolveCodexHome();
+  const configPath = resolve(codexHome, "config.toml");
+  const agentsPath = resolve(codexHome, "AGENTS.md");
+
+  await removeMarkedFile({
+    path: configPath,
+    startMarker: ZVEC_GREP_CONFIG_START,
+    endMarker: ZVEC_GREP_CONFIG_END,
+  });
+  await removeMarkedFile({
+    path: agentsPath,
+    startMarker: ZVEC_GREP_AGENTS_START,
+    endMarker: ZVEC_GREP_AGENTS_END,
+  });
+
+  return { files: [configPath, agentsPath] };
+}
+
 async function resolveInstallers(
   parsed: ParsedArgs,
+  action: "install" | "uninstall",
 ): Promise<AgentInstaller[]> {
   const targetTokens = [
     ...(parsed.options.installTargets ?? []),
@@ -187,11 +227,15 @@ async function resolveInstallers(
     return installersFromTokens(["auto"]);
   }
 
-  return promptInstallers();
+  return promptInstallers(action);
 }
 
-async function promptInstallers(): Promise<AgentInstaller[]> {
-  console.log("Select agents to configure:");
+async function promptInstallers(
+  action: "install" | "uninstall",
+): Promise<AgentInstaller[]> {
+  console.log(
+    `Select agents whose zvec-grep integration should be ${action === "install" ? "installed" : "removed"}:`,
+  );
   AGENT_INSTALLERS.forEach((installer, index) => {
     console.log(
       `  ${index + 1}. ${installer.label} - ${installer.description}`,
@@ -235,7 +279,7 @@ function installersFromTokens(tokens: readonly string[]): AgentInstaller[] {
       continue;
     }
 
-    const numbered = Number.parseInt(lower, 10);
+    const numbered = /^\d+$/.test(lower) ? Number(lower) : Number.NaN;
     if (
       Number.isInteger(numbered) &&
       numbered >= 1 &&
@@ -272,7 +316,12 @@ async function runIndex(parsed: ParsedArgs): Promise<void> {
   const root = resolveIndexRoot(parsed.positionals[0]);
   const rootPath = indexRootPath(root, parsed.options);
   if (parsed.positionals.length > 1) {
-    throw new Error("zg --index accepts at most one root path");
+    throw new Error("zg index accepts at most one root path");
+  }
+
+  if (parsed.options.drop) {
+    await runDropIndex(parsed, rootPath.absolutePath);
+    return;
   }
 
   const zvecGrep = await createZvecGrep(
@@ -286,8 +335,16 @@ async function runIndex(parsed: ParsedArgs): Promise<void> {
       rootPaths: explicitRoot ? [rootPath] : undefined,
       rebuild: parsed.options.rebuild,
       resetPaths: parsed.options.resetPaths,
-      includePaths: parsed.options.includePaths,
-      excludePaths: parsed.options.excludePaths,
+      globs: parsed.options.globs,
+      insensitiveGlobs: parsed.options.insensitiveGlobs,
+      fileTypes: parsed.options.fileTypes,
+      excludedFileTypes: parsed.options.excludedFileTypes,
+      hidden: parsed.options.hidden,
+      noIgnore: parsed.options.noIgnore,
+      ignoreFiles: parsed.options.ignoreFiles,
+      maxDepth: parsed.options.maxDepth,
+      maxFileSizeBytes: parsed.options.maxFileSizeBytes,
+      follow: parsed.options.follow,
       embeddingConcurrency: parsed.options.embeddingConcurrency,
       onProgress: progress.report,
     });
@@ -311,6 +368,52 @@ async function runIndex(parsed: ParsedArgs): Promise<void> {
   }
 }
 
+async function runDropIndex(parsed: ParsedArgs, root: string): Promise<void> {
+  if (!(await confirmIndexDrop(root, parsed.options.yes === true))) {
+    console.log("Index drop cancelled.");
+    return;
+  }
+
+  const zvecGrep = await createZvecGrep(
+    createServiceOptions(parsed.options, root),
+  );
+  try {
+    const removed = await zvecGrep.dropIndex({ root });
+    console.log(
+      removed ? `Dropped index for ${root}` : `No index found for ${root}`,
+    );
+  } finally {
+    await zvecGrep.close();
+  }
+}
+
+async function confirmIndexDrop(
+  root: string,
+  accepted: boolean,
+): Promise<boolean> {
+  if (accepted) {
+    return true;
+  }
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new Error(
+      "zg index --drop requires --yes in a non-interactive shell",
+    );
+  }
+
+  const readline = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+  try {
+    const answer = await readline.question(
+      `Drop the index for ${root}? [y/N] `,
+    );
+    return ["y", "yes"].includes(answer.trim().toLowerCase());
+  } finally {
+    readline.close();
+  }
+}
+
 async function runServe(parsed: ParsedArgs): Promise<void> {
   if (parsed.positionals.length > 0) {
     throw new Error("zg serve --mcp does not accept positional arguments");
@@ -320,27 +423,10 @@ async function runServe(parsed: ParsedArgs): Promise<void> {
   await runMcpServer(createServiceOptions(parsed.options, process.cwd()));
 }
 
-async function runDisableIndex(parsed: ParsedArgs): Promise<void> {
-  const root = resolveIndexRoot(parsed.positionals[0]);
-  if (parsed.positionals.length > 1) {
-    throw new Error("zg --disable-index accepts at most one root path");
-  }
-
-  const zvecGrep = await createZvecGrep(
-    createServiceOptions(parsed.options, root),
-  );
-  try {
-    const info = await zvecGrep.disableIndex({ root });
-    printAnonymousInfo(info, parsed.options);
-  } finally {
-    await zvecGrep.close();
-  }
-}
-
 async function runStatus(parsed: ParsedArgs): Promise<void> {
   const root = parsed.positionals[0] ?? process.cwd();
   if (parsed.positionals.length > 1) {
-    throw new Error("zg --status accepts at most one root path");
+    throw new Error("zg status accepts at most one root path");
   }
 
   const zvecGrep = await createZvecGrep(
@@ -356,6 +442,13 @@ async function runStatus(parsed: ParsedArgs): Promise<void> {
 
 async function runCollections(parsed: ParsedArgs): Promise<void> {
   const [action = "list", name, root] = parsed.positionals;
+  validateCollectionArguments(action, parsed.positionals);
+  const indexOption = collectionIndexOption(parsed.options);
+  if (action !== "index" && indexOption) {
+    throw new Error(
+      `${indexOption} can only be used with zg collections index`,
+    );
+  }
   const zvecGrep = await createZvecGrep(
     createServiceOptions(parsed.options, undefined),
   );
@@ -364,7 +457,7 @@ async function runCollections(parsed: ParsedArgs): Promise<void> {
     if (action === "list") {
       if (parsed.options.resetPaths) {
         throw new Error(
-          "--reset-paths can only be used with --collections index",
+          "--reset-paths can only be used with zg collections index",
         );
       }
 
@@ -375,12 +468,12 @@ async function runCollections(parsed: ParsedArgs): Promise<void> {
     if (action === "info") {
       if (parsed.options.resetPaths) {
         throw new Error(
-          "--reset-paths can only be used with --collections index",
+          "--reset-paths can only be used with zg collections index",
         );
       }
 
       if (!name) {
-        throw new Error("zg --collections info requires <name>");
+        throw new Error("zg collections info requires <name>");
       }
 
       const [info, status] = await Promise.all([
@@ -397,7 +490,7 @@ async function runCollections(parsed: ParsedArgs): Promise<void> {
 
     if (action === "index") {
       if (!name) {
-        throw new Error("zg --collections index requires <name>");
+        throw new Error("zg collections index requires <name>");
       }
 
       const explicitRoot = root !== undefined;
@@ -408,8 +501,16 @@ async function runCollections(parsed: ParsedArgs): Promise<void> {
         const result = await zvecGrep.collections.index(name, rootPaths, {
           rebuild: parsed.options.rebuild,
           resetPaths: parsed.options.resetPaths,
-          includePaths: parsed.options.includePaths,
-          excludePaths: parsed.options.excludePaths,
+          globs: parsed.options.globs,
+          insensitiveGlobs: parsed.options.insensitiveGlobs,
+          fileTypes: parsed.options.fileTypes,
+          excludedFileTypes: parsed.options.excludedFileTypes,
+          hidden: parsed.options.hidden,
+          noIgnore: parsed.options.noIgnore,
+          ignoreFiles: parsed.options.ignoreFiles,
+          maxDepth: parsed.options.maxDepth,
+          maxFileSizeBytes: parsed.options.maxFileSizeBytes,
+          follow: parsed.options.follow,
           embeddingConcurrency: parsed.options.embeddingConcurrency,
           onProgress: progress.report,
         });
@@ -432,12 +533,12 @@ async function runCollections(parsed: ParsedArgs): Promise<void> {
     if (action === "remove") {
       if (parsed.options.resetPaths) {
         throw new Error(
-          "--reset-paths can only be used with --collections index",
+          "--reset-paths can only be used with zg collections index",
         );
       }
 
       if (!name) {
-        throw new Error("zg --collections remove requires <name>");
+        throw new Error("zg collections remove requires <name>");
       }
 
       const removed = await zvecGrep.collections.remove(name);
@@ -447,7 +548,7 @@ async function runCollections(parsed: ParsedArgs): Promise<void> {
 
     if (parsed.options.resetPaths) {
       throw new Error(
-        "--reset-paths can only be used with --collections index",
+        "--reset-paths can only be used with zg collections index",
       );
     }
 
@@ -457,18 +558,82 @@ async function runCollections(parsed: ParsedArgs): Promise<void> {
   }
 }
 
+function validateCollectionArguments(
+  action: string,
+  positionals: readonly string[],
+): void {
+  if (action === "list") {
+    if (positionals.length > 1) {
+      throw new Error("zg collections list does not accept arguments");
+    }
+    return;
+  }
+
+  if (action === "info" || action === "remove") {
+    if (positionals.length > 2) {
+      throw new Error(`zg collections ${action} accepts only <name>`);
+    }
+    return;
+  }
+
+  if (action === "index") {
+    if (positionals.length > 3) {
+      throw new Error("zg collections index accepts only <name> and [root]");
+    }
+    return;
+  }
+
+  throw new Error(`Unknown collections action: ${action}`);
+}
+
+function collectionIndexOption(options: CliOptions): string | undefined {
+  const candidates: readonly (readonly [unknown, string])[] = [
+    [options.rebuild, "--rebuild"],
+    [options.resetPaths, "--reset-paths"],
+    [options.embedding, "--embedding"],
+    [options.modelCacheDir, "--model-cache"],
+    [options.llamaGpu, "--llama-gpu"],
+    [options.embeddingParallelism, "--embedding-parallelism"],
+    [options.apiKey, "--api-key"],
+    [options.endpoint, "--endpoint"],
+    [options.embeddingConcurrency, "--embedding-concurrency"],
+    [options.globs?.length, "--glob"],
+    [options.insensitiveGlobs?.length, "--iglob"],
+    [options.fileTypes?.length, "--type"],
+    [options.excludedFileTypes?.length, "--type-not"],
+    [options.hidden, "--hidden"],
+    [options.noIgnore, "--no-ignore"],
+    [options.ignoreFiles?.length, "--ignore-file"],
+    [options.maxDepth, "--max-depth"],
+    [options.maxFileSizeBytes, "--max-filesize"],
+    [options.follow, "--follow"],
+  ];
+  return candidates.find(([value]) =>
+    Array.isArray(value) ? value.length > 0 : value !== undefined,
+  )?.[1];
+}
+
 async function runQuery(parsed: ParsedArgs): Promise<void> {
   const rgInput = parsed.options.rg ? normalizeRgInput(parsed) : undefined;
   const commandOptions = rgInput?.options ?? parsed.options;
-  const queries = (rgInput?.queries ?? parsed.positionals)
+  const queries = (
+    rgInput?.queries ?? [
+      ...parsed.positionals,
+      ...(parsed.options.hybridQueries ?? []),
+    ]
+  )
     .map((query) => query.trim())
     .filter((query) => query.length > 0);
   const routes = parsed.options.routes ?? [];
-  if (queries.length === 0 && routes.length === 0) {
+  if (
+    queries.length === 0 &&
+    routes.length === 0 &&
+    (parsed.options.rgOptions?.patternFiles?.length ?? 0) === 0
+  ) {
     throw new Error(
       parsed.options.rg
-        ? "zg --rg requires a pattern. Use --help for examples."
-        : "zg query requires text or --fts/--vector routes. Use --help for examples.",
+        ? "zg query --rg requires a pattern. Use zg help query for examples."
+        : "zg query requires text or --hybrid/--fts/--vector routes. Use zg help query for examples.",
     );
   }
 
@@ -518,15 +683,23 @@ function contextOptions(
     rgOptions: options.rgOptions,
     rgPaths: options.rgPaths,
     routes: options.routes,
+    fuse: options.fuse,
     collection: options.collection,
     limit: options.limit,
-    fallback: "disabled",
     autoUpdate: !options.noAutoUpdate,
     onAutoUpdateProgress,
     trace: options.trace,
     preferSymbol: options.preferSymbol,
-    includePaths: options.includePaths,
-    excludePaths: options.excludePaths,
+    globs: options.globs,
+    insensitiveGlobs: options.insensitiveGlobs,
+    fileTypes: options.fileTypes,
+    excludedFileTypes: options.excludedFileTypes,
+    hidden: options.hidden,
+    noIgnore: options.noIgnore,
+    ignoreFiles: options.ignoreFiles,
+    maxDepth: options.maxDepth,
+    maxFileSizeBytes: options.maxFileSizeBytes,
+    follow: options.follow,
     modifiedAfter: options.modifiedAfter,
     modifiedBefore: options.modifiedBefore,
     symbolTypes: options.symbolTypes,
@@ -539,12 +712,14 @@ function normalizeRgInput(parsed: ParsedArgs): {
   options: CliOptions;
 } {
   const explicitPatterns = parsed.options.rgOptions?.patterns ?? [];
+  const hasPatternFiles =
+    (parsed.options.rgOptions?.patternFiles?.length ?? 0) > 0;
   const queries =
-    explicitPatterns.length > 0
+    explicitPatterns.length > 0 || hasPatternFiles
       ? explicitPatterns
       : parsed.positionals.slice(0, 1);
   const paths =
-    explicitPatterns.length > 0
+    explicitPatterns.length > 0 || hasPatternFiles
       ? parsed.positionals
       : parsed.positionals.slice(1);
 
@@ -625,12 +800,12 @@ function parseEnvPositiveInteger(
   value: string | undefined,
 ): number | undefined {
   const normalized = value?.trim() ?? "";
-  if (!normalized) {
+  if (!/^\d+$/.test(normalized)) {
     return undefined;
   }
 
-  const parsed = Number.parseInt(normalized, 10);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+  const parsed = Number(normalized);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
 
 function resolveCodexHome(): string {
@@ -679,6 +854,26 @@ async function writeMarkedFile(options: {
     options.path,
     next ?? appendMarkedBlock(existing, options.block),
   );
+}
+
+async function removeMarkedFile(options: {
+  path: string;
+  startMarker: string;
+  endMarker: string;
+}): Promise<void> {
+  const existing = await readTextFileIfExists(options.path);
+  if (!existing) {
+    return;
+  }
+
+  const next =
+    replaceMarkedBlock(existing, options.startMarker, options.endMarker, "") ??
+    removeOrphanedMarkers(existing, options.startMarker, options.endMarker);
+  if (next === existing) {
+    return;
+  }
+
+  await writeTextFileAtomic(options.path, next);
 }
 
 async function writeTextFileAtomic(
@@ -930,10 +1125,10 @@ function codexAgentsBlock(): string {
 Use zvec-grep before grep, rg, or broad file reads when you need to understand or locate code.
 
 - **MCP tools**: Use \`zvec_grep_search\` for indexed semantic/lexical code search and \`zvec_grep_rg\` for explicit no-index lexical search.
-- **Indexing and status**: These are CLI-only operations. If an index is missing, use \`zvec_grep_rg\` and mention \`zg --index\` as the opt-in setup path; use \`zg --status\` when status inspection is needed.
-- **Shell fallback**: If the MCP server is unavailable, use \`zg --status\`, \`zg "<query>"\`, and \`zg --rg "<pattern>"\`.
+- **Indexing and status**: These are CLI-only operations. If an index is missing, use \`zvec_grep_rg\` and mention \`zg index\` as the opt-in setup path; use \`zg status\` when status inspection is needed.
+- **Shell fallback**: If the MCP server is unavailable, use \`zg status\`, \`zg query "<query>"\`, and \`zg query --rg "<pattern>"\`.
 
-Prefer focused include/exclude filters, and exclude dependencies, generated output, caches, build artifacts, and logs unless the task is about those files.
+Prefer focused -g/--glob and -t/--type filters, and exclude dependencies, generated output, caches, build artifacts, and logs unless the task is about those files.
 ${ZVEC_GREP_AGENTS_END}`;
 }
 
@@ -949,7 +1144,15 @@ function indexRootPath(path: string, options: CliOptions): RootPath {
   return {
     absolutePath: resolve(path),
     recursive: true,
-    include: options.includePaths,
-    exclude: options.excludePaths,
+    globs: options.globs,
+    insensitiveGlobs: options.insensitiveGlobs,
+    fileTypes: options.fileTypes,
+    excludedFileTypes: options.excludedFileTypes,
+    hidden: options.hidden,
+    noIgnore: options.noIgnore,
+    ignoreFiles: options.ignoreFiles,
+    maxDepth: options.maxDepth,
+    maxFileSizeBytes: options.maxFileSizeBytes,
+    follow: options.follow,
   };
 }

@@ -47,6 +47,16 @@ export type RootPath = {
   recursive: boolean;
   include?: readonly string[];
   exclude?: readonly string[];
+  globs?: readonly string[];
+  insensitiveGlobs?: readonly string[];
+  fileTypes?: readonly string[];
+  excludedFileTypes?: readonly string[];
+  hidden?: boolean;
+  noIgnore?: boolean;
+  ignoreFiles?: readonly string[];
+  maxDepth?: number;
+  maxFileSizeBytes?: number;
+  follow?: boolean;
 };
 
 export type FileInfo = {
@@ -339,6 +349,10 @@ export type SearchPlan = {
   symbolTypes?: readonly CodeSymbolType[];
   includePaths?: readonly string[];
   excludePaths?: readonly string[];
+  globs?: readonly string[];
+  insensitiveGlobs?: readonly string[];
+  fileTypes?: readonly string[];
+  excludedFileTypes?: readonly string[];
   modifiedAfter?: number;
   modifiedBefore?: number;
 };

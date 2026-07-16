@@ -223,8 +223,8 @@ test("hybrid search filters, deduplicates, fuses, traces, prefers symbols, and t
         { mode: "vector", query: "semantic alpha" },
         { mode: "vector", query: "semantic beta" },
       ],
-      includePaths: ["src/**", ""],
-      excludePaths: ["**/*.test.ts"],
+      globs: ["src/**", "!**/*.test.ts"],
+      fileTypes: ["ts"],
       modifiedAfter: 50,
       modifiedBefore: 250,
       symbolTypes: ["function"],
@@ -281,6 +281,22 @@ test("search plans short-circuit empty path filters and force-track no-file reas
     result.hits[0].trace.recall.every(
       (recall) => recall.reason === "No files matched the path filters",
     ),
+  );
+});
+
+test("indexed rg-style globs match nested basenames and honor later overrides", async () => {
+  const fixture = createFixture();
+  const result = await searchPlanCollection(
+    {
+      routes: [{ mode: "fts", query: "symbol" }],
+      globs: ["!*.ts", "a.ts"],
+    },
+    fixture.context,
+  );
+
+  assert.deepEqual(
+    result.hits.map((hit) => hit.file.relativePath),
+    ["src/a.ts"],
   );
 });
 

@@ -58,12 +58,38 @@ test("Codex installer removes orphaned managed markers", async (t) => {
     /mcp_servers\.zvec_grep\.tools\.zvec_grep_index/,
   );
   assert.doesNotMatch(agents, /zvec_grep_(?:index|status)/);
-  assert.match(agents, /zg --index/);
-  assert.match(agents, /zg --status/);
+  assert.match(agents, /zg index/);
+  assert.match(agents, /zg status/);
   assert.match(installed, /^tool_timeout_sec = 600$/m);
   assert.equal(countOccurrences(installed, "# ZVEC_GREP_START"), 1);
   assert.equal(countOccurrences(installed, "# ZVEC_GREP_END"), 1);
   assert.equal(countOccurrences(installed, "[mcp_servers.zvec_grep]"), 1);
+});
+
+test("Codex uninstaller removes only zvec-grep-managed integration blocks", async (t) => {
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-uninstall-"),
+  );
+  const codexHome = join(temporaryDirectory, ".codex");
+  const configPath = join(codexHome, "config.toml");
+  const agentsPath = join(codexHome, "AGENTS.md");
+  t.after(async () => {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  });
+
+  await mkdir(codexHome, { recursive: true });
+  await writeFile(configPath, '[mcp_servers.other]\ncommand = "other"\n');
+  await writeFile(agentsPath, "# Existing instructions\n");
+  await installCodex(codexHome);
+  await uninstallCodex(codexHome);
+  await uninstallCodex(codexHome);
+
+  const config = await readFile(configPath, "utf8");
+  const agents = await readFile(agentsPath, "utf8");
+  assert.match(config, /\[mcp_servers\.other\]\ncommand = "other"/);
+  assert.doesNotMatch(config, /ZVEC_GREP|mcp_servers\.zvec_grep/);
+  assert.match(agents, /# Existing instructions/);
+  assert.doesNotMatch(agents, /ZVEC_GREP|## zvec-grep/);
 });
 
 test("Codex installer detects and replaces equivalent unmanaged MCP table headers", async (t) => {
@@ -313,6 +339,19 @@ async function installCodex(codexHome, extraArgs = []) {
   await execFileAsync(
     process.execPath,
     [cliPath, "install", "--target", "codex", "--yes", ...extraArgs],
+    {
+      env: {
+        ...process.env,
+        CODEX_HOME: codexHome,
+      },
+    },
+  );
+}
+
+async function uninstallCodex(codexHome, extraArgs = []) {
+  await execFileAsync(
+    process.execPath,
+    [cliPath, "uninstall", "--target", "codex", "--yes", ...extraArgs],
     {
       env: {
         ...process.env,

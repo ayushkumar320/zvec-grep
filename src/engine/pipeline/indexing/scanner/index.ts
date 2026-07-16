@@ -1,8 +1,13 @@
-import { open, readFile, readdir, stat } from "node:fs/promises";
-import { basename, join, relative } from "node:path";
+import { open, readFile, readdir, realpath, stat } from "node:fs/promises";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import type { FileInfo, RootPath } from "../../../types.js";
 import { detectFileType } from "../../../files/file-type.js";
 import { sha256Text } from "../../../utils/hash.js";
+import {
+  matchesFileSelection,
+  resolveFileTypePatterns,
+  type FileTypePatterns,
+} from "../../../utils/file-selection.js";
 import {
   normalizePathPattern,
   pathPatternMatches,
@@ -107,6 +112,10 @@ async function scanRootPath(
   files: FileInfo[],
 ): Promise<void> {
   const root = normalizeRootPath(rootPath);
+  const fileTypes = await resolveFileTypePatterns(
+    root.fileTypes,
+    root.excludedFileTypes,
+  );
   const info = await stat(root.absolutePath).catch(() => null);
 
   if (!info) {
@@ -114,7 +123,10 @@ async function scanRootPath(
   }
 
   if (info.isFile()) {
-    const file = await readFileInfo(collectionId, root, root.absolutePath);
+    const relativePath = basename(root.absolutePath);
+    const file = matchesFileSelection(relativePath, root, fileTypes)
+      ? await readFileInfo(collectionId, root, root.absolutePath)
+      : null;
     if (file) {
       files.push(file);
     }
@@ -129,12 +141,21 @@ async function scanRootPath(
     return;
   }
 
+  const rootRealPath = await realpath(root.absolutePath).catch(
+    () => root.absolutePath,
+  );
   await walk(
     collectionId,
     root,
     root.absolutePath,
     files,
-    DEFAULT_IGNORE_RULES,
+    [
+      ...(root.noIgnore ? [] : DEFAULT_IGNORE_RULES),
+      ...(await readConfiguredIgnoreRules(root)),
+    ],
+    fileTypes,
+    new Set([rootRealPath]),
+    0,
   );
 }
 
@@ -144,11 +165,16 @@ async function walk(
   currentPath: string,
   files: FileInfo[],
   parentIgnoreRules: readonly IgnoreRule[],
+  fileTypes: FileTypePatterns,
+  visitedDirectories: Set<string>,
+  depth: number,
 ): Promise<void> {
   let entries;
   const ignoreRules = [
     ...parentIgnoreRules,
-    ...(await readGitIgnoreRules(rootPath, currentPath)),
+    ...(rootPath.noIgnore
+      ? []
+      : await readGitIgnoreRules(rootPath, currentPath)),
   ];
 
   try {
@@ -163,8 +189,19 @@ async function walk(
       relative(rootPath.absolutePath, absolutePath),
     );
 
-    if (entry.isDirectory()) {
+    let isDirectory = entry.isDirectory();
+    let isFile = entry.isFile();
+    if (entry.isSymbolicLink() && rootPath.follow) {
+      const target = await stat(absolutePath).catch(() => null);
+      isDirectory = target?.isDirectory() === true;
+      isFile = target?.isFile() === true;
+    }
+
+    if (isDirectory) {
       if (!rootPath.recursive) {
+        continue;
+      }
+      if (rootPath.maxDepth !== undefined && depth + 1 >= rootPath.maxDepth) {
         continue;
       }
 
@@ -190,11 +227,29 @@ async function walk(
         continue;
       }
 
-      await walk(collectionId, rootPath, absolutePath, files, ignoreRules);
+      const realDirectory = await realpath(absolutePath).catch(() => null);
+      if (!realDirectory || visitedDirectories.has(realDirectory)) {
+        continue;
+      }
+      visitedDirectories.add(realDirectory);
+      await walk(
+        collectionId,
+        rootPath,
+        absolutePath,
+        files,
+        ignoreRules,
+        fileTypes,
+        visitedDirectories,
+        depth + 1,
+      );
       continue;
     }
 
-    if (!entry.isFile()) {
+    if (!isFile) {
+      continue;
+    }
+
+    if (rootPath.maxDepth !== undefined && depth + 1 > rootPath.maxDepth) {
       continue;
     }
 
@@ -215,6 +270,10 @@ async function walk(
     }
 
     if (!matchesRootPatterns(relativePath, rootPath)) {
+      continue;
+    }
+
+    if (!matchesFileSelection(relativePath, rootPath, fileTypes)) {
       continue;
     }
 
@@ -242,6 +301,20 @@ async function readGitIgnoreRules(
 
   const basePath = toDisplayPath(relative(rootPath.absolutePath, currentPath));
   return parseGitIgnoreRules(content, basePath);
+}
+
+async function readConfiguredIgnoreRules(
+  rootPath: RootPath,
+): Promise<IgnoreRule[]> {
+  const rules: IgnoreRule[] = [];
+  for (const path of rootPath.ignoreFiles ?? []) {
+    const absolutePath = isAbsolute(path)
+      ? path
+      : resolve(rootPath.absolutePath, path);
+    const content = await readFile(absolutePath, "utf8");
+    rules.push(...parseGitIgnoreRules(content, ""));
+  }
+  return rules;
 }
 
 function parseGitIgnoreRules(content: string, basePath: string): IgnoreRule[] {
@@ -438,7 +511,7 @@ function shouldSkipHiddenDirectory(
   relativePath: string,
   rootPath: RootPath,
 ): boolean {
-  if (!isHiddenName(name)) {
+  if (!isHiddenName(name) || rootPath.hidden) {
     return false;
   }
 
@@ -452,6 +525,7 @@ function shouldSkipHiddenFile(
 ): boolean {
   return (
     isHiddenName(name) &&
+    !rootPath.hidden &&
     !hasExplicitHiddenFileInclude(relativePath, rootPath.include)
   );
 }
@@ -570,7 +644,8 @@ async function readFileInfo(
     return null;
   }
 
-  if (info.size === 0 || info.size > DEFAULT_MAX_FILE_SIZE_BYTES) {
+  const maxFileSize = rootPath.maxFileSizeBytes ?? DEFAULT_MAX_FILE_SIZE_BYTES;
+  if (info.size === 0 || info.size > maxFileSize) {
     return null;
   }
 

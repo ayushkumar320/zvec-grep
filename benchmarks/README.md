@@ -11,9 +11,6 @@ the same. The only difference is the tool profile:
 - **zvec-grep:** the same tools, plus a prepared `zvec-grep` index and a
   query-only skill.
 
-The benchmark-local skill is temporary. Once `zg install` can configure an
-agent inside the benchmark environment, it will replace the injected skill.
-
 ## Benchmark suites
 
 - **[SWE-bench Verified](https://www.swebench.com/SWE-bench/guides/datasets/):**

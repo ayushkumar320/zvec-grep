@@ -108,11 +108,11 @@ test("npm package contains and exposes the supported public surface", async (t) 
     );
     assert.equal(installedCli.mode & 0o111, 0o111);
   }
-  const version = await runExecutable(cli, ["--version"], {
+  const version = await runExecutable(cli, ["version"], {
     cwd: consumerDirectory,
   });
   assert.equal(version.stdout.trim(), packageJson.version);
-  const help = await runExecutable(cli, ["--help"], {
+  const help = await runExecutable(cli, ["help"], {
     cwd: consumerDirectory,
   });
   assert.match(help.stdout, /Usage:/);
@@ -121,9 +121,11 @@ test("npm package contains and exposes the supported public surface", async (t) 
     join(consumerDirectory, "fixture.ts"),
     "export const PackageIndexedNeedle = 42;\n",
   );
-  const rg = await runExecutable(cli, ["--rg", "PackageIndexedNeedle", "."], {
-    cwd: consumerDirectory,
-  });
+  const rg = await runExecutable(
+    cli,
+    ["query", "--rg", "-g", "*.ts", "-t", "ts", "PackageIndexedNeedle", "."],
+    { cwd: consumerDirectory },
+  );
   assert.match(rg.stdout, /fixture\.ts/);
 
   const endpoint = await createFakeEmbeddingServer(t);
@@ -137,20 +139,34 @@ test("npm package contains and exposes the supported public surface", async (t) 
   await runExecutable(
     cli,
     [
-      "--index",
+      "index",
       "--embedding",
       "qwen/text-embedding-v4",
       "--api-key",
       "test-key",
       "--endpoint",
       endpoint,
+      "-g",
+      "*.ts",
+      "-t",
+      "ts",
       ".",
     ],
     { cwd: consumerDirectory, env: cliEnvironment, timeout: 120_000 },
   );
   const indexed = await runExecutable(
     cli,
-    ["--fts", "PackageIndexedNeedle", "--limit", "5"],
+    [
+      "query",
+      "--fts",
+      "PackageIndexedNeedle",
+      "--limit",
+      "5",
+      "-g",
+      "*.ts",
+      "-t",
+      "ts",
+    ],
     { cwd: consumerDirectory, env: cliEnvironment, timeout: 120_000 },
   );
   assert.match(indexed.stdout, /PackageIndexedNeedle/);

@@ -23,17 +23,17 @@ export function printDebug(
     );
   }
 
-  if (result.diagnostics.fallback) {
-    const fallback = result.diagnostics.fallback;
+  if (result.diagnostics.rg) {
+    const rg = result.diagnostics.rg;
     console.error(
-      `fallback=${fallback.backend} limit=${fallback.limit ?? "all"} truncated=${fallback.truncated}`,
+      `rg=${rg.backend} limit=${rg.limit ?? "all"} truncated=${rg.truncated}`,
     );
     console.error(
-      `fallback_command=${shellArg(fallback.command)} ${fallback.args.map(shellArg).join(" ")}`,
+      `rg_command=${shellArg(rg.command)} ${rg.args.map(shellArg).join(" ")}`,
     );
-    console.error(`fallback_ignored=${fallback.ignoredDirectories.join(",")}`);
-    if (fallback.missingPaths && fallback.missingPaths.length > 0) {
-      console.error(`fallback_missing=${fallback.missingPaths.join(",")}`);
+    console.error(`rg_ignored=${rg.ignoredDirectories.join(",")}`);
+    if (rg.missingPaths && rg.missingPaths.length > 0) {
+      console.error(`rg_missing=${rg.missingPaths.join(",")}`);
     }
   }
 
@@ -60,7 +60,7 @@ export function printDebug(
 
 function printTrace(result: ZvecGrepContextResult): void {
   if (result.source !== "index") {
-    console.error("trace=unavailable source=lexical_fallback");
+    console.error(`trace=unavailable source=${result.source}`);
     return;
   }
 

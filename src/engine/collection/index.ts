@@ -146,8 +146,8 @@ export class Collection {
       reason: file
         ? undefined
         : matchedRootPath
-          ? "File belongs to this collection but has not been indexed"
-          : "File is outside this collection roots or excluded by root patterns",
+          ? "File is under a collection root but has not been indexed; file-selection, ignore, discovery, size, or file-type rules may exclude it"
+          : "File is outside the collection roots or excluded by root include/exclude patterns",
     };
   }
 
@@ -332,7 +332,7 @@ function requireIndexedEmbedding(
     context: errorDetails([
       collectionDetail(info.name),
       detail("operation", operation),
-      detail("hint", "Run zg --index to build this index."),
+      detail("hint", "Run zg index to build this index."),
     ]),
   });
 }
@@ -693,7 +693,7 @@ export class CollectionRegistry {
           collectionDetail(name),
           detail(
             "hint",
-            "Run zg --index to enable and build this index, or use zg --rg for no-index search.",
+            "Run zg index to enable and build this index, or use zg query --rg for no-index search.",
           ),
         ]),
       });
@@ -704,7 +704,7 @@ export class CollectionRegistry {
         code: "ZVEC_GREP.ENGINE.COLLECTION.INDEX_MISSING",
         context: errorDetails([
           collectionDetail(name),
-          detail("hint", "Run zg --index to build this index."),
+          detail("hint", "Run zg index to build this index."),
         ]),
       });
     }

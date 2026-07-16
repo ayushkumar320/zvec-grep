@@ -5,14 +5,6 @@ export type ColorMode = "auto" | "always" | "never";
 export type PreviewMode = "none" | "short" | "full";
 
 export type CliOptions = {
-  help?: boolean;
-  version?: boolean;
-  index?: boolean;
-  disableIndex?: boolean;
-  status?: boolean;
-  collections?: boolean;
-  install?: boolean;
-  serve?: boolean;
   mcp?: boolean;
   installTargets?: string[];
   installMcpToolTimeoutSeconds?: number;
@@ -35,23 +27,45 @@ export type CliOptions = {
   apiKey?: string;
   endpoint?: string;
   limit?: number;
+  hybridQueries?: string[];
   routes?: ZvecGrepContextRoute[];
+  fuse?: boolean;
   rebuild?: boolean;
+  drop?: boolean;
   force?: boolean;
   resetPaths?: boolean;
-  noFallback?: boolean;
   noAutoUpdate?: boolean;
   preferSymbol?: boolean;
-  includePaths?: string[];
-  excludePaths?: string[];
+  globs?: string[];
+  insensitiveGlobs?: string[];
+  fileTypes?: string[];
+  excludedFileTypes?: string[];
+  hidden?: boolean;
+  noIgnore?: boolean;
+  ignoreFiles?: string[];
+  maxDepth?: number;
+  maxFileSizeBytes?: number;
+  follow?: boolean;
   modifiedAfter?: number;
   modifiedBefore?: number;
   symbolTypes?: CodeSymbolType[];
   embeddingConcurrency?: number;
 };
 
+export type CliCommand =
+  | "query"
+  | "index"
+  | "status"
+  | "collections"
+  | "install"
+  | "uninstall"
+  | "serve"
+  | "help"
+  | "version";
+
 export type CliRgOptions = {
   patterns?: string[];
+  patternFiles?: string[];
   extraArgs?: string[];
   fixedStrings?: boolean;
   ignoreCase?: boolean;
@@ -62,8 +76,10 @@ export type CliRgOptions = {
 };
 
 export type ParsedArgs = {
+  command: CliCommand;
   options: CliOptions;
   positionals: string[];
+  helpTopic?: string;
 };
 
 export const DEFAULT_LIMIT = 10;

@@ -36,6 +36,16 @@ export type ZvecGrepIndexOptions = {
   resetPaths?: boolean;
   includePaths?: readonly string[];
   excludePaths?: readonly string[];
+  globs?: readonly string[];
+  insensitiveGlobs?: readonly string[];
+  fileTypes?: readonly string[];
+  excludedFileTypes?: readonly string[];
+  hidden?: boolean;
+  noIgnore?: boolean;
+  ignoreFiles?: readonly string[];
+  maxDepth?: number;
+  maxFileSizeBytes?: number;
+  follow?: boolean;
   embeddingConcurrency?: number;
   onProgress?: (progress: IndexProgress) => void;
 };
@@ -58,8 +68,6 @@ export type ZvecGrepInfoResult = {
 
 export type ZvecGrepContextRoute = SearchPlanRoute;
 
-export type ZvecGrepFallbackPolicy = "auto" | "disabled";
-
 export type ZvecGrepContextOptions = {
   query?: string;
   queries?: readonly string[];
@@ -67,11 +75,11 @@ export type ZvecGrepContextOptions = {
   rgOptions?: ZvecGrepSearchOptions;
   rgPaths?: readonly string[];
   routes?: readonly ZvecGrepContextRoute[];
+  /** Fuse every query group into one ranked search plan. */
+  fuse?: boolean;
   root?: string;
   collection?: string;
   limit?: number;
-  /** @deprecated Anonymous context queries require an index; use rg for explicit no-index lexical search. */
-  fallback?: ZvecGrepFallbackPolicy;
   autoUpdate?: boolean;
   onAutoUpdateProgress?: (progress: IndexProgress) => void;
   trace?: boolean;
@@ -79,6 +87,16 @@ export type ZvecGrepContextOptions = {
   symbolTypes?: readonly CodeSymbolType[];
   includePaths?: readonly string[];
   excludePaths?: readonly string[];
+  globs?: readonly string[];
+  insensitiveGlobs?: readonly string[];
+  fileTypes?: readonly string[];
+  excludedFileTypes?: readonly string[];
+  hidden?: boolean;
+  noIgnore?: boolean;
+  ignoreFiles?: readonly string[];
+  maxDepth?: number;
+  maxFileSizeBytes?: number;
+  follow?: boolean;
   modifiedAfter?: number;
   modifiedBefore?: number;
   embeddingConcurrency?: number;
@@ -86,6 +104,7 @@ export type ZvecGrepContextOptions = {
 
 export type ZvecGrepSearchOptions = {
   extraArgs?: readonly string[];
+  patternFiles?: readonly string[];
   fixedStrings?: boolean;
   ignoreCase?: boolean;
   wordRegexp?: boolean;
@@ -94,10 +113,10 @@ export type ZvecGrepSearchOptions = {
   hidden?: boolean;
 };
 
-export type ZvecGrepContextSource = "index" | "rg" | "lexical_fallback";
+export type ZvecGrepContextSource = "index" | "rg";
 
 export type ZvecGrepContextCoverage =
-  "ranked_sample" | "lexical_exhaustive" | "lexical_truncated";
+  "ranked_sample" | "rg_exhaustive" | "rg_truncated";
 
 export type ZvecGrepContextFile = {
   absolutePath: string;
@@ -138,7 +157,7 @@ export type ZvecGrepContextCollection = {
   anonymous: boolean;
 };
 
-export type ZvecGrepLexicalFallbackDiagnostics = {
+export type ZvecGrepRgDiagnostics = {
   backend: "bundled-rg" | "rg";
   command: string;
   args: readonly string[];
@@ -170,13 +189,9 @@ export type ZvecGrepIndexDiagnostics = {
 };
 
 export type ZvecGrepContextDiagnostics = {
-  emptyReason?:
-    | "no_matches"
-    | "no_searchable_files"
-    | "index_unavailable"
-    | "search_failed";
+  emptyReason?: "no_matches" | "no_searchable_files";
   index?: ZvecGrepIndexDiagnostics;
-  fallback?: ZvecGrepLexicalFallbackDiagnostics;
+  rg?: ZvecGrepRgDiagnostics;
   structure?: ZvecGrepStructureEnrichmentDiagnostics;
   timings?: readonly TimingEntry[];
 };
@@ -196,6 +211,16 @@ export type ZvecGrepCollectionIndexOptions = {
   resetPaths?: boolean;
   includePaths?: readonly string[];
   excludePaths?: readonly string[];
+  globs?: readonly string[];
+  insensitiveGlobs?: readonly string[];
+  fileTypes?: readonly string[];
+  excludedFileTypes?: readonly string[];
+  hidden?: boolean;
+  noIgnore?: boolean;
+  ignoreFiles?: readonly string[];
+  maxDepth?: number;
+  maxFileSizeBytes?: number;
+  follow?: boolean;
   embeddingConcurrency?: number;
   onProgress?: (progress: IndexProgress) => void;
 };
@@ -216,6 +241,7 @@ export type ZvecGrep = {
   readonly root: string;
   readonly collections: ZvecGrepCollections;
   index(options?: ZvecGrepIndexOptions): Promise<IndexResult>;
+  dropIndex(options?: ZvecGrepInfoOptions): Promise<boolean>;
   disableIndex(options?: ZvecGrepInfoOptions): Promise<ZvecGrepInfoResult>;
   info(options?: ZvecGrepInfoOptions): Promise<ZvecGrepInfoResult>;
   context(options: ZvecGrepContextOptions): Promise<ZvecGrepContextResult>;

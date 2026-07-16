@@ -107,10 +107,10 @@ function createMcpServer(zvecGrep: ZvecGrep): McpServer {
           .optional()
           .describe("Maximum returned items per query/group."),
         include: stringListInputSchema.describe(
-          "Glob filters for paths to include. Accepts an array or CLI-style comma-separated string.",
+          "Path filters to include. Accepts an array or comma-separated string.",
         ),
         exclude: stringListInputSchema.describe(
-          "Glob filters for paths to exclude. Accepts an array or CLI-style comma-separated string.",
+          "Path filters to exclude. Accepts an array or comma-separated string.",
         ),
         preferSymbol: z
           .boolean()
@@ -226,7 +226,7 @@ function createMcpServer(zvecGrep: ZvecGrep): McpServer {
           .optional()
           .describe("Search hidden files and directories."),
         glob: stringListInputSchema.describe(
-          "ripgrep glob filters, for example '*.ts' or '!dist/**'. Accepts an array or CLI-style comma-separated string.",
+          "ripgrep glob filters, for example '*.ts' or '!dist/**'. Accepts an array or comma-separated string.",
         ),
         limit: z
           .number()
@@ -302,7 +302,6 @@ function contextOptionsFromSearchInput(input: {
     root: normalizeOptionalString(input.root),
     collection: normalizeOptionalString(input.collection),
     limit: input.limit,
-    fallback: "disabled",
     autoUpdate: input.autoUpdate ?? true,
     trace: input.trace,
     preferSymbol: input.preferSymbol,
@@ -341,7 +340,7 @@ function contextOptionsFromRgInput(input: {
     throw new Error("zvec_grep_rg requires pattern or patterns.");
   }
 
-  const { includePaths, excludePaths } = pathFiltersFromRgGlobs(input.glob);
+  const globs = normalizePathFilters(input.glob);
   const rgOptions: ZvecGrepSearchOptions = {
     fixedStrings: input.fixedStrings,
     ignoreCase: input.ignoreCase,
@@ -357,31 +356,7 @@ function contextOptionsFromRgInput(input: {
     rgPaths: normalizePlainStringList(input.paths),
     root: normalizeOptionalString(input.root),
     limit: input.limit,
-    includePaths,
-    excludePaths,
-  };
-}
-
-function pathFiltersFromRgGlobs(value: StringListInput): {
-  includePaths?: string[];
-  excludePaths?: string[];
-} {
-  const includePaths: string[] = [];
-  const excludePaths: string[] = [];
-  for (const glob of normalizePathFilters(value)) {
-    if (glob.startsWith("!")) {
-      const exclude = glob.slice(1).trim();
-      if (exclude.length > 0) {
-        excludePaths.push(exclude);
-      }
-      continue;
-    }
-    includePaths.push(glob);
-  }
-
-  return {
-    includePaths: includePaths.length > 0 ? includePaths : undefined,
-    excludePaths: excludePaths.length > 0 ? excludePaths : undefined,
+    globs: globs.length > 0 ? globs : undefined,
   };
 }
 

@@ -30,17 +30,17 @@
 The command is intentionally short:
 
 ```bash
-zg "where query auto update happens"
+zg query "where query auto update happens"
 ```
 
 > [!IMPORTANT]
-> **v0.1.4**
+> **Command interface**
 >
 > - **Hybrid Code Search**: Query code with natural language, exact terms, or both in one command.
-> - **Explicit Index Lifecycle**: New repositories require `zg --index --embedding <model>`; agents do not silently create indexes.
+> - **Explicit Index Lifecycle**: New repositories require `zg index --embedding <model>`; agents do not silently create indexes.
 > - **Automatic Refresh**: Existing anonymous indexes are checked and incrementally updated before normal queries.
 > - **Token-Efficient Output**: Agent output defaults to `--preview none`; `--human` defaults to full source previews.
-> - **No-Index Lexical Search**: `zg --rg` provides managed ripgrep search without requiring an index.
+> - **No-Index Lexical Search**: `zg query --rg` provides managed ripgrep search without requiring an index.
 
 ## <a id="features"></a>💫 Features
 
@@ -48,9 +48,9 @@ zg "where query auto update happens"
 - **Root-Local Indexes**: Anonymous indexes live under `<repo>/.zvec-grep/`, so repository state stays with the repository.
 - **Agent-Ready Output**: Default output is grouped by file and keeps previews small to save tokens.
 - **Human Output Mode**: Add `--human` for a terminal-friendly summary with full previews by default.
-- **Managed ripgrep Route**: `zg --rg` supports common `rg` flags and works even before a repository is indexed.
+- **Managed ripgrep Route**: `zg query --rg` supports common `rg` flags and works even before a repository is indexed.
 - **Explicit Model Choice**: The first index build requires a model such as `local/embeddinggemma-300m`, `local/qwen3-embedding-0.6b`, or `qwen/text-embedding-v4`.
-- **Schema Reuse**: Re-running `zg --index` on an existing index reuses the stored embedding schema unless you explicitly change it.
+- **Schema Reuse**: Re-running `zg index` on an existing index reuses the stored embedding schema unless you explicitly change it.
 - **MCP Server**: Run `zg serve --mcp` to expose indexed and no-index lexical search tools to MCP clients. Indexing and status remain CLI-only operations.
 - **Library API**: Use `createZvecGrep()` directly from Node.js tools, agents, or MCP servers.
 
@@ -60,13 +60,13 @@ Install the CLI from npm:
 
 ```bash
 npm install -g @zvec/zvec-grep
-zg --version
+zg version
 ```
 
 Or run it without a global install:
 
 ```bash
-npx @zvec/zvec-grep --help
+npx @zvec/zvec-grep help
 ```
 
 Install the latest source checkout as a global `zg` command:
@@ -77,7 +77,7 @@ cd zvec-grep
 npm ci
 npm run build
 npm install -g .
-zg --version
+zg version
 ```
 
 Run the stdio MCP server:
@@ -100,60 +100,62 @@ Codex MCP tool calls default to a 600-second timeout. Override it during install
 - macOS, Linux, or Windows
 - A supported embedding model for indexed search
 
-`zg --rg` works without any embedding model or index.
+`zg query --rg` works without any embedding model or index.
 
 ## <a id="quickstart"></a>⚡ Quickstart
 
 Index a repository with an explicit embedding model:
 
 ```bash
-zg --index \
+zg index \
   --embedding local/embeddinggemma-300m \
-  --include "src/**" \
-  --include "docs/**" \
-  --include "test/**" \
-  --exclude "dist/**,node_modules/**,coverage/**"
+  -g "src/**" \
+  -g "docs/**" \
+  -g "test/**" \
+  -g "!dist/**" \
+  -g "!node_modules/**" \
+  -g "!coverage/**"
 ```
 
 Check index state:
 
 ```bash
-zg --status
+zg status
 ```
 
 Search with natural language:
 
 ```bash
-zg "where query auto update happens"
+zg query "where query auto update happens"
 ```
 
 Combine semantic intent with exact anchors:
 
 ```bash
-zg "GPU fallback" --fts "usingCpuFallback" --include "src/**" --limit 5
+zg query "GPU fallback" --fts "usingCpuFallback" -g "src/**" -t ts --limit 5
 ```
 
 Use exhaustive lexical search without an index:
 
 ```bash
-zg --rg -F "ZVEC_GREP_HOME" src
+zg query --rg -F "ZVEC_GREP_HOME" src
 ```
 
 Switch to human-readable output:
 
 ```bash
-zg --human "root local index discovery" --limit 3
+zg query --human "root local index discovery" --limit 3
 ```
 
-Use from an MCP client with `zvec_grep_search` and `zvec_grep_rg`. MCP inputs use JSON-friendly fields such as `include: ["src/**"]`; use the CLI for `zg --status` and `zg --index`. The Codex installer writes managed zvec-grep blocks to `${CODEX_HOME:-$HOME/.codex}/config.toml` and `${CODEX_HOME:-$HOME/.codex}/AGENTS.md`.
+Use from an MCP client with `zvec_grep_search` and `zvec_grep_rg`. MCP inputs use JSON-friendly fields such as `include: ["src/**"]`; use the CLI for `zg status` and `zg index`. The Codex installer writes managed zvec-grep blocks to `${CODEX_HOME:-$HOME/.codex}/config.toml` and `${CODEX_HOME:-$HOME/.codex}/AGENTS.md`.
 
 ## <a id="models"></a>🧠 Models
 
 Local models run through `node-llama-cpp` and keep code search private to your machine:
 
 ```bash
-zg --index --embedding local/embeddinggemma-300m
-zg --index --embedding local/qwen3-embedding-0.6b
+zg index --embedding local/embeddinggemma-300m
+zg index --embedding local/qwen3-embedding-0.6b
 ```
 
 On Apple Silicon, local builds use quiet llama.cpp CMake defaults to avoid harmless OpenMP and ARM native-detection warnings. Override any llama.cpp CMake option with `NODE_LLAMA_CPP_CMAKE_OPTION_<name>`, for example `NODE_LLAMA_CPP_CMAKE_OPTION_GGML_NATIVE=ON` to opt back into native CPU tuning.
@@ -161,7 +163,7 @@ On Apple Silicon, local builds use quiet llama.cpp CMake defaults to avoid harml
 Remote Qwen embeddings are useful when you prefer a managed embedding service or want to avoid local model setup:
 
 ```bash
-zg --index \
+zg index \
   --embedding qwen/text-embedding-v4 \
   --api-key "$DASHSCOPE_API_KEY"
 ```
@@ -183,12 +185,12 @@ After a successful index, explicitly passed global model and provider options ar
 }
 ```
 
-Resolution order is explicit CLI or library options, then environment variables, then global config, then built-in defaults. Repository roots and include/exclude filters remain in each repository's `.zvec-grep` metadata rather than global config.
+Resolution order is explicit CLI or library options, then environment variables, then global config, then built-in defaults. Repository roots and file-selection settings remain in each repository's `.zvec-grep` metadata rather than global config.
 
-For existing indexes, `zg --index` without `--embedding` reuses the stored schema. Use `--rebuild --embedding <model>` only when you intentionally want to rebuild with a different model:
+For existing indexes, `zg index` without `--embedding` reuses the stored schema. Use `--rebuild --embedding <model>` only when you intentionally want to rebuild with a different model:
 
 ```bash
-zg --index --rebuild --embedding local/qwen3-embedding-0.6b
+zg index --rebuild --embedding local/qwen3-embedding-0.6b
 ```
 
 ## 🔎 Query Patterns
@@ -196,31 +198,58 @@ zg --index --rebuild --embedding local/qwen3-embedding-0.6b
 Multiple quoted queries are treated as separate search groups:
 
 ```bash
-zg "request validation" "error handling" --limit 5
+zg query "request validation" "error handling" --limit 5
 ```
 
-Use path filters early to keep results focused:
+Route options each consume one query and can be repeated. Add `--fuse` when
+you want all groups combined into one ranked result list:
 
 ```bash
-zg "cache invalidation" \
-  --include "src/**" \
-  --exclude "test/**,tests/**,fixtures/**,dist/**"
+zg query \
+  --hybrid "authentication flow" \
+  --fts "AuthService" \
+  --vector "where credentials are validated" \
+  --fuse \
+  --limit 10
 ```
+
+Use ripgrep-style path and file-type filters early to keep results focused.
+Positive globs include paths and globs beginning with `!` exclude them:
+
+```bash
+zg query "cache invalidation" \
+  -g "src/**" \
+  -g "!test/**" \
+  -g "!tests/**" \
+  -g "!fixtures/**" \
+  -g "!dist/**" \
+  -t ts
+```
+
+File-type filters are applied in addition to glob filters. For example,
+`-g "docs/**" -t ts` selects TypeScript files under `docs`, not every file in
+that directory.
 
 Use `--preview` to control indexed source previews:
 
 ```bash
-zg "plugin lifecycle" --preview none
-zg "plugin lifecycle" --preview short --limit 5
-zg "plugin lifecycle" --preview full --limit 2
+zg query "plugin lifecycle" --preview none
+zg query "plugin lifecycle" --preview short --limit 5
+zg query "plugin lifecycle" --preview full --limit 2
 ```
 
 For exact text, symbols, flags, or error codes, use `--fts` or `--rg`:
 
 ```bash
-zg "authentication flow" --fts "AuthService" "ForbiddenError"
-zg --rg -i -C 2 -g "*.ts" "needle text" src
+zg query "authentication flow" --fts "AuthService" --fts "ForbiddenError"
+zg query --rg -i -C 2 -g "*.ts" "needle text" src
 ```
+
+Managed rg mode accepts common ripgrep matching, context, type, glob, ignore,
+depth, size, symlink, encoding, and regex-engine options. Zvec-grep owns the
+result format, so output-changing modes such as `--json`, `--count`, `--files`,
+`-l`, `-o`, `--replace`, and `--vimgrep` are rejected. `.git/**` and
+`.zvec-grep/**` remain excluded.
 
 ## <a id="library-api"></a>🛠️ Library API
 
@@ -237,7 +266,11 @@ const result = await zvecGrep.context({
 });
 
 for (const item of result.items) {
-  console.log(`${item.file.relativePath}:${item.range.startLine}`);
+  const location =
+    item.range.kind === "text"
+      ? `${item.file.relativePath}:${item.range.startLine}`
+      : item.file.relativePath;
+  console.log(location);
 }
 
 await zvecGrep.close();
