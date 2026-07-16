@@ -52,7 +52,13 @@ Use `-e` or `--regexp` when the pattern begins with `-`. Common ripgrep flags in
 
 ## Index only with authorization
 
-When the daemon is reachable, submit the index through Server mode with an explicit embedding model:
+When the daemon is reachable and a server default model is known, submit the index through Server mode without repeating the model:
+
+```bash
+zg index --mode server
+```
+
+Otherwise, use the embedding model selected by the user:
 
 ```bash
 zg index --embedding local/embeddinggemma-300m --mode server
