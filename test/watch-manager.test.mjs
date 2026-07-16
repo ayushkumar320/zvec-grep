@@ -43,7 +43,7 @@ test("watch manager debounces file changes and reports overflow reconciliation",
   }
 });
 
-test("watch manager falls back to per-directory watchers when recursive watch is unavailable", async () => {
+test("watch manager uses per-directory watchers on Linux Node 22.0", async () => {
   const temporaryDirectory = await mkdtemp(
     join(tmpdir(), "zvec-grep-watch-fallback-"),
   );
@@ -53,13 +53,19 @@ test("watch manager falls back to per-directory watchers when recursive watch is
   await writeFile(join(nested, "a.ts"), "export const a = 1;\n");
   const listeners = new Map();
   const batches = [];
+  let recursiveAttempts = 0;
   const manager = new WatchManager({
     root,
+    platform: "linux",
+    nodeVersion: "22.0.0",
     debounceMs: 5,
     maxWaitMs: 20,
     reconcileIntervalMs: 0,
     watchFactory: (directory, options, callback) => {
-      if (options.recursive) throw new Error("recursive unsupported");
+      if (options.recursive) {
+        recursiveAttempts += 1;
+        throw new Error("recursive unsupported");
+      }
       const fallback = new EventEmitter();
       fallback.close = () => {};
       listeners.set(directory, callback);
@@ -75,6 +81,7 @@ test("watch manager falls back to per-directory watchers when recursive watch is
     listeners.get(nested)("change", "a.ts");
     await waitFor(() => batches.length === 1);
     assert.deepEqual(batches[0].touchedFiles, [join(nested, "a.ts")]);
+    assert.equal(recursiveAttempts, 0);
   } finally {
     await manager.close();
     await rm(temporaryDirectory, { recursive: true, force: true });

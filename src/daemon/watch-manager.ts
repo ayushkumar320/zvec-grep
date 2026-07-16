@@ -17,6 +17,8 @@ export type WatchManagerOptions = {
   onPendingChange?: (pending: boolean) => void;
   resumeCheckIntervalMs?: number;
   resumeThresholdMs?: number;
+  platform?: NodeJS.Platform;
+  nodeVersion?: string;
 };
 
 export class WatchManager {
@@ -230,6 +232,15 @@ export class WatchManager {
     if (this.closed) {
       return;
     }
+    if (
+      requiresDirectoryWatchers(
+        this.options.platform ?? process.platform,
+        this.options.nodeVersion ?? process.versions.node,
+      )
+    ) {
+      void this.watchDirectoryTree(this.options.root, factory);
+      return;
+    }
     try {
       this.addWatcher(
         factory(
@@ -316,4 +327,15 @@ export class WatchManager {
       }
     }
   }
+}
+
+function requiresDirectoryWatchers(
+  platform: NodeJS.Platform,
+  nodeVersion: string,
+): boolean {
+  if (platform !== "linux") {
+    return false;
+  }
+  const [major, minor] = nodeVersion.split(".", 2).map(Number);
+  return major === 22 && minor === 0;
 }

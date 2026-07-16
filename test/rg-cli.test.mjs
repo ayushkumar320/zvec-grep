@@ -29,6 +29,6 @@ test("managed rg runs locally when indexed operations use server mode", async (t
     },
   );
 
-  assert.match(result.stdout, /src\/answer\.ts:1/);
+  assert.match(result.stdout, /src[\\/]answer\.ts:1/);
   assert.match(result.stdout, /exactNeedle/);
 });
