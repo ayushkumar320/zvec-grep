@@ -1,4 +1,4 @@
-import { EngineError } from "../../../errors/index.js";
+import { EngineError, type EngineErrorCode } from "../../../errors/index.js";
 import { globalConfigPath } from "../../../config.js";
 import type { Content, ImageFormat, TextContent } from "../../../types.js";
 import {
@@ -10,55 +10,80 @@ import {
 import type { ModelProviderOptions } from "../../types.js";
 
 // -----------------------------------------------------------------------------
-// text-embedding-v4
+// Text embedding models (OpenAI-compatible API)
 // -----------------------------------------------------------------------------
 
-const DEFAULT_QWEN_TEXT_EMBEDDING_V4_ENDPOINT =
+const DEFAULT_QWEN_TEXT_EMBEDDING_ENDPOINT =
   "https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings";
 
-export class QwenTextEmbeddingV4Model extends EmbeddingModel {
-  readonly ref = {
-    provider: "qwen",
-    model: "text-embedding-v4",
-  } as const;
+type QwenTextEmbeddingSpec = {
+  model: string;
+  displayName: string;
+  errorCodePrefix: string;
+  maxBatchSize: number;
+  maxInputTokens: number;
+};
+
+const QWEN_TEXT_EMBEDDING_V4_SPEC = {
+  model: "text-embedding-v4",
+  displayName: "Qwen text-embedding-v4",
+  errorCodePrefix: "QWEN_TEXT_EMBEDDING_V4",
+  maxBatchSize: 10,
+  maxInputTokens: 8192,
+} as const satisfies QwenTextEmbeddingSpec;
+
+const QWEN37_TEXT_EMBEDDING_SPEC = {
+  model: "qwen3.7-text-embedding",
+  displayName: "Qwen3.7 text embedding",
+  errorCodePrefix: "QWEN37_TEXT_EMBEDDING",
+  maxBatchSize: 20,
+  maxInputTokens: 128000,
+} as const satisfies QwenTextEmbeddingSpec;
+
+abstract class QwenTextEmbeddingModel extends EmbeddingModel {
+  readonly ref: { readonly provider: "qwen"; readonly model: string };
   readonly dimension = 1024;
   readonly metric = "cosine";
   readonly supportedContentKinds = ["text"] as const;
-  readonly limits = {
-    maxBatchSize: 10,
-    maxInputTokens: 8192,
-  } as const satisfies EmbeddingLimits;
+  readonly limits: EmbeddingLimits;
   override readonly recommendedIndexConcurrency = 8;
   override readonly maxIndexConcurrency = 12;
 
   private readonly apiKey: string;
   private readonly endpoint: string;
+  private readonly displayName: string;
+  private readonly errorCodePrefix: string;
 
-  constructor(options: ModelProviderOptions) {
+  constructor(spec: QwenTextEmbeddingSpec, options: ModelProviderOptions) {
     super();
 
+    this.ref = {
+      provider: "qwen",
+      model: spec.model,
+    };
+    this.limits = {
+      maxBatchSize: spec.maxBatchSize,
+      maxInputTokens: spec.maxInputTokens,
+    };
+    this.displayName = spec.displayName;
+    this.errorCodePrefix = spec.errorCodePrefix;
+
     if (options.apiKey.trim().length === 0) {
-      throw new EngineError(
-        "Qwen text-embedding-v4 model requires an API key",
-        {
-          code: "ZVEC_GREP.ENGINE.MODELS.QWEN_TEXT_EMBEDDING_V4_MISSING_API_KEY",
-          context: `model=${this.ref.model}\nhint=Pass --api-key, set ZVEC_GREP_API_KEY, or configure providers.qwen.apiKey in ${globalConfigPath()}.`,
-        },
-      );
+      throw new EngineError(`${this.displayName} model requires an API key`, {
+        code: this.errorCode("MISSING_API_KEY"),
+        context: `model=${this.ref.model}\nhint=Pass --api-key, set ZVEC_GREP_API_KEY, or configure providers.qwen.apiKey in ${globalConfigPath()}.`,
+      });
     }
 
     const endpoint = normalizeEndpoint(
-      options.endpoint ?? DEFAULT_QWEN_TEXT_EMBEDDING_V4_ENDPOINT,
+      options.endpoint ?? DEFAULT_QWEN_TEXT_EMBEDDING_ENDPOINT,
     );
 
     if (endpoint.length === 0) {
-      throw new EngineError(
-        "Qwen text-embedding-v4 model requires an endpoint",
-        {
-          code: "ZVEC_GREP.ENGINE.MODELS.QWEN_TEXT_EMBEDDING_V4_MISSING_ENDPOINT",
-          context: `model=${this.ref.model}`,
-        },
-      );
+      throw new EngineError(`${this.displayName} model requires an endpoint`, {
+        code: this.errorCode("MISSING_ENDPOINT"),
+        context: `model=${this.ref.model}`,
+      });
     }
 
     this.apiKey = options.apiKey;
@@ -90,8 +115,8 @@ export class QwenTextEmbeddingV4Model extends EmbeddingModel {
         }),
       });
     } catch (cause) {
-      throw new EngineError("Qwen text-embedding-v4 request failed", {
-        code: "ZVEC_GREP.ENGINE.MODELS.QWEN_TEXT_EMBEDDING_V4_REQUEST_FAILED",
+      throw new EngineError(`${this.displayName} request failed`, {
+        code: this.errorCode("REQUEST_FAILED"),
         context: `model=${this.ref.model} endpoint=${this.endpoint}`,
         cause,
       });
@@ -102,33 +127,27 @@ export class QwenTextEmbeddingV4Model extends EmbeddingModel {
     try {
       body = await response.json();
     } catch (cause) {
-      throw new EngineError(
-        "Qwen text-embedding-v4 response was not valid JSON",
-        {
-          code: "ZVEC_GREP.ENGINE.MODELS.QWEN_TEXT_EMBEDDING_V4_INVALID_JSON",
-          context: `model=${this.ref.model} status=${response.status}`,
-          cause,
-        },
-      );
+      throw new EngineError(`${this.displayName} response was not valid JSON`, {
+        code: this.errorCode("INVALID_JSON"),
+        context: `model=${this.ref.model} status=${response.status}`,
+        cause,
+      });
     }
 
     if (!response.ok) {
       const error = readProviderError(body);
 
-      throw new EngineError(
-        "Qwen text-embedding-v4 request returned an error",
-        {
-          code: "ZVEC_GREP.ENGINE.MODELS.QWEN_TEXT_EMBEDDING_V4_API_ERROR",
-          context: providerErrorContext(this.ref.model, response, error),
-        },
-      );
+      throw new EngineError(`${this.displayName} request returned an error`, {
+        code: this.errorCode("API_ERROR"),
+        context: providerErrorContext(this.ref.model, response, error),
+      });
     }
 
     if (!isRecord(body) || !Array.isArray(body.data)) {
       throw new EngineError(
-        "Qwen text-embedding-v4 response did not include data",
+        `${this.displayName} response did not include data`,
         {
-          code: "ZVEC_GREP.ENGINE.MODELS.QWEN_TEXT_EMBEDDING_V4_MISSING_DATA",
+          code: this.errorCode("MISSING_DATA"),
           context: `model=${this.ref.model}`,
         },
       );
@@ -143,9 +162,9 @@ export class QwenTextEmbeddingV4Model extends EmbeddingModel {
         !Number.isInteger(item.index)
       ) {
         throw new EngineError(
-          "Qwen text-embedding-v4 response included an invalid index",
+          `${this.displayName} response included an invalid index`,
           {
-            code: "ZVEC_GREP.ENGINE.MODELS.QWEN_TEXT_EMBEDDING_V4_INVALID_INDEX",
+            code: this.errorCode("INVALID_INDEX"),
             context: `model=${this.ref.model} index=${isRecord(item) ? String(item.index) : "unknown"}`,
           },
         );
@@ -153,9 +172,9 @@ export class QwenTextEmbeddingV4Model extends EmbeddingModel {
 
       if (item.index < 0 || item.index >= texts.length) {
         throw new EngineError(
-          "Qwen text-embedding-v4 response index was out of range",
+          `${this.displayName} response index was out of range`,
           {
-            code: "ZVEC_GREP.ENGINE.MODELS.QWEN_TEXT_EMBEDDING_V4_INDEX_OUT_OF_RANGE",
+            code: this.errorCode("INDEX_OUT_OF_RANGE"),
             context: `model=${this.ref.model} index=${item.index} inputCount=${texts.length}`,
           },
         );
@@ -163,9 +182,9 @@ export class QwenTextEmbeddingV4Model extends EmbeddingModel {
 
       if (!Array.isArray(item.embedding)) {
         throw new EngineError(
-          "Qwen text-embedding-v4 response included an invalid embedding",
+          `${this.displayName} response included an invalid embedding`,
           {
-            code: "ZVEC_GREP.ENGINE.MODELS.QWEN_TEXT_EMBEDDING_V4_INVALID_VECTOR",
+            code: this.errorCode("INVALID_VECTOR"),
             context: `model=${this.ref.model} index=${item.index}`,
           },
         );
@@ -175,6 +194,22 @@ export class QwenTextEmbeddingV4Model extends EmbeddingModel {
     }
 
     return vectors;
+  }
+
+  private errorCode(suffix: string): EngineErrorCode {
+    return `ZVEC_GREP.ENGINE.MODELS.${this.errorCodePrefix}_${suffix}`;
+  }
+}
+
+export class QwenTextEmbeddingV4Model extends QwenTextEmbeddingModel {
+  constructor(options: ModelProviderOptions) {
+    super(QWEN_TEXT_EMBEDDING_V4_SPEC, options);
+  }
+}
+
+export class Qwen37TextEmbeddingModel extends QwenTextEmbeddingModel {
+  constructor(options: ModelProviderOptions) {
+    super(QWEN37_TEXT_EMBEDDING_SPEC, options);
   }
 }
 

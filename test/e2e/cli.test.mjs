@@ -25,7 +25,7 @@ test("CLI completes index, search, automatic refresh, status, and rg workflows",
     [
       "index",
       "--embedding",
-      "qwen/text-embedding-v4",
+      "qwen/qwen3.7-text-embedding",
       "--api-key",
       "test-key",
       "--endpoint",

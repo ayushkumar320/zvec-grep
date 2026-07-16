@@ -85,11 +85,11 @@ zg index --embedding local/embeddinggemma-300m
 zg index --rebuild --embedding local/embeddinggemma-300m
 ```
 
-For a new index, always pass `--embedding <model>` or set `ZVEC_GREP_EMBEDDING`; `zg index` does not choose a model silently. For an existing index, rerunning `zg index` without `--embedding` reuses the collection's stored embedding schema. Use `--embedding <model>` when intentionally choosing or changing models. Local models use `local/model`, such as `local/embeddinggemma-300m` and `local/qwen3-embedding-0.6b`. Remote models use `provider/model`, such as `qwen/text-embedding-v4`.
+For a new index, always pass `--embedding <model>` or set `ZVEC_GREP_EMBEDDING`; `zg index` does not choose a model silently. For an existing index, rerunning `zg index` without `--embedding` reuses the collection's stored embedding schema. Use `--embedding <model>` when intentionally choosing or changing models. Local models use `local/model`, such as `local/embeddinggemma-300m` and `local/qwen3-embedding-0.6b`. Remote models use `provider/model`, such as `qwen/qwen3.7-text-embedding`.
 
 ```bash
 zg index --embedding local/qwen3-embedding-0.6b
-zg index --embedding qwen/text-embedding-v4 --api-key "$DASHSCOPE_API_KEY"
+zg index --embedding qwen/qwen3.7-text-embedding --api-key "$DASHSCOPE_API_KEY"
 ```
 
 Use explicit routes only when the intent is clear:

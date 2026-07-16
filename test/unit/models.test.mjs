@@ -7,6 +7,7 @@ import {
   createEmbeddingModelFromReference,
 } from "../../dist/engine/models/factory.js";
 import {
+  Qwen37TextEmbeddingModel,
   Qwen3VlEmbeddingModel,
   QwenTextEmbeddingV4Model,
 } from "../../dist/engine/models/providers/qwen/embedding.js";
@@ -219,6 +220,48 @@ test("Qwen text model sends ordered batches and validates all response shapes", 
   }
 });
 
+test("Qwen3.7 text embedding uses its model name and expanded limits", async () => {
+  assert.throws(
+    () => new Qwen37TextEmbeddingModel({ apiKey: " " }),
+    /requires an API key/,
+  );
+
+  const model = new Qwen37TextEmbeddingModel({
+    apiKey: "secret-value",
+    endpoint: "https://example.test/embeddings",
+  });
+  assert.deepEqual(model.limits, {
+    maxBatchSize: 20,
+    maxInputTokens: 128000,
+  });
+
+  let body;
+  const result = await withFetch(
+    async (_url, init) => {
+      body = JSON.parse(init.body);
+      return jsonResponse({
+        data: [{ index: 0, embedding: vector(1024, 3) }],
+      });
+    },
+    () => model.embed([{ kind: "text", text: "find relevant code" }]),
+  );
+
+  assert.equal(result[0][0], 3);
+  assert.equal(body.model, "qwen3.7-text-embedding");
+  assert.equal(body.dimensions, 1024);
+  assert.equal(body.encoding_format, "float");
+
+  await assert.rejects(
+    model.embed(
+      Array.from({ length: 21 }, (_, index) => ({
+        kind: "text",
+        text: `input-${index}`,
+      })),
+    ),
+    /batch size exceeds model limit/,
+  );
+});
+
 test("Qwen VL model validates images, encodes bytes, and accepts provider index variants", async () => {
   assert.throws(
     () => new Qwen3VlEmbeddingModel({ apiKey: "" }),
@@ -329,6 +372,12 @@ test("embedding factory resolves catalog and explicit references and rejects unk
       { provider: "qwen", model: "text-embedding-v4" },
       options,
     ) instanceof QwenTextEmbeddingV4Model,
+  );
+  assert.ok(
+    createEmbeddingModelFromReference(
+      "qwen/qwen3.7-text-embedding",
+      options,
+    ) instanceof Qwen37TextEmbeddingModel,
   );
   assert.ok(
     createEmbeddingModelFromReference(
