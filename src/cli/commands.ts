@@ -15,15 +15,27 @@ import { dirname, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import {
   createZvecGrep,
+  getEmbeddingModelCatalogEntryByRef,
   type CreateZvecGrepOptions,
   type IndexProgress,
   type RootPath,
+  type ZvecGrepContextResult,
   type ZvecGrepContextOptions,
+  type ZvecGrepContextRoute,
 } from "../index.js";
 import {
   globalConfigPath,
+  updateGlobalConfig,
   updateGlobalConfigFromExplicitOptions,
 } from "../engine/config.js";
+import { DaemonClient } from "../client/daemon-client.js";
+import { resolveServerSearchPolicy } from "../client/search-policy.js";
+import {
+  resolveClientMode,
+  resolveServerUrl,
+  routeByMode,
+} from "../client/mode-router.js";
+import { serverStatus } from "../daemon/server-controller.js";
 import { findNearestAnonymousWorkspace } from "../engine/service/root.js";
 import type { ParsedArgs, CliOptions } from "./types.js";
 import {
@@ -40,6 +52,7 @@ import {
   printCollectionRemoveResult,
   printIndexPathFilterTip,
   printIndexResult,
+  printServerIndexInfo,
 } from "./format/status.js";
 
 type AgentInstaller = {
@@ -53,6 +66,7 @@ type AgentInstaller = {
 type InstallAgentOptions = {
   force: boolean;
   mcpToolTimeoutSeconds: number;
+  mcpTokenEnv?: string;
 };
 
 type InstallAgentResult = {
@@ -95,13 +109,60 @@ export async function runParsedCommand(parsed: ParsedArgs): Promise<void> {
     case "uninstall":
       await runUninstall(parsed);
       return;
-    case "serve":
-      await runServe(parsed);
+    case "config":
+      runConfig(parsed);
+      return;
+    case "server":
+      await runServer(parsed);
       return;
     case "help":
     case "version":
       throw new Error(`${parsed.command} must be handled before dispatch`);
   }
+}
+
+function runConfig(parsed: ParsedArgs): void {
+  if (parsed.options.configAction !== "model-set") {
+    throw new Error("zg config requires model set");
+  }
+  if (parsed.positionals.length !== 1) {
+    throw new Error(
+      "zg config model set requires exactly one local embedding reference",
+    );
+  }
+  const reference = parsed.positionals[0]!;
+  const separator = reference.indexOf("/");
+  const provider = separator > 0 ? reference.slice(0, separator) : "";
+  const model = separator > 0 ? reference.slice(separator + 1) : "";
+  const catalogEntry = getEmbeddingModelCatalogEntryByRef({ provider, model });
+  if (provider !== "local") {
+    throw new Error("zg config model set only supports local embedding models");
+  }
+  if (!catalogEntry || catalogEntry.provider !== "local") {
+    throw new Error(`Unsupported local embedding model: ${reference}`);
+  }
+  if (
+    parsed.options.llamaGpu === undefined &&
+    parsed.options.embeddingParallelism === undefined
+  ) {
+    throw new Error(
+      "zg config model set requires --llama-gpu, --gpu, --no-gpu, or --embedding-parallelism",
+    );
+  }
+  updateGlobalConfig({
+    models: {
+      [reference]: {
+        ...(parsed.options.llamaGpu !== undefined
+          ? { llamaGpu: parsed.options.llamaGpu }
+          : {}),
+        ...(parsed.options.embeddingParallelism !== undefined
+          ? { embeddingParallelism: parsed.options.embeddingParallelism }
+          : {}),
+      },
+    },
+  });
+  console.log(`Model config: ${reference}`);
+  console.log(`Global config: ${globalConfigPath()}`);
 }
 
 async function runInstall(parsed: ParsedArgs): Promise<void> {
@@ -120,6 +181,7 @@ async function runInstall(parsed: ParsedArgs): Promise<void> {
       mcpToolTimeoutSeconds:
         parsed.options.installMcpToolTimeoutSeconds ??
         DEFAULT_MCP_TOOL_TIMEOUT_SECONDS,
+      mcpTokenEnv: parsed.options.installMcpTokenEnv,
     });
     console.log(`Installed ${installer.label}:`);
     for (const file of result.files) {
@@ -131,7 +193,7 @@ async function runInstall(parsed: ParsedArgs): Promise<void> {
     "Restart the selected agent or start a new session to pick up the integration.",
   );
   if (installers.some((installer) => installer.id === "codex")) {
-    console.log("Codex MCP server: zg serve --mcp");
+    console.log("zvec-grep MCP endpoint: http://127.0.0.1:7999/mcp");
   }
 }
 
@@ -169,7 +231,7 @@ async function installCodexIntegration(
     path: configPath,
     startMarker: ZVEC_GREP_CONFIG_START,
     endMarker: ZVEC_GREP_CONFIG_END,
-    block: codexConfigBlock(options.mcpToolTimeoutSeconds),
+    block: codexConfigBlock(options.mcpToolTimeoutSeconds, options.mcpTokenEnv),
     force: options.force,
     hasConflict: hasCodexMcpServerConfig,
     conflictMessage: `Existing [mcp_servers.zvec_grep] found in ${configPath}. Re-run with --force after removing or moving that table into the zvec-grep managed block.`,
@@ -324,6 +386,47 @@ async function runIndex(parsed: ParsedArgs): Promise<void> {
     return;
   }
 
+  const mode = resolveClientMode(parsed.options.mode);
+  await routeByMode({
+    mode,
+    serverAvailable: () => daemonIsReady(parsed.options.home),
+    server: async () => {
+      const result = await daemonClient(parsed.options).callTool(
+        "zvec_grep_index",
+        {
+          root: rootPath.absolutePath,
+          embedding: parsed.options.embedding,
+          rebuild: parsed.options.rebuild,
+          resetPaths: parsed.options.resetPaths,
+          globs: parsed.options.globs,
+          insensitiveGlobs: parsed.options.insensitiveGlobs,
+          fileTypes: parsed.options.fileTypes,
+          excludedFileTypes: parsed.options.excludedFileTypes,
+          hidden: parsed.options.hidden,
+          noIgnore: parsed.options.noIgnore,
+          ignoreFiles: parsed.options.ignoreFiles,
+          maxDepth: parsed.options.maxDepth,
+          maxFileSizeBytes: parsed.options.maxFileSizeBytes,
+          follow: parsed.options.follow,
+          embeddingConcurrency: parsed.options.embeddingConcurrency,
+          wait: true,
+        },
+      );
+      console.log(
+        `Indexed anonymous workspace: ${String(result.state ?? "submitted")}`,
+      );
+      console.log(`Root: ${String(result.root ?? rootPath.absolutePath)}`);
+      console.log(`Job: ${String(result.job_id ?? "unknown")}`);
+    },
+    direct: () => runDirectIndex(parsed, rootPath, explicitRoot),
+  });
+}
+
+async function runDirectIndex(
+  parsed: ParsedArgs,
+  rootPath: RootPath,
+  explicitRoot: boolean,
+): Promise<void> {
   const zvecGrep = await createZvecGrep(
     createServiceOptions(parsed.options, rootPath.absolutePath),
   );
@@ -358,7 +461,7 @@ async function runIndex(parsed: ParsedArgs): Promise<void> {
     );
     persistExplicitGlobalConfig(
       parsed.options,
-      info.collection?.embedding?.provider,
+      embeddingReference(info.collection?.embedding),
     );
   } catch (error) {
     progress.finish();
@@ -369,6 +472,7 @@ async function runIndex(parsed: ParsedArgs): Promise<void> {
 }
 
 async function runDropIndex(parsed: ParsedArgs, root: string): Promise<void> {
+  await assertDirectOnlyOperation(parsed.options, "zg index --drop");
   if (!(await confirmIndexDrop(root, parsed.options.yes === true))) {
     console.log("Index drop cancelled.");
     return;
@@ -414,13 +518,48 @@ async function confirmIndexDrop(
   }
 }
 
-async function runServe(parsed: ParsedArgs): Promise<void> {
+async function runServer(parsed: ParsedArgs): Promise<void> {
   if (parsed.positionals.length > 0) {
-    throw new Error("zg serve --mcp does not accept positional arguments");
+    throw new Error(
+      `zg server ${parsed.options.serverAction} does not accept positional arguments`,
+    );
+  }
+  const { readPackageVersion } = await import("./version.js");
+  if (parsed.options.serverAction === "on") {
+    const { startServer } = await import("../daemon/server-controller.js");
+    const status = await startServer({
+      cliPath: process.argv[1]!,
+      listen: parsed.options.listen,
+      tokenFile: parsed.options.serverTokenFile,
+      home: parsed.options.home,
+    });
+    printServerControlStatus(status);
+    return;
+  }
+  if (parsed.options.serverAction === "off") {
+    const { stopServer } = await import("../daemon/server-controller.js");
+    printServerControlStatus(
+      await stopServer(
+        parsed.options.home,
+        30_000,
+        parsed.options.serverTokenFile,
+      ),
+    );
+    return;
+  }
+  if (parsed.options.serverAction === "status") {
+    printServerControlStatus(await serverStatus(parsed.options.home));
+    return;
   }
 
-  const { runMcpServer } = await import("./mcp.js");
-  await runMcpServer(createServiceOptions(parsed.options, process.cwd()));
+  const { runDaemonForeground } = await import("../daemon/runtime.js");
+  await runDaemonForeground({
+    version: readPackageVersion(),
+    listen: parsed.options.listen,
+    tokenFile: parsed.options.serverTokenFile,
+    home: parsed.options.home,
+    serviceOptions: createServiceOptions(parsed.options, process.cwd()),
+  });
 }
 
 async function runStatus(parsed: ParsedArgs): Promise<void> {
@@ -429,18 +568,35 @@ async function runStatus(parsed: ParsedArgs): Promise<void> {
     throw new Error("zg status accepts at most one root path");
   }
 
-  const zvecGrep = await createZvecGrep(
-    createServiceOptions(parsed.options, root),
-  );
-  try {
-    const info = await zvecGrep.info({ root });
-    printAnonymousInfo(info, parsed.options);
-  } finally {
-    await zvecGrep.close();
-  }
+  const mode = resolveClientMode(parsed.options.mode);
+  await routeByMode({
+    mode,
+    serverAvailable: () => daemonIsReady(parsed.options.home),
+    server: async () => {
+      const result = await daemonClient(parsed.options).callTool(
+        "zvec_grep_index_status",
+        { root: resolve(root) },
+      );
+      printServerIndexInfo(
+        result as Parameters<typeof printServerIndexInfo>[0],
+        parsed.options,
+      );
+    },
+    direct: async () => {
+      const zvecGrep = await createZvecGrep(
+        createServiceOptions(parsed.options, root),
+      );
+      try {
+        printAnonymousInfo(await zvecGrep.info({ root }), parsed.options);
+      } finally {
+        await zvecGrep.close();
+      }
+    },
+  });
 }
 
 async function runCollections(parsed: ParsedArgs): Promise<void> {
+  assertDirectOnlyMode(parsed.options, "--collections");
   const [action = "list", name, root] = parsed.positionals;
   validateCollectionArguments(action, parsed.positionals);
   const indexOption = collectionIndexOption(parsed.options);
@@ -522,7 +678,10 @@ async function runCollections(parsed: ParsedArgs): Promise<void> {
           parsed.options,
           info?.rootPaths,
         );
-        persistExplicitGlobalConfig(parsed.options, info?.embedding?.provider);
+        persistExplicitGlobalConfig(
+          parsed.options,
+          embeddingReference(info?.embedding),
+        );
       } catch (error) {
         progress.finish();
         throw error;
@@ -636,7 +795,25 @@ async function runQuery(parsed: ParsedArgs): Promise<void> {
         : "zg query requires text or --hybrid/--fts/--vector routes. Use zg help query for examples.",
     );
   }
+  if (!commandOptions.rg && !commandOptions.collection) {
+    const mode = resolveClientMode(commandOptions.mode);
+    if (mode !== "direct") {
+      await routeByMode({
+        mode,
+        serverAvailable: () => daemonIsReady(commandOptions.home),
+        server: () => runServerQuery(commandOptions, queries, routes),
+        direct: () => runDirectQuery(commandOptions, queries),
+      });
+      return;
+    }
+  }
+  await runDirectQuery(commandOptions, queries);
+}
 
+async function runDirectQuery(
+  commandOptions: CliOptions,
+  queries: readonly string[],
+): Promise<void> {
   const zvecGrep = await createZvecGrep(
     createServiceOptions(commandOptions, undefined),
   );
@@ -669,6 +846,106 @@ async function runQuery(parsed: ParsedArgs): Promise<void> {
     throw error;
   } finally {
     await zvecGrep.close();
+  }
+}
+
+async function runServerQuery(
+  options: CliOptions,
+  queries: readonly string[],
+  routes: readonly ZvecGrepContextRoute[],
+): Promise<void> {
+  const searchPolicy = resolveServerSearchPolicy(options);
+  const fts = routes
+    .filter((route) => route.mode === "fts")
+    .map((route) => route.query);
+  const vector = routes
+    .filter((route) => route.mode === "vector")
+    .map((route) => route.query);
+  const response = await daemonClient(options).callTool("zvec_grep_search", {
+    root: resolve(process.cwd()),
+    queries: queries.length ? queries : undefined,
+    fts: fts.length ? fts : undefined,
+    vector: vector.length ? vector : undefined,
+    fuse: options.fuse,
+    limit: options.limit,
+    trace: options.trace,
+    preferSymbol: options.preferSymbol,
+    symbolTypes: options.symbolTypes,
+    globs: options.globs,
+    insensitiveGlobs: options.insensitiveGlobs,
+    fileTypes: options.fileTypes,
+    excludedFileTypes: options.excludedFileTypes,
+    hidden: options.hidden,
+    noIgnore: options.noIgnore,
+    ignoreFiles: options.ignoreFiles,
+    maxDepth: options.maxDepth,
+    maxFileSizeBytes: options.maxFileSizeBytes,
+    follow: options.follow,
+    embeddingConcurrency: options.embeddingConcurrency,
+    modifiedAfter: options.modifiedAfter,
+    modifiedBefore: options.modifiedBefore,
+    freshness: searchPolicy.freshness,
+    autoUpdate: searchPolicy.autoUpdate,
+  });
+  const result = response.result as ZvecGrepContextResult;
+  if (options.human) printHumanContextResult(result, options);
+  else printAgentContextResult(result, options);
+  if (response.freshness === "possibly_stale") {
+    console.error("status: possibly_stale");
+    const indexing = response.indexing as
+      { state?: string; completed?: number; total?: number } | undefined;
+    if (indexing?.state) {
+      const progress =
+        indexing.completed === undefined || indexing.total === undefined
+          ? ""
+          : ` (${indexing.completed}/${indexing.total})`;
+      console.error(`indexing: ${indexing.state}${progress}`);
+    }
+  }
+}
+
+function daemonClient(options: CliOptions): DaemonClient {
+  return new DaemonClient({
+    serverUrl: resolveServerUrl(),
+    home: options.home,
+    tokenFile: options.serverTokenFile,
+  });
+}
+
+async function daemonIsReady(home?: string): Promise<boolean> {
+  return (await serverStatus(home)).ready;
+}
+
+function printServerControlStatus(
+  status: Awaited<ReturnType<typeof serverStatus>>,
+): void {
+  console.log(
+    `Server: ${status.running ? (status.ready ? "ready" : "starting") : "stopped"}`,
+  );
+  if (status.pid) console.log(`PID: ${status.pid}`);
+  if (status.serverUrl) console.log(`URL: ${status.serverUrl}`);
+}
+
+function assertDirectOnlyMode(options: CliOptions, command: string): void {
+  if (resolveClientMode(options.mode) === "server") {
+    throw new Error(
+      `${command} is Direct-only; use --mode direct after stopping the daemon`,
+    );
+  }
+}
+
+async function assertDirectOnlyOperation(
+  options: CliOptions,
+  command: string,
+): Promise<void> {
+  const mode = resolveClientMode(options.mode);
+  if (
+    mode === "server" ||
+    (mode === "auto" && (await daemonIsReady(options.home)))
+  ) {
+    throw new Error(
+      `${command} is Direct-only; use --mode direct after stopping the daemon`,
+    );
   }
 }
 
@@ -761,13 +1038,19 @@ export function createServiceOptions(
 
 function persistExplicitGlobalConfig(
   options: CliOptions,
-  indexedProvider: string | undefined,
+  indexedEmbedding: string | undefined,
 ): void {
-  if (!updateGlobalConfigFromExplicitOptions(options, indexedProvider)) {
+  if (!updateGlobalConfigFromExplicitOptions(options, indexedEmbedding)) {
     return;
   }
 
   console.log(`Global config: ${globalConfigPath()}`);
+}
+
+function embeddingReference(
+  embedding: { provider: string; model: string } | null | undefined,
+): string | undefined {
+  return embedding ? `${embedding.provider}/${embedding.model}` : undefined;
 }
 
 function parseEnvLlamaGpu(
@@ -1093,27 +1376,19 @@ function isCodexMcpServerTableName(tableName: string): boolean {
   );
 }
 
-function codexConfigBlock(mcpToolTimeoutSeconds: number): string {
+function codexConfigBlock(
+  mcpToolTimeoutSeconds: number,
+  tokenEnv?: string,
+): string {
   return `${ZVEC_GREP_CONFIG_START}
 [mcp_servers.zvec_grep]
-command = "zg"
-args = ["serve", "--mcp"]
-env_vars = [
-  "DASHSCOPE_API_KEY",
-  "QWEN_API_KEY",
-  "ZVEC_GREP_API_KEY",
-  "ZVEC_GREP_EMBEDDING",
-  "ZVEC_GREP_ENDPOINT",
-  "ZVEC_GREP_HOME",
-  "ZVEC_GREP_MODEL_CACHE",
-  "ZVEC_GREP_LLAMA_GPU",
-  "ZVEC_GREP_EMBED_PARALLELISM",
-  "NODE_LLAMA_CPP_CMAKE_OPTION_GGML_OPENMP",
-  "NODE_LLAMA_CPP_CMAKE_OPTION_GGML_NATIVE",
-  "NODE_LLAMA_CPP_CMAKE_OPTION_GGML_CPU_ARM_ARCH"
-]
-startup_timeout_sec = 20
-tool_timeout_sec = ${mcpToolTimeoutSeconds}
+url = "${resolveServerUrl()}"
+${
+  tokenEnv
+    ? `bearer_token_env_var = "${tokenEnv}"
+`
+    : ""
+}tool_timeout_sec = ${mcpToolTimeoutSeconds}
 default_tools_approval_mode = "auto"
 ${ZVEC_GREP_CONFIG_END}`;
 }
@@ -1124,8 +1399,8 @@ function codexAgentsBlock(): string {
 
 Use zvec-grep before grep, rg, or broad file reads when you need to understand or locate code.
 
-- **MCP tools**: Use \`zvec_grep_search\` for indexed semantic/lexical code search and \`zvec_grep_rg\` for explicit no-index lexical search.
-- **Indexing and status**: These are CLI-only operations. If an index is missing, use \`zvec_grep_rg\` and mention \`zg index\` as the opt-in setup path; use \`zg status\` when status inspection is needed.
+- **MCP tools**: Use \`zvec_grep_search\` for indexed semantic/lexical code search, \`zvec_grep_index\` to ensure an index, and the two status tools to inspect index or server state.
+- **Indexing and status**: Every repository MCP call uses an absolute root visible to the local daemon. Start it with \`zg server on\`. For \`zvec_grep_index\`, \`wait\` defaults to false: submit it in the background and poll \`zvec_grep_index_status\`; set \`wait: true\` only when completion is required before continuing.
 - **Shell fallback**: If the MCP server is unavailable, use \`zg status\`, \`zg query "<query>"\`, and \`zg query --rg "<pattern>"\`.
 
 Prefer focused -g/--glob and -t/--type filters, and exclude dependencies, generated output, caches, build artifacts, and logs unless the task is about those files.

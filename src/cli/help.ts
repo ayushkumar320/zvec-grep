@@ -22,6 +22,8 @@ Commands:
   index          Build, rebuild, or drop the workspace index
   status         Show workspace and index status
   collections    Manage named collections
+  config         Configure per-model local embedding runtime settings
+  server         Start, stop, inspect, or run the shared MCP server
   install        Install agent integrations
   uninstall      Remove agent integrations
   help           Show help for a command
@@ -33,6 +35,8 @@ Examples:
   zg query --rg -F "AuthService" src
   zg index --embedding local/embeddinggemma-300m
   zg status
+  zg server on
+  zg config model set local/embeddinggemma-300m --llama-gpu metal
   zg install
 
 Run zg help <command> or zg <command> --help for command-specific help.
@@ -53,10 +57,7 @@ Search routes:
   --fts <query>                     Add an exact/lexical query
   --vector <query>                  Add a semantic/vector query
   --fuse                            Fuse all query groups into one ranked list
-  --rg                              Run exhaustive managed ripgrep; cannot be mixed with indexed routes
-
-Each route option consumes one query and may be repeated. Without --fuse,
---limit applies to each query group; with --fuse it applies to the final list.
+  --rg                              Run exhaustive managed ripgrep
 
 Result options:
   --limit <n>                       Maximum results
@@ -64,31 +65,23 @@ Result options:
   --preview <none|short|full>       Indexed source preview size
   --debug                           Print diagnostics to stderr
   --trace                           Include per-hit indexed search trace
-  --color <auto|always|never>       Color mode
-  --no-color                        Disable color
+  --fresh                           Wait for pending Server updates
+  --no-auto-update                  Do not refresh a stale anonymous index
+  --mode <direct|server|auto>       Select indexed query transport
 
-File filters (indexed and --rg):
+File filters:
   -g, --glob <glob>                 Include paths; prefix with ! to exclude; repeatable
   --iglob <glob>                    Case-insensitive path glob; repeatable
   -t, --type <type>                 Include a ripgrep file type; repeatable
   -T, --type-not <type>             Exclude a ripgrep file type; repeatable
   --modified-after <time>           Only files modified after a date or epoch milliseconds
   --modified-before <time>          Only files modified before a date or epoch milliseconds
-
-Indexed-only filters:
-  --collection <name>               Query a named collection
   --symbol-type <type>              module, class, interface, function, value, alias
   --prefer-symbol                   Prefer exact indexed symbols
-  --no-auto-update                  Do not refresh a stale anonymous index
-  --embedding-concurrency <n>       Concurrency for automatic index refresh
 
-Managed --rg supports common ripgrep matching, file-selection, context, engine,
-encoding, and discovery flags, including -e/-f, -F, -i/-s/-S, -w/-x/-v,
--A/-B/-C, -m, -P/-U, -g/--iglob, -t/-T, --hidden, --no-ignore,
---ignore-file, --max-depth, --max-filesize, -L, and -z. Use -e when a
-pattern begins with "-". Options that replace rg's output format, such as
---json, --count, --files, -l, -o, --replace, and --vimgrep, are rejected.
-.git/** and .zvec-grep/** remain excluded.`;
+Managed --rg supports common ripgrep matching, context, engine, encoding,
+discovery, glob, and type flags. Use -e when a pattern begins with "-".
+Options that replace rg's output format are rejected.`;
     case "index":
       return `Usage:
   zg index [root] [options]
@@ -100,6 +93,7 @@ Options:
   --rebuild                         Rebuild the existing index
   --drop                            Permanently remove the workspace index
   --yes                             Confirm --drop without prompting
+  --mode <direct|server|auto>       Select indexing transport
   -g, --glob <glob>                 Include paths; prefix with ! to exclude; repeatable
   --iglob <glob>                    Case-insensitive path glob; repeatable
   -t, --type <type>                 Include a ripgrep file type; repeatable
@@ -121,11 +115,10 @@ Options:
   --embedding-parallelism <n>       Local embedding context parallelism
 
 New indexes require --embedding, ZVEC_GREP_EMBEDDING, or a configured default.
-Existing indexes reuse their stored embedding schema. Explicit model/provider
-options used for a successful index are persisted in ~/.zvec-grep/config.json.`;
+Existing indexes reuse their stored embedding schema.`;
     case "status":
       return `Usage:
-  zg status [root] [--color <auto|always|never>] [--no-color]
+  zg status [root] [--mode <direct|server|auto>]
 
 Shows the nearest workspace root, index policy, index state, embedding schema,
 stored paths, refresh status, and suggested next action.`;
@@ -138,23 +131,38 @@ stored paths, refresh status, and suggested next action.`;
 
 Named collections support the same embedding, file-selection, discovery,
 rebuild, and embedding-concurrency options as zg index.`;
+    case "config":
+      return `Usage:
+  zg config model set <local/model> [--gpu|--no-gpu|--llama-gpu <mode>] [--embedding-parallelism <n>]
+
+Stores runtime GPU and parallelism settings for one local embedding model in
+~/.zvec-grep/config.json. These settings do not change index compatibility.`;
+    case "server":
+      return `Usage:
+  zg server on [--listen 127.0.0.1:7999] [--token-file <path>]
+  zg server off [--token-file <path>]
+  zg server status
+  zg server run [--listen 127.0.0.1:7999] [--token-file <path>]
+
+The server listens on loopback. Authentication is disabled by default; pass a
+token file or set ZVEC_GREP_SERVER_TOKEN to require Bearer authentication.`;
     case "install":
       return `Usage:
   zg install [--target codex|all|auto] [--yes] [--force]
 
 Options:
   --target <agent>                  Agent integration to install
-  --mcp-tool-timeout <seconds>      MCP tool timeout written to agent configuration
+  --mcp-tool-timeout <seconds>      MCP tool timeout written to configuration
+  --mcp-token-env <name>            Bearer token environment variable
   --yes                             Use default choices without prompting
-  --force                           Replace conflicting unmanaged integration configuration
+  --force                           Replace conflicting unmanaged configuration
 
 This installs agent guidance and MCP configuration. It does not install the npm package.`;
     case "uninstall":
       return `Usage:
   zg uninstall [--target codex|all|auto] [--yes]
 
-Removes zvec-grep-managed agent guidance and MCP configuration. It does not
-remove the npm package or unrelated user configuration.`;
+Removes zvec-grep-managed agent guidance and MCP configuration.`;
     case "help":
       return `Usage:
   zg help [command]
@@ -167,11 +175,6 @@ remove the npm package or unrelated user configuration.`;
   zg version -v
   zg -v
   zg --version`;
-    case "serve":
-      return `Usage:
-  zg serve --mcp
-
-Starts the stdio MCP process used by installed agent integrations.`;
     default:
       return undefined;
   }

@@ -103,7 +103,23 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
 
   const options: CliOptions = {};
   const positionals: string[] = [];
-  const startIndex = 1;
+  let startIndex = 1;
+  if (commandInput.command === "config") {
+    if (args[1] === "model" && args[2] === "set") {
+      options.configAction = "model-set";
+      startIndex = 3;
+    }
+  } else if (commandInput.command === "server") {
+    if (
+      args[1] === "on" ||
+      args[1] === "off" ||
+      args[1] === "status" ||
+      args[1] === "run"
+    ) {
+      options.serverAction = args[1];
+      startIndex = 2;
+    }
+  }
 
   for (let index = startIndex; index < args.length; index++) {
     const arg = args[index]!;
@@ -127,8 +143,20 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
       };
     } else if (arg === "--version") {
       throw new Error(`${arg} must be used without a command`);
-    } else if (arg === "--mcp") {
-      options.mcp = true;
+    } else if (isLongOptionWithValue(arg, "--mode")) {
+      options.mode = parseClientMode(valueFromLongOption(arg));
+    } else if (arg === "--mode") {
+      options.mode = parseClientMode(readOptionValue(args, ++index, arg));
+    } else if (arg === "--force-direct") {
+      options.forceDirect = true;
+    } else if (isLongOptionWithValue(arg, "--listen")) {
+      options.listen = valueFromLongOption(arg);
+    } else if (arg === "--listen") {
+      options.listen = readOptionValue(args, ++index, arg);
+    } else if (isLongOptionWithValue(arg, "--token-file")) {
+      options.serverTokenFile = valueFromLongOption(arg);
+    } else if (arg === "--token-file") {
+      options.serverTokenFile = readOptionValue(args, ++index, arg);
     } else if (isLongOptionWithValue(arg, "--target")) {
       options.installTargets = appendInstallTargets(
         options.installTargets,
@@ -146,6 +174,16 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
       );
     } else if (arg === "--mcp-tool-timeout") {
       options.installMcpToolTimeoutSeconds = parsePositiveInteger(
+        readOptionValue(args, ++index, arg),
+        arg,
+      );
+    } else if (isLongOptionWithValue(arg, "--mcp-token-env")) {
+      options.installMcpTokenEnv = parseEnvironmentVariable(
+        valueFromLongOption(arg),
+        "--mcp-token-env",
+      );
+    } else if (arg === "--mcp-token-env") {
+      options.installMcpTokenEnv = parseEnvironmentVariable(
         readOptionValue(args, ++index, arg),
         arg,
       );
@@ -179,6 +217,8 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
       options.resetPaths = true;
     } else if (arg === "--no-auto-update") {
       options.noAutoUpdate = true;
+    } else if (arg === "--fresh") {
+      options.fresh = true;
     } else if (arg === "--prefer-symbol") {
       options.preferSymbol = true;
     } else if (arg === "--collection") {
@@ -190,11 +230,21 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
     } else if (arg === "--model-cache") {
       options.modelCacheDir = readOptionValue(args, ++index, arg);
     } else if (arg === "--gpu") {
-      options.llamaGpu = "auto";
+      setLlamaGpuOption(
+        options,
+        "auto",
+        arg,
+        commandInput.command === "config",
+      );
     } else if (arg === "--no-gpu") {
-      options.llamaGpu = false;
+      setLlamaGpuOption(options, false, arg, commandInput.command === "config");
     } else if (arg === "--llama-gpu") {
-      options.llamaGpu = parseLlamaGpu(readOptionValue(args, ++index, arg));
+      setLlamaGpuOption(
+        options,
+        parseLlamaGpu(readOptionValue(args, ++index, arg)),
+        arg,
+        commandInput.command === "config",
+      );
     } else if (arg === "--embedding-parallelism") {
       options.embeddingParallelism = parsePositiveInteger(
         readOptionValue(args, ++index, arg),
@@ -520,9 +570,16 @@ function parseCommand(args: readonly string[]): {
     first === "collections" ||
     first === "install" ||
     first === "uninstall" ||
-    first === "serve"
+    first === "config" ||
+    first === "server"
   ) {
     return { command: first };
+  }
+
+  if (first === "serve") {
+    throw new Error(
+      "zg serve has been removed; use zg server on and Streamable HTTP MCP",
+    );
   }
 
   throw new Error(`Unknown command: ${first}`);
@@ -591,6 +648,49 @@ function validateCliShape(
     );
   }
 
+  if (command === "config") {
+    if (!options.configAction) {
+      throw new Error("zg config requires model set");
+    }
+    const unsupported = firstEnabledOption([
+      [options.installTargets?.length, "--target"],
+      [options.installMcpToolTimeoutSeconds, "--mcp-tool-timeout"],
+      [options.installMcpTokenEnv, "--mcp-token-env"],
+      [options.yes, "--yes"],
+      [options.collection, "--collection"],
+      [options.rg, "--rg"],
+      [options.home, "--home"],
+      [options.embedding, "--embedding"],
+      [options.apiKey, "--api-key"],
+      [options.endpoint, "--endpoint"],
+      [options.mode, "--mode"],
+      [options.listen, "--listen"],
+      [options.serverTokenFile, "--token-file"],
+    ]);
+    if (unsupported) {
+      throw new Error(`zg config model set does not accept ${unsupported}`);
+    }
+  }
+
+  if (command === "server") {
+    if (!options.serverAction) {
+      throw new Error("zg server requires on, off, status, or run");
+    }
+    if (
+      options.listen !== undefined &&
+      options.serverAction !== "run" &&
+      options.serverAction !== "on"
+    ) {
+      throw new Error("--listen can only be used with zg server on or run");
+    }
+    if (
+      options.serverTokenFile !== undefined &&
+      options.serverAction === "status"
+    ) {
+      throw new Error("--token-file cannot be used with zg server status");
+    }
+  }
+
   if (
     options.rg &&
     (hasExplicitRoutes(options) || options.hybridQueries?.length)
@@ -604,6 +704,14 @@ function validateCliShape(
   }
   if (options.rg && options.collection) {
     throw new Error("--rg cannot be combined with --collection");
+  }
+
+  if (options.forceDirect && options.mode !== "direct") {
+    throw new Error("--force-direct requires --mode direct");
+  }
+
+  if (options.fresh && options.noAutoUpdate) {
+    throw new Error("--fresh cannot be combined with --no-auto-update");
   }
   if (options.rg && options.preview) {
     throw new Error(
@@ -627,11 +735,22 @@ function validateCliShape(
     throw new Error(`${option} can only be used with --rg`);
   }
 
-  if (options.mcp && command !== "serve") {
-    throw new Error("--mcp can only be used with zg serve");
+  if (options.fresh && command !== "query") {
+    throw new Error("--fresh can only be used with zg query");
   }
-  if (command === "serve" && !options.mcp) {
-    throw new Error("zg serve currently requires --mcp");
+  if (
+    options.mode !== undefined &&
+    command !== "query" &&
+    command !== "index" &&
+    command !== "status"
+  ) {
+    throw new Error("--mode can only be used with query, index, or status");
+  }
+  if (options.listen !== undefined && command !== "server") {
+    throw new Error("--listen can only be used with zg server on or run");
+  }
+  if (options.serverTokenFile !== undefined && command !== "server") {
+    throw new Error("--token-file can only be used with zg server");
   }
 
   if (
@@ -649,13 +768,15 @@ function validateCliShape(
   ) {
     throw new Error("--mcp-tool-timeout can only be used with zg install");
   }
+  if (options.installMcpTokenEnv !== undefined && command !== "install") {
+    throw new Error("--mcp-token-env can only be used with zg install");
+  }
   if (options.force && command !== "install") {
     throw new Error("--force can only be used with zg install");
   }
 
   if (command === "install" || command === "uninstall") {
     const unsupported = firstEnabledOption([
-      [options.mcp, "--mcp"],
       [options.color, "--color"],
       [options.home, "--home"],
       [options.embedding, "--embedding"],
@@ -752,6 +873,12 @@ function firstEnabledOption(
   return candidates.find(([value]) =>
     Array.isArray(value) ? value.length > 0 : value !== undefined,
   )?.[1];
+}
+
+function parseClientMode(value: string): "direct" | "server" | "auto" {
+  if (value === "direct" || value === "server" || value === "auto")
+    return value;
+  throw new Error("--mode must be direct, server, or auto");
 }
 
 function readOptionValue(
@@ -1036,6 +1163,13 @@ function parsePositiveInteger(value: string, option: string): number {
   return parsed;
 }
 
+function parseEnvironmentVariable(value: string, option: string): string {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
+    throw new Error(`${option} requires a valid environment variable name`);
+  }
+  return value;
+}
+
 function parseByteSize(value: string, option: string): number {
   const match = value.trim().match(/^(\d+)([KMGT])?$/i);
   if (!match) {
@@ -1108,6 +1242,18 @@ export function parseLlamaGpu(
   }
 
   throw new Error(`Unsupported llama GPU mode: ${value}`);
+}
+
+function setLlamaGpuOption(
+  options: CliOptions,
+  value: "auto" | "metal" | "vulkan" | "cuda" | false,
+  option: string,
+  rejectDuplicate: boolean,
+): void {
+  if (rejectDuplicate && options.llamaGpu !== undefined) {
+    throw new Error(`${option} conflicts with an earlier GPU option`);
+  }
+  options.llamaGpu = value;
 }
 
 function hasExplicitRoutes(options: CliOptions): boolean {

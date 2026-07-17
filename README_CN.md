@@ -38,7 +38,7 @@ zg query "where query auto update happens"
 >
 > - **混合代码检索**：可以用自然语言、精确关键词，或两者组合来搜索代码。
 > - **明确的索引生命周期**：新仓库必须显式运行 `zg index --embedding <model>`；agent 不会静默创建索引。
-> - **自动刷新**：已有匿名索引会在普通查询前自动检查并增量更新。
+> - **自动刷新**：Server 查询默认返回当前结果并在后台刷新过期的匿名索引；使用 `--fresh` 可等待刷新完成。
 > - **节省 Token 的输出**：agent 默认输出 `--preview none`；`--human` 默认展示完整源码 preview。
 > - **无索引文本搜索**：`zg query --rg` 提供托管的 ripgrep 搜索，不需要先建索引。
 
@@ -51,7 +51,7 @@ zg query "where query auto update happens"
 - **托管 ripgrep 通道**：`zg query --rg` 支持常见 `rg` 参数，未建索引仓库也能使用。
 - **显式模型选择**：第一次建索引必须指定模型，例如 `local/embeddinggemma-300m`、`local/qwen3-embedding-0.6b` 或 `qwen/qwen3.7-text-embedding`。
 - **Schema 复用**：已有索引再次运行 `zg index` 会复用保存的 embedding schema，除非你显式切换模型。
-- **MCP Server**：运行 `zg serve --mcp`，向 MCP 客户端暴露索引搜索和无索引文本搜索工具；建索引和状态查看仍由 CLI 提供。
+- **共享 MCP Server**：运行 `zg server on`，通过 loopback Streamable HTTP 暴露索引检索、建索引、索引状态和服务状态四个工具，并可按需启用 Bearer 鉴权。
 - **库 API**：Node.js 工具、agent 或 MCP server 可以直接使用 `createZvecGrep()`。
 
 ## <a id="installation"></a>📦 安装
@@ -80,10 +80,11 @@ npm install -g .
 zg version
 ```
 
-运行 stdio MCP server：
+启动本机后台 server：
 
 ```bash
-zg serve --mcp
+zg server on
+zg server status
 ```
 
 安装 Codex MCP 集成：
@@ -93,6 +94,10 @@ zg install --target codex --yes
 ```
 
 Codex MCP 工具调用默认超时为 600 秒，可在安装时通过 `--mcp-tool-timeout <秒数>` 覆盖。
+本地 server 默认不启用 token，并且只监听 loopback。需要 Bearer 鉴权时，可使用 `zg server on --token-file <path>` 启动（或设置 `ZVEC_GREP_SERVER_TOKEN`），再通过 `zg install --mcp-token-env ZVEC_GREP_SERVER_TOKEN` 让 MCP 客户端发送相同 token。安装后的 MCP URL 为 `http://127.0.0.1:7999/mcp`。使用 `zg server off` 停止 daemon。
+
+CLI 的索引检索和建索引命令支持 `--mode direct`、`--mode server` 和 `--mode auto`。默认模式为 `auto`：只在 daemon ready 时使用 server，否则在提交请求前回退 Direct。
+Daemon 以 JSON Lines 写日志到 `~/.zvec-grep/daemon/logs/server.log`，不会记录凭证或完整查询文本。
 
 ### ✅ 运行要求
 
@@ -100,7 +105,7 @@ Codex MCP 工具调用默认超时为 600 秒，可在安装时通过 `--mcp-too
 - macOS、Linux 或 Windows
 - 使用索引检索时需要选择一个支持的 embedding 模型
 
-`zg query --rg` 不需要 embedding 模型，也不需要索引。
+`zg query --rg` 不需要 embedding 模型，也不需要索引。无论当前是 Direct、Server 还是 Auto 模式，它都始终在本地执行，不会停止 daemon，也不会访问索引 writer。
 
 ## <a id="quickstart"></a>⚡ 快速开始
 
@@ -147,7 +152,7 @@ zg query --rg -F "ZVEC_GREP_HOME" src
 zg query --human "root local index discovery" --limit 3
 ```
 
-在 MCP 客户端中可使用 `zvec_grep_search` 和 `zvec_grep_rg`。MCP 输入使用 JSON 友好的字段，例如 `include: ["src/**"]`；状态查看和建索引请使用 CLI 的 `zg status` 与 `zg index`。Codex installer 会向 `${CODEX_HOME:-$HOME/.codex}/config.toml` 和 `${CODEX_HOME:-$HOME/.codex}/AGENTS.md` 写入由 zvec-grep 管理的配置块。
+MCP 客户端可使用四个工具：`zvec_grep_search`、`zvec_grep_index`、`zvec_grep_index_status` 和 `zvec_grep_server_status`。MCP 输入使用 JSON 友好的字段，例如 `globs: ["src/**"]`。Codex installer 会向 `${CODEX_HOME:-$HOME/.codex}/config.toml` 和 `${CODEX_HOME:-$HOME/.codex}/AGENTS.md` 写入由 zvec-grep 管理的配置块。
 
 ## <a id="models"></a>🧠 模型
 
@@ -181,11 +186,28 @@ zg index \
       "apiKey": "...",
       "endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings"
     }
+  },
+  "models": {
+    "local/embeddinggemma-300m": {
+      "llamaGpu": "metal",
+      "embeddingParallelism": 2
+    },
+    "local/qwen3-embedding-0.6b": {
+      "llamaGpu": false,
+      "embeddingParallelism": 1
+    }
   }
 }
 ```
 
-配置优先级为：显式 CLI 或库参数、环境变量、全局配置、内置默认值。仓库 root 和文件选择规则仍保存在各仓库自己的 `.zvec-grep` 元数据中，不进入全局配置。
+本地 embedding 会按 `models["provider/model"]` 为每个模型分别选择 GPU 和并行度；daemon 建索引和搜索都会使用这份配置，切换运行配置不需要重建已有索引。显式 CLI 或库参数优先于模型配置，模型配置优先于全局默认值和环境变量回退。远程 embedding 会忽略本地 GPU 配置。仓库 root 和 include/exclude 规则仍保存在各仓库自己的 `.zvec-grep` 元数据中，不进入全局配置。
+
+也可以通过命令配置，无需手工编辑 JSON：
+
+```bash
+zg config model set local/embeddinggemma-300m --llama-gpu metal --embedding-parallelism 2
+zg config model set local/qwen3-embedding-0.6b --no-gpu --embedding-parallelism 1
+```
 
 对于已有索引，`zg index` 不传 `--embedding` 会复用索引里保存的 schema。只有在你明确想切换模型时，才使用 `--rebuild --embedding <model>`：
 

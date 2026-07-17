@@ -1,5 +1,20 @@
-import { open, readFile, readdir, realpath, stat } from "node:fs/promises";
-import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import {
+  lstat,
+  open,
+  readFile,
+  readdir,
+  realpath,
+  stat,
+} from "node:fs/promises";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 import type { FileInfo, RootPath } from "../../../types.js";
 import { detectFileType } from "../../../files/file-type.js";
 import { sha256Text } from "../../../utils/hash.js";
@@ -24,6 +39,7 @@ import {
 const DEFAULT_MAX_FILE_SIZE_BYTES = 1 * 1024 * 1024;
 const BINARY_SNIFF_BYTES = 8192;
 const BINARY_CONTROL_CHAR_RATIO = 0.3;
+const MAX_GITIGNORE_CACHE_ENTRIES = 4_096;
 
 const DEFAULT_IGNORED_DIRECTORY_NAMES = [
   "node_modules",
@@ -88,6 +104,11 @@ const DEFAULT_IGNORE_RULES: readonly IgnoreRule[] =
     hasSlash: false,
   }));
 
+const gitIgnoreRuleCache = new Map<
+  string,
+  { content: string; rules: IgnoreRule[] }
+>();
+
 export type ScanResult = {
   files: FileInfo[];
 };
@@ -104,6 +125,226 @@ export async function scanRootPaths(
   }
 
   return { files };
+}
+
+export async function scanFilePath(
+  collectionId: string,
+  rootPaths: readonly RootPath[],
+  absolutePath: string,
+): Promise<ScanResult> {
+  const files: FileInfo[] = [];
+  for (const rootPath of matchingRootPaths(rootPaths, absolutePath)) {
+    const root = normalizeRootPath(rootPath);
+    const targetInfo = await lstat(absolutePath).catch(() => null);
+    const followedInfo =
+      targetInfo?.isSymbolicLink() && root.follow
+        ? await stat(absolutePath).catch(() => null)
+        : targetInfo;
+    if (!followedInfo?.isFile()) {
+      continue;
+    }
+    if (!root.recursive && dirname(absolutePath) !== root.absolutePath) {
+      continue;
+    }
+    const relativePath = toDisplayPath(
+      relative(root.absolutePath, absolutePath),
+    );
+    const rules = await ignoreRulesForDirectory(root, dirname(absolutePath));
+    const fileTypes = await resolveFileTypePatterns(
+      root.fileTypes,
+      root.excludedFileTypes,
+    );
+    if (
+      !pathCanBeScanned(
+        root,
+        relativePath,
+        basename(absolutePath),
+        false,
+        rules,
+      ) ||
+      !matchesFileSelection(relativePath, root, fileTypes) ||
+      (await hasExcludedNestedGitAncestor(root, absolutePath, false))
+    ) {
+      continue;
+    }
+    const file = await readFileInfo(collectionId, root, absolutePath);
+    if (file) {
+      files.push(file);
+    }
+  }
+  return { files: dedupeFiles(files) };
+}
+
+export async function scanDirectoryPath(
+  collectionId: string,
+  rootPaths: readonly RootPath[],
+  absolutePath: string,
+): Promise<ScanResult> {
+  const files: FileInfo[] = [];
+  for (const rootPath of matchingRootPaths(rootPaths, absolutePath)) {
+    const root = normalizeRootPath(rootPath);
+    if (!root.recursive && absolutePath !== root.absolutePath) {
+      continue;
+    }
+    const info = await lstat(absolutePath).catch(() => null);
+    const followedInfo =
+      info?.isSymbolicLink() && root.follow
+        ? await stat(absolutePath).catch(() => null)
+        : info;
+    if (!followedInfo?.isDirectory()) {
+      continue;
+    }
+    const relativePath = toDisplayPath(
+      relative(root.absolutePath, absolutePath),
+    );
+    const parentRules = await ignoreRulesForDirectory(
+      root,
+      dirname(absolutePath),
+    );
+    const fileTypes = await resolveFileTypePatterns(
+      root.fileTypes,
+      root.excludedFileTypes,
+    );
+    if (
+      relativePath &&
+      (!pathCanBeScanned(
+        root,
+        relativePath,
+        basename(absolutePath),
+        true,
+        parentRules,
+      ) ||
+        (await hasExcludedNestedGitAncestor(root, absolutePath, true)))
+    ) {
+      continue;
+    }
+    const rootRealPath = await realpath(root.absolutePath).catch(
+      () => root.absolutePath,
+    );
+    const directoryRealPath = await realpath(absolutePath).catch(
+      () => absolutePath,
+    );
+    const depth = relativePath.split("/").filter(Boolean).length;
+    await walk(
+      collectionId,
+      root,
+      absolutePath,
+      files,
+      parentRules,
+      fileTypes,
+      new Set([rootRealPath, directoryRealPath]),
+      depth,
+    );
+  }
+  return { files: dedupeFiles(files) };
+}
+
+async function hasExcludedNestedGitAncestor(
+  rootPath: RootPath,
+  absolutePath: string,
+  includeTarget: boolean,
+): Promise<boolean> {
+  const pathFromRoot = relative(rootPath.absolutePath, absolutePath);
+  const segments = pathFromRoot.split(sep).filter(Boolean);
+  const directorySegments = includeTarget ? segments : segments.slice(0, -1);
+  let current = rootPath.absolutePath;
+  for (const segment of directorySegments) {
+    current = join(current, segment);
+    const relativeDirectory = toDisplayPath(
+      relative(rootPath.absolutePath, current),
+    );
+    if (
+      (await isNestedGitRepositoryDirectory(current)) &&
+      !nestedGitRepositoryExplicitlyIncluded(relativeDirectory, rootPath)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function matchingRootPaths(
+  rootPaths: readonly RootPath[],
+  absolutePath: string,
+): RootPath[] {
+  return validateRootPaths(rootPaths).filter((rootPath) => {
+    const root = normalizeRootPath(rootPath);
+    const pathFromRoot = relative(root.absolutePath, absolutePath);
+    return (
+      !isAbsolute(pathFromRoot) &&
+      pathFromRoot !== ".." &&
+      !pathFromRoot.startsWith(`..${sep}`)
+    );
+  });
+}
+
+async function ignoreRulesForDirectory(
+  rootPath: RootPath,
+  directory: string,
+): Promise<IgnoreRule[]> {
+  const pathFromRoot = relative(rootPath.absolutePath, directory);
+  if (
+    isAbsolute(pathFromRoot) ||
+    pathFromRoot === ".." ||
+    pathFromRoot.startsWith(`..${sep}`)
+  ) {
+    return [...DEFAULT_IGNORE_RULES];
+  }
+  const rules = [
+    ...(rootPath.noIgnore ? [] : DEFAULT_IGNORE_RULES),
+    ...(await readConfiguredIgnoreRules(rootPath)),
+  ];
+  let current = rootPath.absolutePath;
+  if (!rootPath.noIgnore) {
+    rules.push(...(await readGitIgnoreRules(rootPath, current)));
+  }
+  if (!pathFromRoot) {
+    return rules;
+  }
+  for (const segment of pathFromRoot.split(sep).filter(Boolean)) {
+    current = join(current, segment);
+    if (!rootPath.noIgnore) {
+      rules.push(...(await readGitIgnoreRules(rootPath, current)));
+    }
+  }
+  return rules;
+}
+
+function pathCanBeScanned(
+  rootPath: RootPath,
+  relativePath: string,
+  name: string,
+  isDirectory: boolean,
+  ignoreRules: readonly IgnoreRule[],
+): boolean {
+  if (
+    relativePath
+      .split("/")
+      .some((segment) => HARD_SKIP_HIDDEN_NAMES.has(segment))
+  ) {
+    return false;
+  }
+  const ignoreMatch = matchIgnoreRules(relativePath, isDirectory, ignoreRules);
+  if (
+    ignoreMatch.ignored &&
+    !ignoredPathExplicitlyIncluded(relativePath, rootPath, ignoreMatch)
+  ) {
+    return false;
+  }
+  if (matchesRootExcludePatterns(relativePath, rootPath)) {
+    return false;
+  }
+  if (isDirectory) {
+    return !shouldSkipHiddenDirectory(name, relativePath, rootPath);
+  }
+  return (
+    !shouldSkipHiddenFile(name, relativePath, rootPath) &&
+    matchesRootPatterns(relativePath, rootPath)
+  );
+}
+
+function dedupeFiles(files: readonly FileInfo[]): FileInfo[] {
+  return [...new Map(files.map((file) => [file.id, file])).values()];
 }
 
 async function scanRootPath(
@@ -292,15 +533,25 @@ async function readGitIgnoreRules(
   rootPath: RootPath,
   currentPath: string,
 ): Promise<IgnoreRule[]> {
-  const content = await readFile(join(currentPath, ".gitignore"), "utf8").catch(
-    () => null,
-  );
+  const ignorePath = join(currentPath, ".gitignore");
+  const content = await readFile(ignorePath, "utf8").catch(() => null);
+  const basePath = toDisplayPath(relative(rootPath.absolutePath, currentPath));
+  const cacheKey = `${ignorePath}\0${basePath}`;
   if (content === null) {
+    gitIgnoreRuleCache.delete(cacheKey);
     return [];
   }
 
-  const basePath = toDisplayPath(relative(rootPath.absolutePath, currentPath));
-  return parseGitIgnoreRules(content, basePath);
+  const cached = gitIgnoreRuleCache.get(cacheKey);
+  if (cached?.content === content) {
+    return cached.rules;
+  }
+  const rules = parseGitIgnoreRules(content, basePath);
+  gitIgnoreRuleCache.set(cacheKey, { content, rules });
+  if (gitIgnoreRuleCache.size > MAX_GITIGNORE_CACHE_ENTRIES) {
+    gitIgnoreRuleCache.delete(gitIgnoreRuleCache.keys().next().value!);
+  }
+  return rules;
 }
 
 async function readConfiguredIgnoreRules(

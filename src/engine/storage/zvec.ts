@@ -14,7 +14,7 @@ import {
   type ZVecVector,
 } from "@zvec/zvec";
 import { closeSync, existsSync, mkdirSync, openSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { EngineError } from "../errors/index.js";
 import type {
   CodeEntityModifier,
@@ -104,6 +104,14 @@ export class ZvecCollectionStorage implements CollectionStorage {
     const file = this.filesByAbsolutePath.get(normalizePath(absolutePath));
 
     return file ? fileRecordToInfo(file) : null;
+  }
+
+  listFilesByPathPrefix(absolutePath: string): FileInfo[] {
+    const prefix = normalizePath(absolutePath);
+    const descendantPrefix = `${prefix}${sep}`;
+    return [...this.filesByAbsolutePath.entries()]
+      .filter(([path]) => path === prefix || path.startsWith(descendantPrefix))
+      .map(([, file]) => fileRecordToInfo(file));
   }
 
   listFiles(): FileInfo[] {
@@ -302,15 +310,18 @@ export class ZvecCollectionStorage implements CollectionStorage {
     return docsToHits(docs, "vector", this);
   }
 
-  optimize(): void {
+  async optimize(): Promise<void> {
     if (this.needsOptimize) {
-      this.collection.optimizeSync();
+      await this.collection.optimize();
       this.needsOptimize = false;
     }
   }
 
   close(): void {
-    this.optimize();
+    if (this.needsOptimize) {
+      this.collection.optimizeSync();
+      this.needsOptimize = false;
+    }
 
     this.files.close();
     this.collection.closeSync();

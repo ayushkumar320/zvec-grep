@@ -37,4 +37,13 @@ export type LlamaCppEmbeddingCatalogEntry = {
   maxBatchSize: number;
 };
 
-export type EmbeddingCatalogEntry = LlamaCppEmbeddingCatalogEntry;
+export type RemoteEmbeddingCatalogEntry = {
+  id: string;
+  provider: "qwen";
+  model: "text-embedding-v4";
+  dimension: number;
+  metric: VectorMetric;
+};
+
+export type EmbeddingCatalogEntry =
+  LlamaCppEmbeddingCatalogEntry | RemoteEmbeddingCatalogEntry;

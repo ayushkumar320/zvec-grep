@@ -226,6 +226,7 @@ export type IndexOptions = {
   rebuild?: boolean;
   embeddingConcurrency?: number;
   onProgress?: (progress: IndexProgress) => void;
+  changedPaths?: readonly string[];
 };
 
 export type TimingEntry = {

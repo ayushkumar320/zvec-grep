@@ -38,7 +38,7 @@ zg query "where query auto update happens"
 >
 > - **Hybrid Code Search**: Query code with natural language, exact terms, or both in one command.
 > - **Explicit Index Lifecycle**: New repositories require `zg index --embedding <model>`; agents do not silently create indexes.
-> - **Automatic Refresh**: Existing anonymous indexes are checked and incrementally updated before normal queries.
+> - **Automatic Refresh**: Server queries return current results and refresh stale anonymous indexes in the background; use `--fresh` to wait.
 > - **Token-Efficient Output**: Agent output defaults to `--preview none`; `--human` defaults to full source previews.
 > - **No-Index Lexical Search**: `zg query --rg` provides managed ripgrep search without requiring an index.
 
@@ -51,7 +51,7 @@ zg query "where query auto update happens"
 - **Managed ripgrep Route**: `zg query --rg` supports common `rg` flags and works even before a repository is indexed.
 - **Explicit Model Choice**: The first index build requires a model such as `local/embeddinggemma-300m`, `local/qwen3-embedding-0.6b`, or `qwen/qwen3.7-text-embedding`.
 - **Schema Reuse**: Re-running `zg index` on an existing index reuses the stored embedding schema unless you explicitly change it.
-- **MCP Server**: Run `zg serve --mcp` to expose indexed and no-index lexical search tools to MCP clients. Indexing and status remain CLI-only operations.
+- **Shared MCP Server**: Run `zg server on` to expose the four indexed search, indexing, index-status, and server-status tools over loopback Streamable HTTP.
 - **Library API**: Use `createZvecGrep()` directly from Node.js tools, agents, or MCP servers.
 
 ## <a id="installation"></a>📦 Installation
@@ -80,10 +80,11 @@ npm install -g .
 zg version
 ```
 
-Run the stdio MCP server:
+Start the local background server:
 
 ```bash
-zg serve --mcp
+zg server on
+zg server status
 ```
 
 Install the Codex MCP integration:
@@ -92,7 +93,10 @@ Install the Codex MCP integration:
 zg install --target codex --yes
 ```
 
-Codex MCP tool calls default to a 600-second timeout. Override it during installation with `--mcp-tool-timeout <seconds>`.
+Codex MCP tool calls default to a 600-second timeout. Override it during installation with `--mcp-tool-timeout <seconds>`. The local server has no token by default and only listens on loopback. To require Bearer authentication, start it with `zg server on --token-file <path>` (or set `ZVEC_GREP_SERVER_TOKEN`), then install with `zg install --mcp-token-env ZVEC_GREP_SERVER_TOKEN` so the MCP client sends the same token. The installed MCP URL is `http://127.0.0.1:7999/mcp`. Stop the daemon with `zg server off`.
+
+CLI indexed queries and index commands can use `--mode direct`, `--mode server`, or `--mode auto`. The default is `auto`: it uses the daemon only when it is ready and otherwise falls back before submitting a request.
+Daemon logs are written as JSON lines to `~/.zvec-grep/daemon/logs/server.log`; credentials and complete query text are not recorded.
 
 ### ✅ Requirements
 
@@ -100,7 +104,7 @@ Codex MCP tool calls default to a 600-second timeout. Override it during install
 - macOS, Linux, or Windows
 - A supported embedding model for indexed search
 
-`zg query --rg` works without any embedding model or index.
+`zg query --rg` works without any embedding model or index. It always runs locally, regardless of Direct, Server, or Auto mode, and does not stop the daemon or access the index writer.
 
 ## <a id="quickstart"></a>⚡ Quickstart
 
@@ -147,7 +151,7 @@ Switch to human-readable output:
 zg query --human "root local index discovery" --limit 3
 ```
 
-Use from an MCP client with `zvec_grep_search` and `zvec_grep_rg`. MCP inputs use JSON-friendly fields such as `include: ["src/**"]`; use the CLI for `zg status` and `zg index`. The Codex installer writes managed zvec-grep blocks to `${CODEX_HOME:-$HOME/.codex}/config.toml` and `${CODEX_HOME:-$HOME/.codex}/AGENTS.md`.
+Use the four MCP tools `zvec_grep_search`, `zvec_grep_index`, `zvec_grep_index_status`, and `zvec_grep_server_status`. MCP inputs use JSON-friendly fields such as `globs: ["src/**"]`. The Codex installer writes managed zvec-grep blocks to `${CODEX_HOME:-$HOME/.codex}/config.toml` and `${CODEX_HOME:-$HOME/.codex}/AGENTS.md`.
 
 ## <a id="models"></a>🧠 Models
 
@@ -181,11 +185,28 @@ After a successful index, explicitly passed global model and provider options ar
       "apiKey": "...",
       "endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings"
     }
+  },
+  "models": {
+    "local/embeddinggemma-300m": {
+      "llamaGpu": "metal",
+      "embeddingParallelism": 2
+    },
+    "local/qwen3-embedding-0.6b": {
+      "llamaGpu": false,
+      "embeddingParallelism": 1
+    }
   }
 }
 ```
 
-Resolution order is explicit CLI or library options, then environment variables, then global config, then built-in defaults. Repository roots and file-selection settings remain in each repository's `.zvec-grep` metadata rather than global config.
+For local embeddings, `models["provider/model"]` selects GPU and parallelism independently for each model; these settings apply to both daemon indexing and searching, and do not require rebuilding an existing index. Explicit CLI or library options override model settings, which override global defaults and environment fallback. Remote embeddings ignore the local GPU settings. Repository roots and include/exclude filters remain in each repository's `.zvec-grep` metadata rather than global config.
+
+Configure the same settings without editing JSON:
+
+```bash
+zg config model set local/embeddinggemma-300m --llama-gpu metal --embedding-parallelism 2
+zg config model set local/qwen3-embedding-0.6b --no-gpu --embedding-parallelism 1
+```
 
 For existing indexes, `zg index` without `--embedding` reuses the stored schema. Use `--rebuild --embedding <model>` only when you intentionally want to rebuild with a different model:
 

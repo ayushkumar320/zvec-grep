@@ -132,6 +132,141 @@ export function printAnonymousInfo(
   }
 }
 
+export function printServerIndexInfo(
+  info: {
+    root: string;
+    indexed: boolean;
+    index_policy: "enabled" | "disabled" | "undecided";
+    source: "index" | "unindexed";
+    persistent: {
+      home: string;
+      index_path: string;
+      collection?: {
+        root_paths: Array<{
+          absolute_path: string;
+          recursive: boolean;
+          include?: string[];
+          exclude?: string[];
+          globs?: string[];
+          insensitive_globs?: string[];
+          file_types?: string[];
+          excluded_file_types?: string[];
+          hidden?: boolean;
+          no_ignore?: boolean;
+          ignore_files?: string[];
+          max_depth?: number;
+          max_file_size_bytes?: number;
+          follow?: boolean;
+        }>;
+        embedding?: {
+          provider: string;
+          model: string;
+          dimension: number;
+          metric: string;
+        } | null;
+      };
+      files?: {
+        stored: number;
+        indexed: number;
+        pending: number;
+        failed: number;
+        entities: number;
+      };
+      suggestion?: string;
+    };
+    runtime?: {
+      job_state?: "queued" | "running" | "succeeded" | "failed" | "cancelled";
+      progress?: {
+        files_total?: number;
+        files_indexed?: number;
+        files_failed?: number;
+      };
+    };
+  },
+  options: CliOptions,
+): void {
+  const theme = createStatusTheme(options);
+  const jobState = info.runtime?.job_state;
+  const stale = jobState === "queued" || jobState === "running";
+  const failed = jobState === "failed" || jobState === "cancelled";
+  const state = failed
+    ? theme.danger("failed")
+    : stale
+      ? theme.warning("stale")
+      : info.indexed
+        ? theme.success("ready")
+        : theme.warning("unindexed");
+
+  printField(theme, "root", theme.path(info.root));
+  printField(theme, "policy", info.index_policy);
+  printField(
+    theme,
+    "indexed",
+    info.indexed ? theme.success("yes") : theme.warning("no"),
+  );
+  printField(theme, "state", state);
+  printField(theme, "source", info.source);
+  printField(theme, "home", theme.path(info.persistent.home));
+  printField(theme, "index", theme.path(info.persistent.index_path));
+
+  const embedding = info.persistent.collection?.embedding;
+  if (embedding) {
+    printField(theme, "embedding", `${embedding.provider}/${embedding.model}`);
+    printField(theme, "dimension", String(embedding.dimension));
+    printField(theme, "metric", embedding.metric);
+  }
+  const rootPaths = info.persistent.collection?.root_paths;
+  if (rootPaths?.length) {
+    printField(
+      theme,
+      "roots",
+      theme.path(
+        rootPaths
+          .map((root) =>
+            formatRootPath({
+              absolutePath: root.absolute_path,
+              recursive: root.recursive,
+              include: root.include,
+              exclude: root.exclude,
+              globs: root.globs,
+              insensitiveGlobs: root.insensitive_globs,
+              fileTypes: root.file_types,
+              excludedFileTypes: root.excluded_file_types,
+              hidden: root.hidden,
+              noIgnore: root.no_ignore,
+              ignoreFiles: root.ignore_files,
+              maxDepth: root.max_depth,
+              maxFileSizeBytes: root.max_file_size_bytes,
+              follow: root.follow,
+            }),
+          )
+          .join(", "),
+      ),
+    );
+  }
+  const files = info.persistent.files;
+  if (files) {
+    printField(theme, "files", `${files.indexed}/${files.stored} indexed`);
+    printField(theme, "entities", String(files.entities));
+    printField(theme, "pending", String(files.pending));
+    printField(theme, "failed", String(files.failed));
+  }
+  if (jobState) printField(theme, "job", jobState);
+  const progress = info.runtime?.progress;
+  if (progress?.files_indexed !== undefined) {
+    printField(
+      theme,
+      "progress",
+      progress.files_total === undefined
+        ? String(progress.files_indexed)
+        : `${progress.files_indexed}/${progress.files_total}`,
+    );
+  }
+  if (info.persistent.suggestion) {
+    printField(theme, "suggestion", theme.accent(info.persistent.suggestion));
+  }
+}
+
 function formatAnonymousState(
   theme: StatusTheme,
   info: ZvecGrepInfoResult,

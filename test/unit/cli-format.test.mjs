@@ -15,6 +15,7 @@ import {
   printCollectionRemoveResult,
   printIndexPathFilterTip,
   printIndexResult,
+  printServerIndexInfo,
 } from "../../dist/cli/format/status.js";
 import { EngineError } from "../../dist/engine/errors/index.js";
 
@@ -389,11 +390,53 @@ test("status formatters cover collections, anonymous states, failures, filters, 
     printIndexPathFilterTip({ color: "never", includePaths: [] });
     printCollectionRemoveResult("docs", true, { color: "never" });
     printCollectionRemoveResult("missing", false, { color: "never" });
+    printServerIndexInfo(
+      {
+        root: "/repo",
+        indexed: true,
+        index_policy: "enabled",
+        source: "index",
+        persistent: {
+          home: "/repo/.zvec-grep",
+          index_path: "/repo/.zvec-grep/index",
+          collection: {
+            root_paths: [
+              {
+                absolute_path: "/repo",
+                recursive: true,
+                globs: ["src/**"],
+                file_types: ["ts"],
+              },
+            ],
+            embedding: {
+              provider: "qwen",
+              model: "text-embedding-v4",
+              dimension: 16,
+              metric: "cosine",
+            },
+          },
+          files: {
+            stored: 4,
+            indexed: 3,
+            pending: 1,
+            failed: 0,
+            entities: 7,
+          },
+          suggestion: "zg index",
+        },
+        runtime: {
+          job_state: "running",
+          progress: { files_indexed: 3, files_total: 4 },
+        },
+      },
+      { color: "never" },
+    );
   });
   assert.match(output.logs.join("\n"), /failed_reasons/);
   assert.match(output.logs.join("\n"), /1m 5s/);
   assert.match(output.logs.join("\n"), /ignore-file=\.rgignore/);
   assert.match(output.logs.join("\n"), /Default indexing skips/);
+  assert.match(output.logs.join("\n"), /progress\s+3\/4/);
 
   for (const stateInfo of [
     {

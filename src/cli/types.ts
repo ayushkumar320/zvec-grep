@@ -1,13 +1,20 @@
 import type { CodeSymbolType, ZvecGrepContextRoute } from "../index.js";
+import type { ZvecGrepClientMode } from "../engine/config.js";
 
 export type ColorMode = "auto" | "always" | "never";
 
 export type PreviewMode = "none" | "short" | "full";
 
 export type CliOptions = {
-  mcp?: boolean;
+  configAction?: "model-set";
+  serverAction?: "on" | "off" | "status" | "run";
+  listen?: string;
+  serverTokenFile?: string;
+  mode?: ZvecGrepClientMode;
+  forceDirect?: boolean;
   installTargets?: string[];
   installMcpToolTimeoutSeconds?: number;
+  installMcpTokenEnv?: string;
   yes?: boolean;
   collection?: string;
   rg?: boolean;
@@ -35,6 +42,7 @@ export type CliOptions = {
   force?: boolean;
   resetPaths?: boolean;
   noAutoUpdate?: boolean;
+  fresh?: boolean;
   preferSymbol?: boolean;
   globs?: string[];
   insensitiveGlobs?: string[];
@@ -59,7 +67,8 @@ export type CliCommand =
   | "collections"
   | "install"
   | "uninstall"
-  | "serve"
+  | "config"
+  | "server"
   | "help"
   | "version";
 

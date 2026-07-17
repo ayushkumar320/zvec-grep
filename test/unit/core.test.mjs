@@ -145,7 +145,7 @@ test("CLI parser covers utility commands, provider controls, routes, and equals 
   ]);
   assert.equal(install.options.installMcpToolTimeoutSeconds, 30);
 
-  assert.equal(parseArgs(["serve", "--mcp"]).command, "serve");
+  assert.throws(() => parseArgs(["serve", "--mcp"]), /removed/i);
   assert.equal(parseArgs(["-h"]).command, "help");
   assert.equal(parseArgs(["help", "query"]).helpTopic, "query");
   assert.equal(parseArgs(["-v"]).command, "version");
@@ -313,8 +313,9 @@ test("CLI parser covers managed rg long and short compatibility options", () => 
 
 test("CLI shape validation rejects every incompatible command family", () => {
   const invalid = [
-    [["serve"], /requires --mcp/],
-    [["query", "--mcp", "query"], /only be used with zg serve/],
+    [["serve"], /removed/i],
+    [["serve", "--mcp", "--fts", "query"], /removed/i],
+    [["query", "--mcp", "query"], /Unknown option/],
     [["status", "--collection", "docs"], /only be used with zg query/],
     [["index", "--fts", "query"], /only be used with zg query/],
     [["status", "--rg", "query"], /only be used with zg query/],
@@ -338,7 +339,6 @@ test("CLI shape validation rejects every incompatible command family", () => {
     [["query", "--ignore-case", "query"], /only be used with --rg/],
     [["query", "--hidden", "query"], /index commands or zg query --rg/],
     [["install", "-g", "src/**"], /query or index commands/],
-    [["serve", "--mcp", "--fts", "query"], /only be used with zg query/],
     [["query", "--drop", "query"], /only be used with zg index/],
     [["index", "--drop", "--rebuild"], /cannot be combined/],
     [["index", "--drop", "-g", "src/**"], /cannot be combined/],
@@ -425,12 +425,16 @@ test("file, model, content, and entity helpers classify inputs", () => {
   });
   assert.equal(detectFileType("archive.zip"), null);
   assert.deepEqual(detectFileType("NOTICE"), { kind: "text", format: "text" });
-  assert.equal(listEmbeddingModels().length, 2);
+  assert.equal(listEmbeddingModels().length, 3);
   assert.equal(
     getEmbeddingModelCatalogEntry("local/embeddinggemma-300m")?.dimension,
     768,
   );
   assert.equal(getEmbeddingModelCatalogEntry("missing"), undefined);
+  assert.equal(
+    getEmbeddingModelCatalogEntry("qwen/text-embedding-v4")?.dimension,
+    1024,
+  );
   assert.equal(
     getEmbeddingModelCatalogEntryByRef({
       provider: "local",

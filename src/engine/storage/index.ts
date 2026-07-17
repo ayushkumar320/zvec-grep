@@ -32,6 +32,7 @@ export type StorageSearchHit = StoredEntityFragment & {
 export interface CollectionStorage {
   getFileById(fileId: string): FileInfo | null;
   getFileByPath(absolutePath: string): FileInfo | null;
+  listFilesByPathPrefix(absolutePath: string): FileInfo[];
   listFiles(): FileInfo[];
   listEntitiesByFile(
     fileId: string,
@@ -58,7 +59,7 @@ export interface CollectionStorage {
     limit: number,
     filter?: StorageSearchFilter,
   ): StorageSearchHit[];
-  optimize(): void;
+  optimize(): Promise<void>;
   close(): void;
 }
 

@@ -20,6 +20,8 @@ export type CreateZvecGrepOptions = {
   root?: string;
   home?: string;
   embeddingModel?: EmbeddingModel;
+  embeddingModelOwnership?: "owned" | "borrowed";
+  daemonInstanceToken?: string;
   embedding?: string;
   apiKey?: string;
   endpoint?: string;
@@ -48,10 +50,19 @@ export type ZvecGrepIndexOptions = {
   follow?: boolean;
   embeddingConcurrency?: number;
   onProgress?: (progress: IndexProgress) => void;
+  changedPaths?: readonly string[];
+  onWriterContext?: (
+    context: ZvecGrepWriterContext,
+  ) => void | (() => void | Promise<void>);
 };
+
+export type ZvecGrepWriterContext = (
+  options: ZvecGrepContextOptions,
+) => Promise<ZvecGrepContextResult>;
 
 export type ZvecGrepInfoOptions = {
   root?: string;
+  includeStatus?: boolean;
 };
 
 export type ZvecGrepInfoResult = {
