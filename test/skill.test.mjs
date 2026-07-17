@@ -49,7 +49,7 @@ test("zvec-grep skill triggers by task and selects the available transport", asy
   );
   assert.doesNotMatch(metadata, /zvec_grep_rg/);
   assert.match(fallback, /Leave `--mode` unset/);
-  assert.match(fallback, /zg status\n/);
+  assert.match(fallback, /zg status\r?\n/);
   assert.doesNotMatch(fallback, /zg status --mode (?:server|direct)/);
   assert.doesNotMatch(fallback, /zg query[^\n]*--mode (?:server|direct)/);
   assert.match(fallback, /zg query "request validation"/);
@@ -68,6 +68,6 @@ test("zvec-grep skill triggers by task and selects the available transport", asy
     /Do not switch to managed ripgrep merely because semantic search is unavailable/,
   );
   assert.match(fallback, /server default model is known/);
-  assert.match(fallback, /zg index\n/);
+  assert.match(fallback, /zg index\r?\n/);
   assert.doesNotMatch(fallback, /zg index[^\n]*--mode (?:server|direct)/);
 });
