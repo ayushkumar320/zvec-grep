@@ -109,6 +109,19 @@ runner pins the Qwen Code version and configures the DashScope endpoint. The
 same key can also authenticate the zvec-grep embedding model when both profiles
 are selected.
 
+### OpenCode authentication
+
+To run Aliyun GLM-5.2 through OpenCode, export a DashScope API key:
+
+```sh
+export DASHSCOPE_API_KEY="your-api-key"
+```
+
+Use `--agent opencode --model aliyun-glm-5.2` in the test commands below. The
+runner pins the OpenCode version, maps the model to OpenCode's OpenAI-compatible
+provider, and configures the Aliyun endpoint. The credential is passed through
+the environment and is not included in the generated Harbor command.
+
 ### zvec-grep authentication
 
 The zvec-grep profile uses Qwen's `text-embedding-v4` model. Export a DashScope
@@ -130,15 +143,17 @@ container. Harbor writes trajectories and evaluator output to `runs/`.
 
 The first run may take several minutes while Docker downloads and builds the
 task image and prepares the agent environment. This is expected. Later runs of
-the same task reuse both the large task image and, for Codex and Qwen Code, a
-Docker volume containing the installed agent runtime. Setup caches are isolated
-by agent and profile, so baseline containers never receive zvec-grep. They
-contain neither credentials nor the repository index. The zvec-grep profile
-also skips the unused local embedding runtime when Qwen embeddings are selected.
+the same task reuse both the large task image and, for Codex, Qwen Code, and
+OpenCode, a Docker volume containing the installed agent runtime. Setup caches
+are isolated by agent and profile, so baseline containers never receive
+zvec-grep. They contain neither credentials nor the repository index. The
+zvec-grep profile also skips the unused local embedding runtime when Qwen
+embeddings are selected.
 
 Each command runs both profiles by default. Use `--profile baseline` or
 `--profile zvec-grep` to run one profile. The zvec-grep profile currently
-supports Codex and Qwen Code and builds its index before agent execution.
+supports Codex, Qwen Code, and OpenCode and builds its index before agent
+execution.
 
 ### Run the smoke test
 
