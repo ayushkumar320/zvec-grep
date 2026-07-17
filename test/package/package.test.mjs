@@ -141,7 +141,7 @@ test("npm package contains and exposes the supported public surface", async (t) 
     [
       "index",
       "--embedding",
-      "qwen/text-embedding-v4",
+      "qwen/qwen3.7-text-embedding",
       "--api-key",
       "test-key",
       "--endpoint",

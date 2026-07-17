@@ -6,6 +6,7 @@ import {
 import type { EmbeddingModel } from "./embeddings.js";
 import {
   LlamaCppEmbeddingModel,
+  Qwen37TextEmbeddingModel,
   Qwen3VlEmbeddingModel,
   QwenTextEmbeddingV4Model,
 } from "./providers/index.js";
@@ -32,6 +33,10 @@ export function createEmbeddingModel(
 
   if (ref.provider === "qwen" && ref.model === "text-embedding-v4") {
     return new QwenTextEmbeddingV4Model(options);
+  }
+
+  if (ref.provider === "qwen" && ref.model === "qwen3.7-text-embedding") {
+    return new Qwen37TextEmbeddingModel(options);
   }
 
   if (ref.provider === "qwen" && ref.model === "qwen3-vl-embedding") {

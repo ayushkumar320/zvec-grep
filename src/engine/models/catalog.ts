@@ -7,7 +7,11 @@ export const MODEL_CATALOG = {
   },
 
   qwen: {
-    embedding: ["text-embedding-v4", "qwen3-vl-embedding"],
+    embedding: [
+      "qwen3.7-text-embedding",
+      "text-embedding-v4",
+      "qwen3-vl-embedding",
+    ],
     ranking: ["gte-rerank-v2"],
   },
 
