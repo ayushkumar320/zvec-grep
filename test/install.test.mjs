@@ -57,8 +57,16 @@ test("Codex installer removes orphaned managed markers", async (t) => {
   assert.doesNotMatch(installed, /^bearer_token_env_var\s*=/m);
   assert.doesNotMatch(installed, /^command\s*=\s*"zg"$/m);
   assert.match(agents, /zvec_grep_index/);
+  assert.match(agents, /zvec_grep_rg/);
   assert.match(agents, /zg server on/);
+  assert.match(agents, /Call `zvec_grep_search` first/);
+  assert.match(agents, /without a status preflight/);
   assert.match(agents, /`wait` defaults to false/i);
+  assert.match(agents, /drop: true/);
+  assert.match(agents, /Never silently create, rebuild, or drop an index/);
+  assert.match(agents, /never guess an embedding model/);
+  assert.match(agents, /Do not switch to rg merely/);
+  assert.match(agents, /Use CLI fallback only when/);
   assert.match(agents, /zvec_grep_index_status/);
   assert.match(installed, /^tool_timeout_sec = 600$/m);
   assert.equal(countOccurrences(installed, "# ZVEC_GREP_START"), 1);

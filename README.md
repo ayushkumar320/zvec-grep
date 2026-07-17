@@ -26,7 +26,7 @@ zg query "where query auto update happens"
 - **Managed ripgrep Route**: `zg query --rg` supports common `rg` flags and works even before a repository is indexed.
 - **Explicit Model Choice**: The first index build requires a model such as `local/embeddinggemma-300m`, `local/qwen3-embedding-0.6b`, or `qwen/qwen3.7-text-embedding`.
 - **Schema Reuse**: Re-running `zg index` on an existing index reuses the stored embedding schema unless you explicitly change it.
-- **Shared MCP Server**: Run `zg server on` to expose the four indexed search, indexing, index-status, and server-status tools over loopback Streamable HTTP.
+- **Shared MCP Server**: Run `zg server on` to expose indexed search, managed ripgrep, indexing, index-status, and server-status tools over loopback Streamable HTTP.
 - **Library API**: Use `createZvecGrep()` directly from Node.js tools, agents, or MCP servers.
 
 ## <a id="installation"></a>📦 Installation
@@ -126,7 +126,7 @@ Switch to human-readable output:
 zg query --human "root local index discovery" --limit 3
 ```
 
-Use the four MCP tools `zvec_grep_search`, `zvec_grep_index`, `zvec_grep_index_status`, and `zvec_grep_server_status`. MCP inputs use JSON-friendly fields such as `globs: ["src/**"]`. The Codex installer writes managed zvec-grep blocks to `${CODEX_HOME:-$HOME/.codex}/config.toml` and `${CODEX_HOME:-$HOME/.codex}/AGENTS.md`.
+Use the MCP tools `zvec_grep_search`, `zvec_grep_rg`, `zvec_grep_index`, `zvec_grep_index_status`, and `zvec_grep_server_status`. MCP inputs use JSON-friendly fields such as `globs: ["src/**"]`. The Codex installer writes managed zvec-grep blocks to `${CODEX_HOME:-$HOME/.codex}/config.toml` and `${CODEX_HOME:-$HOME/.codex}/AGENTS.md`.
 
 ## <a id="models"></a>🧠 Models
 

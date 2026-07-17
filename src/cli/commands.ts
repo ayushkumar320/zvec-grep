@@ -1399,9 +1399,11 @@ function codexAgentsBlock(): string {
 
 Use zvec-grep before grep, rg, or broad file reads when you need to understand or locate code.
 
-- **MCP tools**: Use \`zvec_grep_search\` for indexed semantic/lexical code search, \`zvec_grep_index\` to ensure an index, and the two status tools to inspect index or server state.
-- **Indexing and status**: Every repository MCP call uses an absolute root visible to the local daemon. Start it with \`zg server on\`. For \`zvec_grep_index\`, \`wait\` defaults to false: submit it in the background and poll \`zvec_grep_index_status\`; set \`wait: true\` only when completion is required before continuing.
-- **Shell fallback**: If the MCP server is unavailable, use \`zg status\`, \`zg query "<query>"\`, and \`zg query --rg "<pattern>"\`.
+- **MCP tools**: Use \`zvec_grep_search\` for indexed semantic/lexical code search, \`zvec_grep_rg\` for exhaustive rg mode, \`zvec_grep_index\` to ensure or drop an index, and the two status tools to inspect index or server state.
+- **MCP workflow**: Call \`zvec_grep_search\` first. Use its \`freshness\` and \`indexing\` fields without a status preflight; call \`zvec_grep_index_status\` only after a missing-index response, indexing failure or cancellation, explicit progress monitoring, or daemon diagnostics.
+- **Indexing and deletion**: Every repository MCP call uses an absolute root visible to the local daemon. Start it with \`zg server on\`. For \`zvec_grep_index\`, \`wait\` defaults to false: submit in the background and poll \`zvec_grep_index_status\` only when progress or completion is required. Never silently create, rebuild, or drop an index; use \`drop: true\` only when index deletion is requested, and never guess an embedding model.
+- **rg mode**: Use \`zvec_grep_rg\` for exhaustive literal/regex search, unindexed repositories that can be answered lexically, or explicit rg-mode requests. Do not switch to rg merely because semantic search or embedding is unavailable.
+- **Shell fallback**: Use CLI fallback only when the required MCP tool is absent, MCP initialization/authentication/connection/call fails, or the repository has no index and explicit no-index lexical search is needed. Do not retry a submitted indexing write through another transport after a connection interruption.
 
 Prefer focused -g/--glob and -t/--type filters, and exclude dependencies, generated output, caches, build artifacts, and logs unless the task is about those files.
 ${ZVEC_GREP_AGENTS_END}`;
