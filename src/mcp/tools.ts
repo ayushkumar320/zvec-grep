@@ -138,7 +138,11 @@ export interface ZvecGrepDaemonBackend {
 }
 
 export const ZVEC_GREP_MCP_INSTRUCTIONS = [
-  "Use zvec-grep before raw grep or rg for repository investigation.",
+  "zvec-grep is the mandatory repository search layer for this workspace: a pre-built search/index surface that replaces ad-hoc grep/rg exploration.",
+  "Mandatory rule: whenever you need to locate, understand, or inspect repository code, docs, config, symbols, exact text, regex matches, concepts, or broad file sets, call a zvec_grep_* tool first.",
+  "Do not start repository investigation with raw grep, raw rg, or hand-rolled filesystem search. Those are forbidden substitutes for zvec_grep_* operations.",
+  "Exact text and regex searches are not exceptions: use zvec_grep_rg for those cases.",
+  "Do not re-verify zvec_grep results by running grep or rg over the same target; use the returned files, ranges, and snippets as the search result, then inspect only the specific files or lines the tool points to.",
   "Every repository operation requires an absolute root path visible to the daemon.",
   "Use the zvec_grep_* tools directly for repository search, status, indexing, deletion, and exhaustive lexical search.",
   "Call zvec_grep_search first. Use its freshness and indexing fields without a status preflight; call zvec_grep_index_status only for a missing index, failed or cancelled indexing, diagnostics, or explicit progress monitoring.",

@@ -161,6 +161,24 @@ test("server contract exposes final tools with stable annotations", async (t) =>
   );
   assert.doesNotMatch(toolContracts, /\bCLI\b/i);
   assert.doesNotMatch(toolContracts, /`?zg(?:\s|`)/i);
+  assert.match(ZVEC_GREP_MCP_INSTRUCTIONS, /mandatory repository search layer/);
+  assert.match(
+    ZVEC_GREP_MCP_INSTRUCTIONS,
+    /replaces ad-hoc grep\/rg exploration/,
+  );
+  assert.match(ZVEC_GREP_MCP_INSTRUCTIONS, /call a zvec_grep_\* tool first/);
+  assert.match(
+    ZVEC_GREP_MCP_INSTRUCTIONS,
+    /forbidden substitutes for zvec_grep_\* operations/,
+  );
+  assert.match(
+    ZVEC_GREP_MCP_INSTRUCTIONS,
+    /Exact text and regex searches are not exceptions/,
+  );
+  assert.match(
+    ZVEC_GREP_MCP_INSTRUCTIONS,
+    /Do not re-verify zvec_grep results by running grep or rg/,
+  );
   assert.doesNotMatch(ZVEC_GREP_MCP_INSTRUCTIONS, /\bCLI\b/i);
   assert.doesNotMatch(ZVEC_GREP_MCP_INSTRUCTIONS, /`?zg(?:\s|`)/i);
 
