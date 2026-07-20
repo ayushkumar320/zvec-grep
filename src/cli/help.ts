@@ -23,6 +23,7 @@ Commands:
   status         Show workspace and index status
   collections    Manage named collections
   config         Configure per-model local embedding runtime settings
+  auth           Manage Workspace Remote Embedding authorization
   server         Start, stop, inspect, or run the shared MCP server
   install        Install agent integrations
   uninstall      Remove agent integrations
@@ -35,6 +36,7 @@ Examples:
   zg query --rg -F "AuthService" src
   zg index --embedding local/embeddinggemma-300m
   zg status
+  zg auth status
   zg server on
   zg config model set local/embeddinggemma-300m --llama-gpu metal
   zg install
@@ -89,7 +91,7 @@ Options that replace rg's output format are rejected.`;
   zg index [root] --drop [--yes]
 
 Options:
-  --embedding <model>               Model such as local/embeddinggemma-300m or qwen/qwen3.7-text-embedding
+  --embedding <model>               Model such as local/embeddinggemma-300m or qwen/text-embedding-v4
   --rebuild                         Rebuild the existing index
   --drop                            Permanently remove the workspace index
   --yes                             Confirm --drop without prompting
@@ -137,6 +139,22 @@ rebuild, and embedding-concurrency options as zg index.`;
 
 Stores runtime GPU and parallelism settings for one local embedding model in
 ~/.zvec-grep/config.json. These settings do not change index compatibility.`;
+    case "auth":
+      return `Usage:
+  zg auth grant [root] --capability embedding --scope workspace [--embedding <model>]
+  zg auth status [root]
+  zg auth revoke [root]
+
+Manage the signed Remote Embedding grant stored in the Workspace under
+.zvec-grep/authorization.json. Workspace grants are shared by zg CLI and zg MCP.
+
+Scopes used during operations:
+  once                              Current CLI command only
+  session                           Current Agent/MCP session only
+  workspace                         Persisted in this Workspace
+
+Use --allow-remote once|workspace on zg query or zg index for non-interactive
+execution. API credentials configure a provider but do not grant permission.`;
     case "server":
       return `Usage:
   zg server on [--listen 127.0.0.1:7999] [--token-file <path>]
@@ -151,18 +169,21 @@ token file or set ZVEC_GREP_SERVER_TOKEN to require Bearer authentication.`;
   zg install [--target codex|claude|opencode|cursor|all|auto] [--yes] [--force]
 
 Options:
-  --target <agent>                  Agent integration to install
-  --mcp-tool-timeout <seconds>      MCP tool timeout written to configuration
+  --target <agent>                  codex, claude, opencode, cursor, auto, or all; repeatable
+  --mcp-tool-timeout <seconds>      Codex MCP tool timeout (default: 600)
   --mcp-token-env <name>            Bearer token environment variable
-  --yes                             Use default choices without prompting
+  --yes                             Install detected agents without prompting
   --force                           Replace conflicting unmanaged configuration
 
-This installs MCP configuration only. It does not install the npm package or agent skills.`;
+Interactive setup detects supported agents, configures the local MCP server,
+and starts it. Codex and Claude Code also receive managed guidance and local
+tool pre-approval. Remote Embedding authorization remains separate and is
+requested by zvec-grep on first remote use. This does not install the npm package.`;
     case "uninstall":
       return `Usage:
   zg uninstall [--target codex|claude|opencode|cursor|all|auto] [--yes]
 
-Removes zvec-grep-managed MCP configuration and legacy Codex guidance.`;
+Removes zvec-grep-managed MCP configuration, trust, and guidance.`;
     case "help":
       return `Usage:
   zg help [command]

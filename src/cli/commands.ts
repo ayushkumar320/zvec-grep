@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { constants as fileSystemConstants } from "node:fs";
 import {
+  access,
   chmod,
   lstat,
   mkdir,
@@ -11,10 +13,11 @@ import {
   unlink,
 } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { delimiter, dirname, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import {
   createZvecGrep,
+  getEmbeddingModelCatalogEntry,
   getEmbeddingModelCatalogEntryByRef,
   type CreateZvecGrepOptions,
   type IndexProgress,
@@ -22,6 +25,8 @@ import {
   type ZvecGrepContextResult,
   type ZvecGrepContextOptions,
   type ZvecGrepContextRoute,
+  type ZvecGrep,
+  type ZvecGrepInfoResult,
 } from "../index.js";
 import {
   globalConfigPath,
@@ -54,11 +59,27 @@ import {
   printIndexResult,
   printServerIndexInfo,
 } from "./format/status.js";
+import {
+  RemoteEmbeddingAuthorizationManager,
+  RemoteEmbeddingAuthorizationStore,
+  createRemoteEmbeddingTarget,
+  formatRemoteEmbeddingAuthorizationPrompt,
+  planRemoteIndexAuthorization,
+  planRemoteSearchAuthorization,
+  remoteEmbeddingDisclosureData,
+  withRemoteEmbeddingOperationPermit,
+  type RemoteEmbeddingAuthorizationPlan,
+  type RemoteEmbeddingOperationPermit,
+} from "../authorization/index.js";
+import type { CollectionEmbeddingSchema } from "../engine/types.js";
+import type { NormalizedSearchInput } from "../mcp/input-normalization.js";
+import { indexProgressFromMessage } from "../index-progress.js";
 
 type AgentInstaller = {
   id: string;
   label: string;
-  description: string;
+  executable: string;
+  trustApproved: boolean;
   install: (options: InstallAgentOptions) => Promise<InstallAgentResult>;
   uninstall: () => Promise<InstallAgentResult>;
 };
@@ -75,30 +96,34 @@ type InstallAgentResult = {
 
 const AGENT_INSTALLERS: readonly AgentInstaller[] = [
   {
+    id: "claude",
+    label: "Claude Code",
+    executable: "claude",
+    trustApproved: true,
+    install: installClaudeIntegration,
+    uninstall: uninstallClaudeIntegration,
+  },
+  {
     id: "codex",
     label: "Codex",
-    description: "configure the zvec-grep MCP server",
+    executable: "codex",
+    trustApproved: true,
     install: installCodexIntegration,
     uninstall: uninstallCodexIntegration,
   },
   {
-    id: "claude",
-    label: "Claude Code",
-    description: "configure the zvec-grep MCP server",
-    install: installClaudeCodeIntegration,
-    uninstall: uninstallClaudeCodeIntegration,
-  },
-  {
     id: "opencode",
     label: "OpenCode",
-    description: "configure the zvec-grep MCP server",
+    executable: "opencode",
+    trustApproved: false,
     install: installOpenCodeIntegration,
     uninstall: uninstallOpenCodeIntegration,
   },
   {
     id: "cursor",
     label: "Cursor",
-    description: "configure the zvec-grep MCP server",
+    executable: "cursor",
+    trustApproved: false,
     install: installCursorIntegration,
     uninstall: uninstallCursorIntegration,
   },
@@ -108,7 +133,9 @@ const ZVEC_GREP_CONFIG_START = "# ZVEC_GREP_START";
 const ZVEC_GREP_CONFIG_END = "# ZVEC_GREP_END";
 const ZVEC_GREP_AGENTS_START = "<!-- ZVEC_GREP_START -->";
 const ZVEC_GREP_AGENTS_END = "<!-- ZVEC_GREP_END -->";
+const CLAUDE_MCP_PERMISSION = "mcp__zvec_grep__*";
 const DEFAULT_MCP_TOOL_TIMEOUT_SECONDS = 600;
+const DEFAULT_LOCAL_EMBEDDING = "local/embeddinggemma-300m";
 
 export async function runParsedCommand(parsed: ParsedArgs): Promise<void> {
   switch (parsed.command) {
@@ -132,6 +159,9 @@ export async function runParsedCommand(parsed: ParsedArgs): Promise<void> {
       return;
     case "config":
       runConfig(parsed);
+      return;
+    case "auth":
+      await runAuth(parsed);
       return;
     case "server":
       await runServer(parsed);
@@ -187,56 +217,155 @@ function runConfig(parsed: ParsedArgs): void {
 }
 
 async function runInstall(parsed: ParsedArgs): Promise<void> {
+  printInstallHeader();
   const installers = await resolveInstallers(parsed, "install");
   if (installers.length === 0) {
-    console.log("No agents selected.");
+    console.log("\nNo agent integrations selected.");
     return;
   }
 
-  console.log(
-    `Installing zvec-grep for: ${installers.map((installer) => installer.label).join(", ")}`,
-  );
+  console.log("\nInstalling integrations\n");
   for (const installer of installers) {
-    const result = await installer.install({
+    await installer.install({
       force: parsed.options.force === true,
       mcpToolTimeoutSeconds:
         parsed.options.installMcpToolTimeoutSeconds ??
         DEFAULT_MCP_TOOL_TIMEOUT_SECONDS,
       mcpTokenEnv: parsed.options.installMcpTokenEnv,
     });
-    console.log(`Installed ${installer.label}:`);
-    for (const file of result.files) {
-      console.log(`  ${file}`);
+    console.log(`  ${installSuccessMark()} ${installer.label}`);
+    console.log("    MCP       configured");
+    if (installer.trustApproved) {
+      console.log("    Trust     approved");
     }
+    console.log("");
   }
 
+  const server = await ensureInstalledServer();
+  if (server.ready) {
+    console.log(`  ${installSuccessMark()} Server`);
+    console.log(`    ready at ${server.serverUrl ?? resolveServerUrl()}`);
+  } else {
+    console.log(`  ${installMutedMark()} Server`);
+    console.log("    not started; run `zg server on`");
+  }
+
+  console.log("\nzvec-grep is ready\n");
   console.log(
-    "Restart the selected agent or start a new session to pick up the integration.",
+    `  Agents       ${installers.map((installer) => installer.label).join(", ")}`,
   );
-  console.log(`zvec-grep MCP endpoint: ${resolveServerUrl()}`);
+  const trusted = installers.filter((installer) => installer.trustApproved);
+  if (trusted.length > 0) {
+    console.log(
+      `  MCP trust    Approved for ${trusted.map((installer) => installer.label).join(", ")}`,
+    );
+  }
+  console.log("  Remote data  Authorization requested on first remote use");
+  console.log(
+    "\nRestart the selected agents or start a new session to load the integration.",
+  );
 }
 
 async function runUninstall(parsed: ParsedArgs): Promise<void> {
+  printInstallHeader();
   const installers = await resolveInstallers(parsed, "uninstall");
   if (installers.length === 0) {
-    console.log("No agents selected.");
+    console.log("\nNo agent integrations selected.");
     return;
   }
 
-  console.log(
-    `Removing zvec-grep from: ${installers.map((installer) => installer.label).join(", ")}`,
-  );
+  console.log("\nRemoving integrations\n");
   for (const installer of installers) {
-    const result = await installer.uninstall();
-    console.log(`Removed ${installer.label} integration:`);
-    for (const file of result.files) {
-      console.log(`  ${file}`);
-    }
+    await installer.uninstall();
+    console.log(`  ${installSuccessMark()} ${installer.label}`);
+    console.log("    integration removed");
   }
 
   console.log(
-    "Restart the selected agent or start a new session to apply the change.",
+    "\nRestart the selected agents or start a new session to apply the change.",
   );
+}
+
+async function runAuth(parsed: ParsedArgs): Promise<void> {
+  const requestedRoot = resolve(parsed.positionals[0] ?? process.cwd());
+  const root =
+    findNearestAnonymousWorkspace(requestedRoot)?.root ?? requestedRoot;
+  const store = authorizationStore(parsed.options);
+  if (parsed.options.authAction === "status") {
+    const status = await store.status(root);
+    console.log("Remote Embedding authorization");
+    console.log(`Workspace: ${root}`);
+    console.log(`Store: ${status.path}`);
+    if (status.grants.length === 0) {
+      console.log("Status: not granted");
+      return;
+    }
+    for (const grant of status.grants) {
+      console.log("");
+      console.log(`Provider: ${grant.provider}`);
+      console.log(`Model: ${grant.model}`);
+      console.log(`Endpoint: ${grant.endpoint}`);
+      console.log(`Scope: ${grant.scope}`);
+      console.log(`Status: ${grant.valid ? "granted" : "invalid"}`);
+    }
+    return;
+  }
+  if (parsed.options.authAction === "revoke") {
+    const revoked = await store.revokeAll(root);
+    console.log(
+      revoked > 0
+        ? `Revoked ${revoked} Remote Embedding Workspace grant(s).`
+        : "No Remote Embedding Workspace grants found.",
+    );
+    return;
+  }
+  if (parsed.options.authAction !== "grant") {
+    throw new Error("zg auth requires grant, status, or revoke");
+  }
+
+  const serviceOptions = createServiceOptions(parsed.options, root);
+  const service = await createZvecGrep(serviceOptions);
+  try {
+    const info = await service.info({ root });
+    const schema = resolveAuthorizationSchema(
+      parsed.options.embedding ?? process.env.ZVEC_GREP_EMBEDDING,
+      info.collection?.embedding,
+    );
+    if (!schema) {
+      throw new Error(
+        "No embedding model is available. Pass --embedding <remote/model> or build an index first.",
+      );
+    }
+    if (schema.provider === "local") {
+      throw new Error("Local embedding models do not require authorization.");
+    }
+    const target = await createRemoteEmbeddingTarget({
+      roots: info.collection?.rootPaths.map((item) => item.absolutePath) ?? [
+        root,
+      ],
+      provider: schema.provider,
+      model: schema.model,
+      serviceOptions,
+    });
+    const manager = new RemoteEmbeddingAuthorizationManager(store);
+    const plan: RemoteEmbeddingAuthorizationPlan = {
+      operation: "query_and_index",
+      target,
+      disclosure: { queryText: true, workspaceContent: "full" },
+      reason: "index_create",
+      grantPath: store.grantPath(target),
+    };
+    await manager.grant(plan, "workspace");
+    console.log("Granted Remote Embedding authorization.");
+    console.log(`Workspace: ${target.workspaceRoots.join(", ")}`);
+    console.log(`Provider: ${target.provider}`);
+    console.log(`Model: ${target.model}`);
+    console.log(`Endpoint: ${target.endpoint}`);
+    console.log(`Scope: workspace`);
+    console.log(`Store: ${plan.grantPath}`);
+  } finally {
+    await service.close();
+  }
 }
 
 async function installCodexIntegration(
@@ -257,14 +386,57 @@ async function installCodexIntegration(
     removeConflict: removeCodexMcpServerConfig,
   });
 
-  // Remove guidance written by older releases. Integrations are MCP-only now.
-  await removeMarkedFile({
+  await writeMarkedFile({
     path: agentsPath,
+    startMarker: ZVEC_GREP_AGENTS_START,
+    endMarker: ZVEC_GREP_AGENTS_END,
+    block: agentGuidanceBlock(),
+    force: true,
+  });
+
+  return { files: [configPath, agentsPath] };
+}
+
+async function installClaudeIntegration(
+  options: InstallAgentOptions,
+): Promise<InstallAgentResult> {
+  const configDirectory = resolveClaudeConfigDirectory();
+  const mcpConfigPath = resolveClaudeMcpConfigPath();
+  const settingsPath = resolve(configDirectory, "settings.json");
+  const guidancePath = resolve(configDirectory, "CLAUDE.md");
+
+  await updateClaudeMcpConfig({
+    path: mcpConfigPath,
+    force: options.force,
+    tokenEnv: options.mcpTokenEnv,
+  });
+  await updateClaudePermissionSettings(settingsPath, true);
+  await writeMarkedFile({
+    path: guidancePath,
+    startMarker: ZVEC_GREP_AGENTS_START,
+    endMarker: ZVEC_GREP_AGENTS_END,
+    block: agentGuidanceBlock(),
+    force: true,
+  });
+
+  return { files: [mcpConfigPath, settingsPath, guidancePath] };
+}
+
+async function uninstallClaudeIntegration(): Promise<InstallAgentResult> {
+  const configDirectory = resolveClaudeConfigDirectory();
+  const mcpConfigPath = resolveClaudeMcpConfigPath();
+  const settingsPath = resolve(configDirectory, "settings.json");
+  const guidancePath = resolve(configDirectory, "CLAUDE.md");
+
+  await removeClaudeMcpConfig(mcpConfigPath);
+  await updateClaudePermissionSettings(settingsPath, false);
+  await removeMarkedFile({
+    path: guidancePath,
     startMarker: ZVEC_GREP_AGENTS_START,
     endMarker: ZVEC_GREP_AGENTS_END,
   });
 
-  return { files: [configPath] };
+  return { files: [mcpConfigPath, settingsPath, guidancePath] };
 }
 
 async function uninstallCodexIntegration(): Promise<InstallAgentResult> {
@@ -284,36 +456,6 @@ async function uninstallCodexIntegration(): Promise<InstallAgentResult> {
   });
 
   return { files: [configPath, agentsPath] };
-}
-
-async function installClaudeCodeIntegration(
-  options: InstallAgentOptions,
-): Promise<InstallAgentResult> {
-  const configPath = resolveClaudeCodeConfigPath();
-  await installJsonMcpServer({
-    path: configPath,
-    containerKey: "mcpServers",
-    server: {
-      type: "http",
-      url: resolveServerUrl(),
-      ...(options.mcpTokenEnv
-        ? {
-            headers: {
-              Authorization: `Bearer \${${options.mcpTokenEnv}}`,
-            },
-          }
-        : {}),
-    },
-    force: options.force,
-    label: "Claude Code",
-  });
-  return { files: [configPath] };
-}
-
-async function uninstallClaudeCodeIntegration(): Promise<InstallAgentResult> {
-  const configPath = resolveClaudeCodeConfigPath();
-  await uninstallJsonMcpServer(configPath, "mcpServers");
-  return { files: [configPath] };
 }
 
 async function installOpenCodeIntegration(
@@ -382,13 +524,14 @@ async function resolveInstallers(
   parsed: ParsedArgs,
   action: "install" | "uninstall",
 ): Promise<AgentInstaller[]> {
+  const detected = await detectAgentInstallers();
   const targetTokens = [
     ...(parsed.options.installTargets ?? []),
     ...parsed.positionals,
   ];
 
   if (targetTokens.length > 0) {
-    return installersFromTokens(targetTokens);
+    return installersFromTokens(targetTokens, detected);
   }
 
   if (
@@ -396,45 +539,32 @@ async function resolveInstallers(
     !process.stdin.isTTY ||
     !process.stdout.isTTY
   ) {
-    return installersFromTokens(["auto"]);
+    return installersFromTokens(["auto"], detected);
   }
 
-  return promptInstallers(action);
+  return promptInstallers(action, detected);
 }
 
 async function promptInstallers(
   action: "install" | "uninstall",
+  detected: ReadonlySet<string>,
 ): Promise<AgentInstaller[]> {
   console.log(
-    `Select agents whose zvec-grep integration should be ${action === "install" ? "installed" : "removed"}:`,
+    action === "install"
+      ? "\nChoose agent integrations\n"
+      : "\nChoose integrations to remove\n",
   );
-  AGENT_INSTALLERS.forEach((installer, index) => {
-    console.log(
-      `  ${index + 1}. ${installer.label} - ${installer.description}`,
-    );
-  });
-  console.log("  all. All supported agents");
-  console.log("  none. Cancel");
-
-  const readline = createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-  try {
-    const answer = await readline.question("Agents [codex]: ");
-    const normalized = answer.trim();
-    return installersFromTokens(
-      normalized.length > 0 ? splitTargetTokens(normalized) : ["codex"],
-    );
-  } finally {
-    readline.close();
-  }
+  const selected = await promptInstallerSelection(detected);
+  return AGENT_INSTALLERS.filter((installer) => selected.has(installer.id));
 }
 
-function installersFromTokens(tokens: readonly string[]): AgentInstaller[] {
+function installersFromTokens(
+  tokens: readonly string[],
+  detected: ReadonlySet<string> = new Set(),
+): AgentInstaller[] {
   const normalized = tokens.flatMap(splitTargetTokens);
   if (normalized.length === 0) {
-    return installersFromTokens(["auto"]);
+    return installersFromTokens(["auto"], detected);
   }
 
   const selected = new Map<string, AgentInstaller>();
@@ -445,7 +575,16 @@ function installersFromTokens(tokens: readonly string[]): AgentInstaller[] {
       return [];
     }
 
-    if (lower === "auto" || lower === "all") {
+    if (lower === "auto") {
+      for (const installer of AGENT_INSTALLERS) {
+        if (detected.has(installer.id)) {
+          selected.set(installer.id, installer);
+        }
+      }
+      continue;
+    }
+
+    if (lower === "all") {
       for (const installer of AGENT_INSTALLERS) {
         selected.set(installer.id, installer);
       }
@@ -477,6 +616,197 @@ function installersFromTokens(tokens: readonly string[]): AgentInstaller[] {
   return [...selected.values()];
 }
 
+async function detectAgentInstallers(): Promise<Set<string>> {
+  const detected = new Set<string>();
+  const checks = await Promise.all(
+    AGENT_INSTALLERS.map(async (installer) => ({
+      installer,
+      available: await executableIsAvailable(installer.executable),
+    })),
+  );
+  for (const check of checks) {
+    if (check.available) {
+      detected.add(check.installer.id);
+    }
+  }
+  return detected;
+}
+
+async function executableIsAvailable(executable: string): Promise<boolean> {
+  const path = process.env.PATH ?? "";
+  const extensions =
+    process.platform === "win32"
+      ? (process.env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";")
+      : [""];
+  for (const pathEntry of path.split(delimiter)) {
+    const directory = pathEntry || process.cwd();
+    for (const extension of extensions) {
+      try {
+        await access(
+          resolve(directory, `${executable}${extension.toLowerCase()}`),
+          fileSystemConstants.X_OK,
+        );
+        return true;
+      } catch {
+        // Continue searching PATH.
+      }
+    }
+  }
+  return false;
+}
+
+async function promptInstallerSelection(
+  detected: ReadonlySet<string>,
+): Promise<Set<string>> {
+  if (typeof process.stdin.setRawMode !== "function") {
+    return promptInstallerLineSelection(detected);
+  }
+
+  let activeIndex = Math.max(
+    0,
+    AGENT_INSTALLERS.findIndex((installer) => detected.has(installer.id)),
+  );
+  let renderedLineCount = 0;
+
+  const render = (): void => {
+    const lines = installerSelectionLines(activeIndex, detected);
+
+    if (renderedLineCount > 0) {
+      process.stdout.write(`\u001b[${renderedLineCount}A`);
+    }
+    for (const line of lines) {
+      process.stdout.write(`\u001b[2K${line}\n`);
+    }
+    renderedLineCount = lines.length;
+  };
+
+  render();
+  return new Promise<Set<string>>((resolveSelection) => {
+    const wasRaw = process.stdin.isRaw === true;
+    const finish = (result: Set<string>): void => {
+      process.stdin.removeListener("data", onData);
+      process.stdin.setRawMode(wasRaw);
+      if (!wasRaw) process.stdin.pause();
+      process.stdout.write("\n");
+      resolveSelection(result);
+    };
+    const onData = (chunk: Buffer | string): void => {
+      const key = chunk.toString();
+      if (key === "\u0003" || key === "\u001b") {
+        finish(new Set());
+        return;
+      }
+      if (key === "\u001b[A") {
+        activeIndex =
+          (activeIndex - 1 + AGENT_INSTALLERS.length) % AGENT_INSTALLERS.length;
+        render();
+        return;
+      }
+      if (key === "\u001b[B") {
+        activeIndex = (activeIndex + 1) % AGENT_INSTALLERS.length;
+        render();
+        return;
+      }
+      if (key.includes("\r") || key.includes("\n")) {
+        finish(new Set([AGENT_INSTALLERS[activeIndex]!.id]));
+      }
+    };
+
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+    process.stdin.on("data", onData);
+  });
+}
+
+export function installerSelectionLines(
+  activeIndex: number,
+  detected: ReadonlySet<string>,
+): string[] {
+  const labelWidth = Math.max(
+    ...AGENT_INSTALLERS.map((installer) => installer.label.length),
+  );
+  return [
+    ...AGENT_INSTALLERS.map((installer, index) => {
+      const marker =
+        index === activeIndex ? installSuccess("●") : installDim("○");
+      const label = installer.label.padEnd(labelWidth);
+      const status = detected.has(installer.id)
+        ? installDim("detected")
+        : installDim("not found");
+      return `  ${marker} ${label}  ${status}`;
+    }),
+    "",
+    installDim("  Use ↑↓ to move · Enter to select"),
+  ];
+}
+
+async function promptInstallerLineSelection(
+  detected: ReadonlySet<string>,
+): Promise<Set<string>> {
+  AGENT_INSTALLERS.forEach((installer, index) => {
+    console.log(
+      `  ${index + 1}. ${installer.label} (${detected.has(installer.id) ? "detected" : "not found"})`,
+    );
+  });
+  const defaults = [...detected].join(",") || "none";
+  const readline = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+  try {
+    const answer = await readline.question(`Agents [${defaults}]: `);
+    const value = answer.trim() || defaults;
+    return new Set(
+      installersFromTokens(splitTargetTokens(value), detected).map(
+        (installer) => installer.id,
+      ),
+    );
+  } finally {
+    readline.close();
+  }
+}
+
+function printInstallHeader(): void {
+  console.log(installAccent("zvec-grep setup"));
+  console.log(installDim("─".repeat(40)));
+}
+
+function installSuccessMark(): string {
+  return installSuccess("✓");
+}
+
+function installMutedMark(): string {
+  return installDim("○");
+}
+
+function installSuccess(value: string): string {
+  return installStyle("32", value);
+}
+
+function installAccent(value: string): string {
+  return installStyle("36", value);
+}
+
+function installDim(value: string): string {
+  return installStyle("2", value);
+}
+
+function installStyle(code: string, value: string): string {
+  return process.stdout.isTTY && process.env.NO_COLOR === undefined
+    ? `\u001b[${code}m${value}\u001b[0m`
+    : value;
+}
+
+async function ensureInstalledServer(): Promise<
+  Awaited<ReturnType<typeof serverStatus>>
+> {
+  if (process.env.ZVEC_GREP_INSTALL_SKIP_SERVER === "1") {
+    return { running: false, ready: false };
+  }
+  const { startServer } = await import("../daemon/server-controller.js");
+  return startServer({ cliPath: process.argv[1]! });
+}
+
 function splitTargetTokens(value: string): string[] {
   return value
     .split(/[,\s]+/)
@@ -502,11 +832,131 @@ async function runIndex(parsed: ParsedArgs): Promise<void> {
     mode,
     serverAvailable: () => daemonIsReady(parsed.options.home),
     server: async () => {
-      const result = await daemonClient(parsed.options).callTool(
-        "zvec_grep_index",
-        {
+      const progress = createIndexProgressReporter({
+        color: parsed.options.color,
+      });
+      let result: Record<string, unknown>;
+      try {
+        result = await daemonClient(parsed.options).callTool(
+          "zvec_grep_index",
+          {
+            root: rootPath.absolutePath,
+            embedding: parsed.options.embedding,
+            rebuild: parsed.options.rebuild,
+            resetPaths: parsed.options.resetPaths,
+            globs: parsed.options.globs,
+            insensitiveGlobs: parsed.options.insensitiveGlobs,
+            fileTypes: parsed.options.fileTypes,
+            excludedFileTypes: parsed.options.excludedFileTypes,
+            hidden: parsed.options.hidden,
+            noIgnore: parsed.options.noIgnore,
+            ignoreFiles: parsed.options.ignoreFiles,
+            maxDepth: parsed.options.maxDepth,
+            maxFileSizeBytes: parsed.options.maxFileSizeBytes,
+            follow: parsed.options.follow,
+            embeddingConcurrency: parsed.options.embeddingConcurrency,
+            wait: true,
+          },
+          {
+            onProgress: (event) => {
+              const update = indexProgressFromMessage(event.message);
+              if (update) {
+                progress.report(update.progress);
+              }
+            },
+          },
+        );
+      } finally {
+        progress.finish();
+      }
+      console.log(`Workspace index: ${String(result.state ?? "submitted")}`);
+      console.log(`Root: ${String(result.root ?? rootPath.absolutePath)}`);
+      console.log(`Job: ${String(result.job_id ?? "unknown")}`);
+      if (result.state === "failed") {
+        throw new Error(serverIndexFailureMessage(result));
+      }
+    },
+    direct: () => runDirectIndex(parsed, rootPath, explicitRoot),
+  });
+}
+
+function serverIndexFailureMessage(result: Record<string, unknown>): string {
+  const error = result.error;
+  if (error && typeof error === "object") {
+    const code = (error as Record<string, unknown>).code;
+    const message = (error as Record<string, unknown>).message;
+    if (typeof message === "string" && message.length > 0) {
+      if (
+        typeof code !== "string" ||
+        code.length === 0 ||
+        message.includes(`[${code}]`)
+      ) {
+        return message;
+      }
+      return `[${code}] ${message}`;
+    }
+    if (typeof code === "string" && code.length > 0) {
+      return `[${code}] Index job failed.`;
+    }
+  }
+  return `Index job ${String(result.job_id ?? "unknown")} failed. Run zg status --mode server for details.`;
+}
+
+async function runDirectIndex(
+  parsed: ParsedArgs,
+  rootPath: RootPath,
+  explicitRoot: boolean,
+): Promise<void> {
+  let zvecGrep = await createZvecGrep(
+    createServiceOptions(parsed.options, rootPath.absolutePath),
+  );
+  const progress = createIndexProgressReporter({ color: parsed.options.color });
+  let usedLocalFallback = false;
+  try {
+    const infoBefore = await zvecGrep.info({ root: rootPath.absolutePath });
+    const schema = resolveAuthorizationSchema(
+      parsed.options.embedding ?? process.env.ZVEC_GREP_EMBEDDING,
+      infoBefore.collection?.embedding,
+    );
+    assertEmbeddingModelCompatible(
+      infoBefore.collection?.embedding,
+      schema,
+      parsed.options.rebuild === true,
+    );
+    const plan = schema
+      ? await planRemoteIndexAuthorization({
+          info: infoBefore,
+          schema,
+          rebuild: parsed.options.rebuild,
+          serviceOptions: createServiceOptions(
+            parsed.options,
+            rootPath.absolutePath,
+          ),
+          store: authorizationStore(parsed.options),
+        })
+      : undefined;
+    const authorizationResolution = plan
+      ? await authorizeCliPlan(
+          plan,
+          parsed.options,
+          plan.reason === "index_create" ? "local_index" : undefined,
+        )
+      : {};
+    if (authorizationResolution.alternative === "local_index") {
+      await zvecGrep.close();
+      zvecGrep = await createZvecGrep({
+        ...createServiceOptions(parsed.options, rootPath.absolutePath),
+        embedding: DEFAULT_LOCAL_EMBEDDING,
+      });
+      usedLocalFallback = true;
+    }
+    printIndexPathFilterTip(parsed.options);
+    const result = await withRemoteEmbeddingOperationPermit(
+      authorizationResolution.authorization,
+      () =>
+        zvecGrep.index({
           root: rootPath.absolutePath,
-          embedding: parsed.options.embedding,
+          rootPaths: explicitRoot ? [rootPath] : undefined,
           rebuild: parsed.options.rebuild,
           resetPaths: parsed.options.resetPaths,
           globs: parsed.options.globs,
@@ -520,60 +970,23 @@ async function runIndex(parsed: ParsedArgs): Promise<void> {
           maxFileSizeBytes: parsed.options.maxFileSizeBytes,
           follow: parsed.options.follow,
           embeddingConcurrency: parsed.options.embeddingConcurrency,
-          wait: true,
-        },
-      );
-      console.log(
-        `Indexed anonymous workspace: ${String(result.state ?? "submitted")}`,
-      );
-      console.log(`Root: ${String(result.root ?? rootPath.absolutePath)}`);
-      console.log(`Job: ${String(result.job_id ?? "unknown")}`);
-    },
-    direct: () => runDirectIndex(parsed, rootPath, explicitRoot),
-  });
-}
-
-async function runDirectIndex(
-  parsed: ParsedArgs,
-  rootPath: RootPath,
-  explicitRoot: boolean,
-): Promise<void> {
-  const zvecGrep = await createZvecGrep(
-    createServiceOptions(parsed.options, rootPath.absolutePath),
-  );
-  const progress = createIndexProgressReporter();
-  try {
-    printIndexPathFilterTip(parsed.options);
-    const result = await zvecGrep.index({
-      root: rootPath.absolutePath,
-      rootPaths: explicitRoot ? [rootPath] : undefined,
-      rebuild: parsed.options.rebuild,
-      resetPaths: parsed.options.resetPaths,
-      globs: parsed.options.globs,
-      insensitiveGlobs: parsed.options.insensitiveGlobs,
-      fileTypes: parsed.options.fileTypes,
-      excludedFileTypes: parsed.options.excludedFileTypes,
-      hidden: parsed.options.hidden,
-      noIgnore: parsed.options.noIgnore,
-      ignoreFiles: parsed.options.ignoreFiles,
-      maxDepth: parsed.options.maxDepth,
-      maxFileSizeBytes: parsed.options.maxFileSizeBytes,
-      follow: parsed.options.follow,
-      embeddingConcurrency: parsed.options.embeddingConcurrency,
-      onProgress: progress.report,
-    });
+          onProgress: progress.report,
+        }),
+    );
     progress.finish();
     const info = await zvecGrep.info({ root: rootPath.absolutePath });
     printIndexResult(
-      "Indexed anonymous workspace",
+      "Workspace index",
       result,
       parsed.options,
       info.collection?.rootPaths,
     );
-    persistExplicitGlobalConfig(
-      parsed.options,
-      embeddingReference(info.collection?.embedding),
-    );
+    if (!usedLocalFallback) {
+      persistExplicitGlobalConfig(
+        parsed.options,
+        embeddingReference(info.collection?.embedding),
+      );
+    }
   } catch (error) {
     progress.finish();
     throw error;
@@ -583,23 +996,37 @@ async function runDirectIndex(
 }
 
 async function runDropIndex(parsed: ParsedArgs, root: string): Promise<void> {
-  await assertDirectOnlyOperation(parsed.options, "zg index --drop");
   if (!(await confirmIndexDrop(root, parsed.options.yes === true))) {
     console.log("Index drop cancelled.");
     return;
   }
 
-  const zvecGrep = await createZvecGrep(
-    createServiceOptions(parsed.options, root),
-  );
-  try {
-    const removed = await zvecGrep.dropIndex({ root });
+  const printResult = (removed: boolean): void => {
     console.log(
       removed ? `Dropped index for ${root}` : `No index found for ${root}`,
     );
-  } finally {
-    await zvecGrep.close();
-  }
+  };
+  await routeByMode({
+    mode: resolveClientMode(parsed.options.mode),
+    serverAvailable: () => daemonIsReady(parsed.options.home),
+    server: async () => {
+      const result = await daemonClient(parsed.options).callTool(
+        "zvec_grep_index_drop",
+        { root },
+      );
+      printResult(result.removed === true);
+    },
+    direct: async () => {
+      const zvecGrep = await createZvecGrep(
+        createServiceOptions(parsed.options, root),
+      );
+      try {
+        printResult(await zvecGrep.dropIndex({ root }));
+      } finally {
+        await zvecGrep.close();
+      }
+    },
+  });
 }
 
 async function confirmIndexDrop(
@@ -763,24 +1190,71 @@ async function runCollections(parsed: ParsedArgs): Promise<void> {
       const explicitRoot = root !== undefined;
       const rootPath = indexRootPath(root ?? process.cwd(), parsed.options);
       const rootPaths = explicitRoot ? rootPath : undefined;
-      const progress = createIndexProgressReporter();
+      const progress = createIndexProgressReporter({
+        color: parsed.options.color,
+      });
       try {
-        const result = await zvecGrep.collections.index(name, rootPaths, {
-          rebuild: parsed.options.rebuild,
-          resetPaths: parsed.options.resetPaths,
-          globs: parsed.options.globs,
-          insensitiveGlobs: parsed.options.insensitiveGlobs,
-          fileTypes: parsed.options.fileTypes,
-          excludedFileTypes: parsed.options.excludedFileTypes,
-          hidden: parsed.options.hidden,
-          noIgnore: parsed.options.noIgnore,
-          ignoreFiles: parsed.options.ignoreFiles,
-          maxDepth: parsed.options.maxDepth,
-          maxFileSizeBytes: parsed.options.maxFileSizeBytes,
-          follow: parsed.options.follow,
-          embeddingConcurrency: parsed.options.embeddingConcurrency,
-          onProgress: progress.report,
-        });
+        const [existing, status] = await Promise.all([
+          zvecGrep.collections.info(name),
+          zvecGrep.collections.status(name),
+        ]);
+        const schema = resolveAuthorizationSchema(
+          parsed.options.embedding ?? process.env.ZVEC_GREP_EMBEDDING,
+          existing?.embedding,
+        );
+        assertEmbeddingModelCompatible(
+          existing?.embedding,
+          schema,
+          parsed.options.rebuild === true,
+        );
+        const authorizationCollection = existing
+          ? {
+              ...existing,
+              rootPaths: explicitRoot ? [rootPath] : existing.rootPaths,
+            }
+          : undefined;
+        const infoBefore: ZvecGrepInfoResult = {
+          root: rootPath.absolutePath,
+          indexed: Boolean(existing?.embedding),
+          indexPolicy: existing?.indexPolicy ?? "undecided",
+          home: parsed.options.home ?? "",
+          indexPath: existing?.path ?? "",
+          source: existing?.embedding ? "index" : "unindexed",
+          collection: authorizationCollection,
+          status,
+        };
+        const plan = schema
+          ? await planRemoteIndexAuthorization({
+              info: infoBefore,
+              schema,
+              rebuild: parsed.options.rebuild,
+              serviceOptions: createServiceOptions(parsed.options, undefined),
+              store: authorizationStore(parsed.options),
+            })
+          : undefined;
+        const authorization = plan
+          ? (await authorizeCliPlan(plan, parsed.options)).authorization
+          : undefined;
+        const result = await withRemoteEmbeddingOperationPermit(
+          authorization,
+          () =>
+            zvecGrep.collections.index(name, rootPaths, {
+              rebuild: parsed.options.rebuild,
+              resetPaths: parsed.options.resetPaths,
+              globs: parsed.options.globs,
+              insensitiveGlobs: parsed.options.insensitiveGlobs,
+              fileTypes: parsed.options.fileTypes,
+              excludedFileTypes: parsed.options.excludedFileTypes,
+              hidden: parsed.options.hidden,
+              noIgnore: parsed.options.noIgnore,
+              ignoreFiles: parsed.options.ignoreFiles,
+              maxDepth: parsed.options.maxDepth,
+              maxFileSizeBytes: parsed.options.maxFileSizeBytes,
+              follow: parsed.options.follow,
+              embeddingConcurrency: parsed.options.embeddingConcurrency,
+              onProgress: progress.report,
+            }),
+        );
         progress.finish();
         const info = await zvecGrep.collections.info(name);
         printIndexResult(
@@ -928,14 +1402,40 @@ async function runDirectQuery(
   const zvecGrep = await createZvecGrep(
     createServiceOptions(commandOptions, undefined),
   );
-  const progress = createIndexProgressReporter();
+  const progress = createIndexProgressReporter({
+    color: commandOptions.color,
+  });
   try {
-    const result = await zvecGrep.context(
-      contextOptions(commandOptions, queries, (progressEvent) => {
-        if (progressEvent.phase !== "done") {
-          progress.report(progressEvent);
-        }
-      }),
+    const contextRequest = contextOptions(
+      commandOptions,
+      queries,
+      (progressEvent) => {
+        if (progressEvent.phase !== "done") progress.report(progressEvent);
+      },
+    );
+    const info = await directQueryInfo(zvecGrep, commandOptions);
+    const plan = commandOptions.rg
+      ? undefined
+      : await planRemoteSearchAuthorization({
+          info,
+          search: normalizedDirectSearchInput(
+            commandOptions,
+            queries,
+            info.root,
+          ),
+          serviceOptions: createServiceOptions(commandOptions, info.root),
+          store: authorizationStore(commandOptions),
+        });
+    const authorizationResolution = plan
+      ? await authorizeCliPlan(plan, commandOptions, "local_search")
+      : {};
+    const effectiveContextRequest =
+      authorizationResolution.alternative === "local_search"
+        ? ftsFallbackContextRequest(contextRequest)
+        : contextRequest;
+    const result = await withRemoteEmbeddingOperationPermit(
+      authorizationResolution.authorization,
+      () => zvecGrep.context(effectiveContextRequest),
     );
     progress.finish();
     if (commandOptions.human) {
@@ -1020,7 +1520,195 @@ function daemonClient(options: CliOptions): DaemonClient {
     serverUrl: resolveServerUrl(),
     home: options.home,
     tokenFile: options.serverTokenFile,
+    allowRemote: options.allowRemote,
   });
+}
+
+function authorizationStore(
+  options: CliOptions,
+): RemoteEmbeddingAuthorizationStore {
+  return new RemoteEmbeddingAuthorizationStore({
+    signingKeyPath: createServiceOptions(options, undefined)
+      .authorizationSigningKeyPath,
+  });
+}
+
+async function authorizeCliPlan(
+  plan: RemoteEmbeddingAuthorizationPlan,
+  options: CliOptions,
+  alternative?: "local_search" | "local_index",
+): Promise<{
+  authorization?: RemoteEmbeddingOperationPermit;
+  alternative?: "local_search" | "local_index";
+}> {
+  const manager = new RemoteEmbeddingAuthorizationManager(
+    authorizationStore(options),
+  );
+  const existing = await manager.existingWorkspacePermit(plan);
+  if (existing) return { authorization: existing };
+  if (options.allowRemote) {
+    return {
+      authorization: await manager.grant(plan, options.allowRemote),
+    };
+  }
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new Error(
+      [
+        "Remote Embedding authorization is required.",
+        "Re-run with --allow-remote once, or grant Workspace authorization:",
+        "  zg auth grant --capability embedding --scope workspace",
+      ].join("\n"),
+    );
+  }
+
+  console.error(
+    formatRemoteEmbeddingAuthorizationPrompt({
+      workspaceRoots: plan.target.workspaceRoots,
+      provider: plan.target.provider,
+      model: plan.target.model,
+      endpoint: plan.target.endpoint,
+      data: remoteEmbeddingDisclosureData(plan.disclosure),
+    }),
+  );
+  console.error("");
+  console.error("1. Allow once");
+  console.error("2. Allow for this workspace");
+  if (alternative === "local_search") console.error("3. Use FTS only");
+  if (alternative === "local_index") {
+    console.error("3. Use a local embedding model");
+  }
+  const cancelChoice = alternative ? 4 : 3;
+  console.error(`${cancelChoice}. Cancel`);
+  const readline = createInterface({
+    input: process.stdin,
+    output: process.stderr,
+  });
+  try {
+    const answer = (
+      await readline.question(`Choose [1-${cancelChoice}]: `)
+    ).trim();
+    if (answer === "1") {
+      return { authorization: await manager.grant(plan, "once") };
+    }
+    if (answer === "2") {
+      return { authorization: await manager.grant(plan, "workspace") };
+    }
+    if (answer === "3" && alternative) {
+      return { alternative };
+    }
+    throw new Error(
+      "Remote Embedding authorization was declined. No remote data was sent.",
+    );
+  } finally {
+    readline.close();
+  }
+}
+
+function ftsFallbackContextRequest(
+  request: ZvecGrepContextOptions,
+): ZvecGrepContextOptions {
+  const queries = [
+    ...(request.queries ?? []),
+    ...(request.query ? [request.query] : []),
+    ...(request.routes ?? []).map((route) => route.query),
+  ];
+  return {
+    ...request,
+    query: undefined,
+    queries: undefined,
+    routes: queries.map((query) => ({ mode: "fts", query })),
+    autoUpdate: false,
+  };
+}
+
+function resolveAuthorizationSchema(
+  reference: string | undefined,
+  existing: CollectionEmbeddingSchema | null | undefined,
+): CollectionEmbeddingSchema | undefined {
+  if (!reference) return existing ?? undefined;
+  const separator = reference.indexOf("/");
+  if (separator <= 0 || separator === reference.length - 1) {
+    throw new Error(`Invalid embedding reference: ${reference}`);
+  }
+  const provider = reference.slice(0, separator);
+  const model = reference.slice(separator + 1);
+  const catalog = getEmbeddingModelCatalogEntry(reference);
+  return {
+    provider,
+    model,
+    dimension:
+      catalog?.dimension ??
+      (existing?.provider === provider && existing.model === model
+        ? existing.dimension
+        : 1),
+    metric:
+      catalog?.metric ??
+      (existing?.provider === provider && existing.model === model
+        ? existing.metric
+        : "cosine"),
+  };
+}
+
+function assertEmbeddingModelCompatible(
+  existing: CollectionEmbeddingSchema | null | undefined,
+  requested: CollectionEmbeddingSchema | undefined,
+  rebuild: boolean,
+): void {
+  if (!existing || !requested || rebuild) return;
+  if (
+    existing.provider === requested.provider &&
+    existing.model === requested.model
+  ) {
+    return;
+  }
+  throw new Error(
+    [
+      "Embedding model does not match the existing index.",
+      `Existing model: ${existing.provider}/${existing.model}`,
+      `Requested model: ${requested.provider}/${requested.model}`,
+      "Re-run with --rebuild to change the embedding model.",
+    ].join("\n"),
+  );
+}
+
+async function directQueryInfo(
+  service: ZvecGrep,
+  options: CliOptions,
+): Promise<ZvecGrepInfoResult> {
+  if (!options.collection) {
+    return await service.info({ root: process.cwd() });
+  }
+  const [collection, status] = await Promise.all([
+    service.collections.info(options.collection),
+    service.collections.status(options.collection),
+  ]);
+  if (!collection)
+    throw new Error(`Collection not found: ${options.collection}`);
+  return {
+    root: collection.rootPaths[0]?.absolutePath ?? process.cwd(),
+    indexed: collection.embedding !== null,
+    indexPolicy: collection.indexPolicy ?? "undecided",
+    home: options.home ?? "",
+    indexPath: collection.path,
+    source: collection.embedding ? "index" : "unindexed",
+    collection,
+    status,
+  };
+}
+
+function normalizedDirectSearchInput(
+  options: CliOptions,
+  queries: readonly string[],
+  root: string,
+): NormalizedSearchInput {
+  return {
+    root,
+    queries: !options.rg && queries.length > 0 ? [...queries] : undefined,
+    routes: [...(options.routes ?? [])],
+    freshness: options.fresh ? "wait_for_fresh" : "eventual",
+    autoUpdate: !options.noAutoUpdate,
+    maxContentChars: 1_200,
+  };
 }
 
 async function daemonIsReady(home?: string): Promise<boolean> {
@@ -1039,21 +1727,6 @@ function printServerControlStatus(
 
 function assertDirectOnlyMode(options: CliOptions, command: string): void {
   if (resolveClientMode(options.mode) === "server") {
-    throw new Error(
-      `${command} is Direct-only; use --mode direct after stopping the daemon`,
-    );
-  }
-}
-
-async function assertDirectOnlyOperation(
-  options: CliOptions,
-  command: string,
-): Promise<void> {
-  const mode = resolveClientMode(options.mode);
-  if (
-    mode === "server" ||
-    (mode === "auto" && (await daemonIsReady(options.home)))
-  ) {
     throw new Error(
       `${command} is Direct-only; use --mode direct after stopping the daemon`,
     );
@@ -1144,6 +1817,7 @@ export function createServiceOptions(
     embeddingParallelism:
       options.embeddingParallelism ??
       parseEnvPositiveInteger(process.env.ZVEC_GREP_EMBED_PARALLELISM),
+    authorizationSigningKeyPath: process.env.ZVEC_GREP_AUTHORIZATION_KEY_FILE,
   };
 }
 
@@ -1206,7 +1880,13 @@ function resolveCodexHome(): string {
   return resolve(process.env.CODEX_HOME ?? resolve(homedir(), ".codex"));
 }
 
-function resolveClaudeCodeConfigPath(): string {
+function resolveClaudeConfigDirectory(): string {
+  return resolve(
+    process.env.CLAUDE_CONFIG_DIR ?? resolve(homedir(), ".claude"),
+  );
+}
+
+function resolveClaudeMcpConfigPath(): string {
   return process.env.CLAUDE_CONFIG_DIR
     ? resolve(process.env.CLAUDE_CONFIG_DIR, ".claude.json")
     : resolve(homedir(), ".claude.json");
@@ -1268,7 +1948,7 @@ async function uninstallJsonMcpServer(
   const existing = await readTextFileIfExists(path);
   if (!existing) return;
 
-  const config = parseJsonObject(existing, path);
+  const config = parseJsonObject(path, existing);
   const container = config[containerKey];
   if (!isJsonObject(container)) return;
   if (!isManagedJsonMcpServer(container.zvec_grep)) return;
@@ -1283,33 +1963,145 @@ async function uninstallJsonMcpServer(
   await writeTextFileAtomic(path, `${JSON.stringify(config, null, 2)}\n`);
 }
 
-async function readJsonObject(path: string): Promise<Record<string, unknown>> {
-  const existing = await readTextFileIfExists(path);
-  return existing ? parseJsonObject(existing, path) : {};
-}
+type JsonObject = Record<string, unknown>;
 
-function parseJsonObject(value: string, path: string): Record<string, unknown> {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(value);
-  } catch (error) {
+async function updateClaudeMcpConfig(options: {
+  path: string;
+  force: boolean;
+  tokenEnv?: string;
+}): Promise<void> {
+  const root = await readJsonObject(options.path);
+  const currentServers = root.mcpServers;
+  if (
+    currentServers !== undefined &&
+    !isJsonObject(currentServers) &&
+    !options.force
+  ) {
     throw new Error(
-      `Cannot update ${path}: invalid JSON (${error instanceof Error ? error.message : String(error)})`,
-      { cause: error },
+      `Invalid mcpServers configuration in ${options.path}. Re-run with --force to replace it.`,
     );
   }
+  const mcpServers = isJsonObject(currentServers) ? currentServers : {};
+  const current = mcpServers.zvec_grep;
+  if (
+    current !== undefined &&
+    (!isJsonObject(current) || current.url !== resolveServerUrl()) &&
+    !options.force
+  ) {
+    throw new Error(
+      `Existing Claude Code MCP server "zvec_grep" found in ${options.path}. Re-run with --force to replace it.`,
+    );
+  }
+
+  const existingServer = isJsonObject(current) ? current : {};
+  const existingHeaders = isJsonObject(existingServer.headers)
+    ? existingServer.headers
+    : {};
+  mcpServers.zvec_grep = {
+    ...existingServer,
+    type: "http",
+    url: resolveServerUrl(),
+    ...(options.tokenEnv
+      ? {
+          headers: {
+            ...existingHeaders,
+            Authorization: `Bearer \${${options.tokenEnv}}`,
+          },
+        }
+      : {}),
+  };
+  root.mcpServers = mcpServers;
+  await writeJsonObject(options.path, root);
+}
+
+async function removeClaudeMcpConfig(path: string): Promise<void> {
+  const source = await readTextFileIfExists(path);
+  if (!source.trim()) return;
+  const root = parseJsonObject(path, source);
+  if (!isJsonObject(root.mcpServers)) return;
+  const current = root.mcpServers.zvec_grep;
+  if (!isJsonObject(current) || current.url !== resolveServerUrl()) return;
+
+  delete root.mcpServers.zvec_grep;
+  if (Object.keys(root.mcpServers).length === 0) {
+    delete root.mcpServers;
+  }
+  await writeJsonObject(path, root);
+}
+
+async function updateClaudePermissionSettings(
+  path: string,
+  grant: boolean,
+): Promise<void> {
+  const source = await readTextFileIfExists(path);
+  if (!source.trim() && !grant) return;
+  const root = source.trim() ? parseJsonObject(path, source) : {};
+  const currentPermissions = root.permissions;
+  if (currentPermissions !== undefined && !isJsonObject(currentPermissions)) {
+    throw new Error(`Invalid permissions configuration in ${path}.`);
+  }
+  const permissions = isJsonObject(currentPermissions)
+    ? currentPermissions
+    : {};
+  const currentAllow = permissions.allow;
+  if (currentAllow !== undefined && !Array.isArray(currentAllow)) {
+    throw new Error(`Invalid permissions.allow configuration in ${path}.`);
+  }
+  if (
+    Array.isArray(currentAllow) &&
+    currentAllow.some((item) => typeof item !== "string")
+  ) {
+    throw new Error(`Invalid permissions.allow rule in ${path}.`);
+  }
+  const allow = Array.isArray(currentAllow)
+    ? (currentAllow.slice() as string[])
+    : [];
+
+  if (grant) {
+    if (!allow.includes(CLAUDE_MCP_PERMISSION)) {
+      allow.push(CLAUDE_MCP_PERMISSION);
+    }
+    permissions.allow = allow;
+    root.permissions = permissions;
+  } else {
+    const retained = allow.filter((item) => item !== CLAUDE_MCP_PERMISSION);
+    if (retained.length > 0) permissions.allow = retained;
+    else delete permissions.allow;
+    if (Object.keys(permissions).length > 0) root.permissions = permissions;
+    else delete root.permissions;
+  }
+
+  await writeJsonObject(path, root);
+}
+
+async function readJsonObject(path: string): Promise<JsonObject> {
+  const source = await readTextFileIfExists(path);
+  return source.trim() ? parseJsonObject(path, source) : {};
+}
+
+function parseJsonObject(path: string, source: string): JsonObject {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(source);
+  } catch (error) {
+    throw new Error(`Invalid JSON in ${path}.`, { cause: error });
+  }
   if (!isJsonObject(parsed)) {
-    throw new Error(`Cannot update ${path}: expected a JSON object`);
+    throw new Error(`Expected a JSON object in ${path}.`);
   }
   return parsed;
 }
 
-function isJsonObject(value: unknown): value is Record<string, unknown> {
+function isJsonObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isManagedJsonMcpServer(value: unknown): boolean {
   return isJsonObject(value) && value.url === resolveServerUrl();
+}
+
+async function writeJsonObject(path: string, value: JsonObject): Promise<void> {
+  await writeTextFileAtomic(path, `${JSON.stringify(value, null, 2)}\n`);
 }
 
 async function writeMarkedFile(options: {
@@ -1606,10 +2398,24 @@ ${
 `
     : ""
 }tool_timeout_sec = ${mcpToolTimeoutSeconds}
-default_tools_approval_mode = "auto"
+default_tools_approval_mode = "approve"
 ${ZVEC_GREP_CONFIG_END}`;
 }
 
+function agentGuidanceBlock(): string {
+  return `${ZVEC_GREP_AGENTS_START}
+## zvec-grep
+
+Use zvec-grep before grep, rg, or broad file reads when you need to understand or locate code.
+
+- **MCP tools**: Use \`zvec_grep_search\` for indexed semantic/lexical code search, \`zvec_grep_index\` to ensure an index, and the two status tools to inspect index or server state.
+- **Indexing and status**: Every repository MCP call uses an absolute root visible to the local daemon. Start it with \`zg server on\`. For \`zvec_grep_index\`, \`wait\` defaults to false: submit it in the background and poll \`zvec_grep_index_status\`; set \`wait: true\` only when completion is required before continuing.
+- **Remote data authorization**: MCP tool trust does not authorize Remote Embedding. zvec-grep requests its own once, session, or workspace authorization before sending query text or workspace content to a remote provider.
+- **Shell fallback**: If the MCP server is unavailable, use \`zg status\`, \`zg query "<query>"\`, and \`zg query --rg "<pattern>"\`.
+
+Prefer focused -g/--glob and -t/--type filters, and exclude dependencies, generated output, caches, build artifacts, and logs unless the task is about those files.
+${ZVEC_GREP_AGENTS_END}`;
+}
 function resolveIndexRoot(root: string | undefined): string {
   if (root !== undefined) {
     return root;

@@ -1,5 +1,14 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { ZvecGrepContextResult } from "../index.js";
+import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
+import type {
+  ServerNotification,
+  ServerRequest,
+} from "@modelcontextprotocol/sdk/types.js";
+import type { IndexProgress, ZvecGrepContextResult } from "../index.js";
+import {
+  formatRemoteEmbeddingAuthorizationPrompt,
+  remoteEmbeddingDisclosureData,
+} from "../authorization/prompt.js";
 import {
   normalizeSearchInput,
   type NormalizedSearchInput,
@@ -7,6 +16,8 @@ import {
 import {
   zvecGrepIndexInputSchema,
   zvecGrepIndexOutputSchema,
+  zvecGrepIndexDropInputSchema,
+  zvecGrepIndexDropOutputSchema,
   zvecGrepIndexStatusInputSchema,
   zvecGrepIndexStatusOutputSchema,
   zvecGrepRgInputSchema,
@@ -16,6 +27,7 @@ import {
   zvecGrepServerStatusInputSchema,
   zvecGrepServerStatusOutputSchema,
   type ZvecGrepIndexInput,
+  type ZvecGrepIndexDropInput,
   type ZvecGrepIndexStatusInput,
   type ZvecGrepRgInput,
   type ZvecGrepSearchIndexing,
@@ -25,6 +37,17 @@ import {
   simplifyContextResult,
   toolResult,
 } from "./result-format.js";
+import type {
+  RemoteEmbeddingAuthorizationPlan,
+  RemoteEmbeddingAuthorizationScope,
+  RemoteEmbeddingOperationPermit,
+} from "../authorization/types.js";
+import {
+  LONG_RUNNING_MCP_TIMEOUT_MS,
+  REMOTE_AUTHORIZATION_HEARTBEAT_MS,
+  withProgressHeartbeat,
+} from "./progress-heartbeat.js";
+import { indexProgressMessage } from "../index-progress.js";
 
 export type IndexJobState =
   "queued" | "running" | "succeeded" | "failed" | "cancelled";
@@ -36,6 +59,12 @@ export type ZvecGrepIndexResult = {
   reused: boolean;
   action?: "index" | "drop";
   dropped?: boolean;
+  error?: { code: string; message: string };
+};
+
+export type ZvecGrepIndexDropResult = {
+  root: string;
+  removed: boolean;
 };
 
 export type ZvecGrepSearchResult = {
@@ -128,8 +157,31 @@ export type ZvecGrepRgResult = {
 };
 
 export interface ZvecGrepDaemonBackend {
-  index(input: ZvecGrepIndexInput): Promise<ZvecGrepIndexResult>;
-  search(input: NormalizedSearchInput): Promise<ZvecGrepSearchResult>;
+  index(
+    input: ZvecGrepIndexInput,
+    options?: {
+      authorization?: RemoteEmbeddingOperationPermit;
+      onProgress?: (progress: IndexProgress) => void;
+    },
+  ): Promise<ZvecGrepIndexResult>;
+  dropIndex(input: ZvecGrepIndexDropInput): Promise<ZvecGrepIndexDropResult>;
+  search(
+    input: NormalizedSearchInput,
+    options?: { authorization?: RemoteEmbeddingOperationPermit },
+  ): Promise<ZvecGrepSearchResult>;
+  planIndexAuthorization?(
+    input: ZvecGrepIndexInput,
+  ): Promise<RemoteEmbeddingAuthorizationPlan | undefined>;
+  planSearchAuthorization?(
+    input: NormalizedSearchInput,
+  ): Promise<RemoteEmbeddingAuthorizationPlan | undefined>;
+  existingRemoteEmbeddingPermit?(
+    plan: RemoteEmbeddingAuthorizationPlan,
+  ): Promise<RemoteEmbeddingOperationPermit | undefined>;
+  grantRemoteEmbedding?(
+    plan: RemoteEmbeddingAuthorizationPlan,
+    scope: RemoteEmbeddingAuthorizationScope,
+  ): Promise<RemoteEmbeddingOperationPermit>;
   indexStatus(
     input: ZvecGrepIndexStatusInput,
   ): Promise<ZvecGrepIndexStatusResult>;
@@ -153,13 +205,19 @@ export const ZVEC_GREP_MCP_INSTRUCTIONS = [
   "Call zvec_grep_index only when persistent indexing or index deletion is explicitly requested. Never silently create, rebuild, or drop an index.",
   "For a new index, use a user-selected embedding or omit it only when a server default model is known; never guess a model.",
   "zvec_grep_index wait defaults to false; poll zvec_grep_index_status for background progress and set wait to true only when completion is required before continuing.",
-  "Use zvec_grep_index with drop: true only when index deletion is explicitly requested.",
+  "Use zvec_grep_index with drop: true, or zvec_grep_index_drop, only when index deletion is explicitly requested.",
   "Call zvec_grep_server_status only for daemon diagnostics, not before ordinary searches.",
 ].join(" ");
+
+export type ZvecGrepMcpServerOptions = {
+  authorizationHeartbeatMs?: number;
+  authorizationRequestTimeoutMs?: number;
+};
 
 export function createZvecGrepMcpServer(
   backend: ZvecGrepDaemonBackend,
   version: string,
+  options: ZvecGrepMcpServerOptions = {},
 ): McpServer {
   const server = new McpServer(
     { name: "zvec-grep", version },
@@ -167,14 +225,16 @@ export function createZvecGrepMcpServer(
       instructions: ZVEC_GREP_MCP_INSTRUCTIONS,
     },
   );
-  registerZvecGrepTools(server, backend);
+  registerZvecGrepTools(server, backend, options);
   return server;
 }
 
 export function registerZvecGrepTools(
   server: McpServer,
   backend: ZvecGrepDaemonBackend,
+  options: ZvecGrepMcpServerOptions = {},
 ): void {
+  const remoteEmbeddingSessionGrants = new Set<string>();
   server.registerTool(
     "zvec_grep_index",
     {
@@ -190,8 +250,33 @@ export function registerZvecGrepTools(
         openWorldHint: true,
       },
     },
-    async (input) => {
-      const result = await backend.index(input);
+    async (input, extra) => {
+      const plan = await backend.planIndexAuthorization?.(input);
+      const resolution = plan
+        ? await resolveRemoteEmbeddingAuthorization(
+            server,
+            backend,
+            plan,
+            remoteEmbeddingSessionGrants,
+            plan.reason === "index_create" ? "local_index" : undefined,
+            extra,
+            options,
+          )
+        : {};
+      const effectiveInput =
+        resolution.alternative === "local_index"
+          ? { ...input, embedding: "local/embeddinggemma-300m" }
+          : input;
+      const progress = createMcpIndexProgressReporter(extra);
+      let result: ZvecGrepIndexResult;
+      try {
+        result = await backend.index(effectiveInput, {
+          authorization: resolution.authorization,
+          onProgress: progress.report,
+        });
+      } finally {
+        await progress.flush();
+      }
       const structuredContent = {
         root: result.root,
         job_id: result.jobId,
@@ -199,6 +284,7 @@ export function registerZvecGrepTools(
         reused: result.reused,
         action: result.action,
         dropped: result.dropped,
+        error: result.error,
       };
       return toolResult(
         [
@@ -209,6 +295,12 @@ export function registerZvecGrepTools(
           ...(result.action ? [`action: ${result.action}`] : []),
           ...(result.dropped !== undefined
             ? [`dropped: ${result.dropped}`]
+            : []),
+          ...(result.error
+            ? [
+                `error_code: ${result.error.code}`,
+                `error_message: ${result.error.message}`,
+              ]
             : []),
         ].join("\n"),
         structuredContent,
@@ -227,20 +319,38 @@ export function registerZvecGrepTools(
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: true,
+        idempotentHint: false,
+        openWorldHint: false,
       },
     },
-    async (input) => {
+    async (input, extra) => {
       const normalized = normalizeSearchInput(input);
-      const response = await backend.search(normalized);
+      const plan = await backend.planSearchAuthorization?.(normalized);
+      const resolution = plan
+        ? await resolveRemoteEmbeddingAuthorization(
+            server,
+            backend,
+            plan,
+            remoteEmbeddingSessionGrants,
+            "local_search",
+            extra,
+            options,
+          )
+        : {};
+      const effectiveSearch =
+        resolution.alternative === "local_search"
+          ? ftsFallbackSearch(normalized)
+          : normalized;
+      const response = await backend.search(effectiveSearch, {
+        authorization: resolution.authorization,
+      });
       const structuredContent = {
         root: response.root,
         freshness: response.freshness,
         indexing: response.indexing,
         result: simplifyContextResult(
           response.result,
-          normalized.maxContentChars,
+          effectiveSearch.maxContentChars,
         ),
       };
       const statusLines = [
@@ -250,7 +360,37 @@ export function registerZvecGrepTools(
           : []),
       ];
       return toolResult(
-        `${statusLines.join("\n")}\n${contextText(response.result, normalized.maxContentChars)}`,
+        `${statusLines.join("\n")}\n${contextText(response.result, effectiveSearch.maxContentChars)}`,
+        structuredContent,
+      );
+    },
+  );
+
+  server.registerTool(
+    "zvec_grep_index_drop",
+    {
+      title: "Drop zvec-grep Workspace index",
+      description:
+        "Delete the persisted index for an absolute Workspace root and release its daemon runtime.",
+      inputSchema: zvecGrepIndexDropInputSchema.shape,
+      outputSchema: zvecGrepIndexDropOutputSchema.shape,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async (input) => {
+      const result = await backend.dropIndex(input);
+      const structuredContent = {
+        root: result.root,
+        removed: result.removed,
+      };
+      return toolResult(
+        result.removed
+          ? `Dropped Workspace index for ${result.root}`
+          : `No Workspace index found for ${result.root}`,
         structuredContent,
       );
     },
@@ -344,6 +484,189 @@ export function registerZvecGrepTools(
       );
     },
   );
+}
+
+function createMcpIndexProgressReporter(
+  extra: RequestHandlerExtra<ServerRequest, ServerNotification>,
+): {
+  report: (progress: IndexProgress) => void;
+  flush: () => Promise<void>;
+} {
+  const progressToken = extra._meta?.progressToken;
+  let progressValue = Date.now();
+  let pending = Promise.resolve();
+  return {
+    report(progress) {
+      const message = indexProgressMessage(progress);
+      if (progressToken === undefined || !message || extra.signal.aborted) {
+        return;
+      }
+      progressValue = Math.max(progressValue + 1, Date.now());
+      pending = pending
+        .then(() =>
+          extra.sendNotification({
+            method: "notifications/progress",
+            params: {
+              progressToken,
+              progress: progressValue,
+              message,
+            },
+          }),
+        )
+        .catch(() => undefined);
+    },
+    async flush() {
+      await pending;
+    },
+  };
+}
+
+const REMOTE_EMBEDDING_SCOPE_DESCRIPTION =
+  "Choose how long zvec-grep may reuse this permission.";
+
+async function resolveRemoteEmbeddingAuthorization(
+  server: McpServer,
+  backend: ZvecGrepDaemonBackend,
+  plan: RemoteEmbeddingAuthorizationPlan,
+  sessionGrants: Set<string>,
+  alternative: "local_search" | "local_index" | undefined,
+  extra: RequestHandlerExtra<ServerRequest, ServerNotification>,
+  options: ZvecGrepMcpServerOptions = {},
+): Promise<{
+  authorization?: RemoteEmbeddingOperationPermit;
+  alternative?: "local_search" | "local_index";
+}> {
+  const existing = await backend.existingRemoteEmbeddingPermit?.(plan);
+  if (existing) return { authorization: existing };
+  if (!backend.grantRemoteEmbedding) {
+    throw new Error("Remote Embedding authorization is required.");
+  }
+  if (sessionGrants.has(plan.target.targetFingerprint)) {
+    return {
+      authorization: await backend.grantRemoteEmbedding(plan, "session"),
+    };
+  }
+
+  const elicitation = await elicitRemoteEmbeddingAuthorization(
+    server,
+    extra,
+    options,
+    {
+      mode: "form",
+      message: formatRemoteEmbeddingAuthorizationPrompt({
+        workspaceRoots: plan.target.workspaceRoots,
+        provider: plan.target.provider,
+        model: plan.target.model,
+        endpoint: plan.target.endpoint,
+        data: remoteEmbeddingDisclosureData(plan.disclosure),
+      }),
+      requestedSchema: {
+        type: "object",
+        properties: {
+          decision: {
+            type: "string",
+            title: "Remote Embedding permission",
+            description: REMOTE_EMBEDDING_SCOPE_DESCRIPTION,
+            oneOf: [
+              { const: "allow_once", title: "Allow once" },
+              { const: "allow_session", title: "Allow for this session" },
+              {
+                const: "allow_workspace",
+                title: "Allow for this workspace",
+              },
+              ...(alternative === "local_search"
+                ? [
+                    {
+                      const: "use_local_search",
+                      title: "Use FTS only",
+                    },
+                  ]
+                : alternative === "local_index"
+                  ? [
+                      {
+                        const: "use_local_index",
+                        title: "Use a local embedding model",
+                      },
+                    ]
+                  : []),
+              { const: "cancel", title: "Cancel" },
+            ],
+            default: "cancel",
+          },
+        },
+        required: ["decision"],
+      },
+    },
+  );
+  const decision =
+    elicitation.action === "accept" ? elicitation.content?.decision : undefined;
+  if (decision === "use_local_search") {
+    return { alternative: "local_search" };
+  }
+  if (decision === "use_local_index") {
+    return { alternative: "local_index" };
+  }
+  if (
+    decision !== "allow_once" &&
+    decision !== "allow_session" &&
+    decision !== "allow_workspace"
+  ) {
+    throw new Error(
+      "Remote Embedding authorization was declined. No remote data was sent.",
+    );
+  }
+  const scope: RemoteEmbeddingAuthorizationScope =
+    decision === "allow_workspace"
+      ? "workspace"
+      : decision === "allow_session"
+        ? "session"
+        : "once";
+  if (scope === "session") {
+    sessionGrants.add(plan.target.targetFingerprint);
+  }
+  return {
+    authorization: await backend.grantRemoteEmbedding(plan, scope),
+  };
+}
+
+async function elicitRemoteEmbeddingAuthorization(
+  server: McpServer,
+  extra: RequestHandlerExtra<ServerRequest, ServerNotification>,
+  options: ZvecGrepMcpServerOptions,
+  request: Parameters<McpServer["server"]["elicitInput"]>[0],
+): ReturnType<McpServer["server"]["elicitInput"]> {
+  return await withProgressHeartbeat(
+    extra,
+    async () =>
+      await server.server.elicitInput(request, {
+        signal: extra.signal,
+        timeout:
+          options.authorizationRequestTimeoutMs ?? LONG_RUNNING_MCP_TIMEOUT_MS,
+        onprogress: () => undefined,
+        resetTimeoutOnProgress: true,
+      }),
+    {
+      intervalMs:
+        options.authorizationHeartbeatMs ?? REMOTE_AUTHORIZATION_HEARTBEAT_MS,
+      message: "Waiting for Remote Embedding authorization.",
+    },
+  );
+}
+
+function ftsFallbackSearch(
+  input: NormalizedSearchInput,
+): NormalizedSearchInput {
+  const queries = [
+    ...(input.queries ?? []),
+    ...input.routes.map((route) => route.query),
+  ];
+  return {
+    ...input,
+    queries: undefined,
+    routes: queries.map((query) => ({ mode: "fts" as const, query })),
+    autoUpdate: false,
+    freshness: "eventual",
+  };
 }
 
 function formatSearchIndexing(

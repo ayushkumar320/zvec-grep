@@ -49,7 +49,7 @@ zg query "where query auto update happens"
 - **Agent 友好输出**：默认按文件分组，并尽量减少源码 preview，降低上下文成本。
 - **人类阅读模式**：加 `--human` 后更适合终端阅读，并默认展示完整 preview。
 - **托管 ripgrep 通道**：`zg query --rg` 支持常见 `rg` 参数，未建索引仓库也能使用。
-- **显式模型选择**：第一次建索引必须指定模型，例如 `local/embeddinggemma-300m`、`local/qwen3-embedding-0.6b` 或 `qwen/qwen3.7-text-embedding`。
+- **显式模型选择**：第一次建索引必须指定模型，例如 `local/embeddinggemma-300m`、`local/qwen3-embedding-0.6b` 或 `qwen/text-embedding-v4`。
 - **Schema 复用**：已有索引再次运行 `zg index` 会复用保存的 embedding schema，除非你显式切换模型。
 - **共享 MCP Server**：运行 `zg server on`，通过 loopback Streamable HTTP 暴露索引检索、托管 ripgrep、建索引、索引状态和服务状态工具，并可按需启用 Bearer 鉴权。
 - **库 API**：Node.js 工具、agent 或 MCP server 可以直接使用 `createZvecGrep()`。
@@ -80,11 +80,10 @@ npm install -g .
 zg version
 ```
 
-启动本机后台 server：
+为检测到的 Claude Code 和 Codex 配置集成：
 
 ```bash
-zg server on
-zg server status
+zg install
 ```
 
 为 Codex、Claude Code、OpenCode 或 Cursor 安装 MCP 集成：
@@ -96,8 +95,14 @@ zg install --target opencode --yes
 zg install --target cursor --yes
 ```
 
-Codex MCP 工具调用和 OpenCode MCP 初始化默认超时为 600 秒，可在安装时通过 `--mcp-tool-timeout <秒数>` 覆盖。
-本地 server 默认不启用 token，并且只监听 loopback。需要 Bearer 鉴权时，可使用 `zg server on --token-file <path>` 启动（或设置 `ZVEC_GREP_SERVER_TOKEN`），再通过 `zg install --mcp-token-env ZVEC_GREP_SERVER_TOKEN` 让 MCP 客户端发送相同 token。安装后的 MCP URL 为 `http://127.0.0.1:7999/mcp`。使用 `zg server off` 停止 daemon。
+交互式安装会检测支持的 Agent 并安装所选集成。Codex 和 Claude Code 还会写入
+托管指导配置，并预批准本机 `zvec_grep` MCP 工具。MCP 信任与 Remote Embedding
+授权相互独立：向远程 Provider 发送查询文本或工作区内容前，zg 仍会单独请求授权。
+Codex MCP 工具调用和 OpenCode MCP 初始化默认超时为 600 秒，可通过
+`--mcp-tool-timeout <秒数>` 覆盖。本地 server 默认只监听 loopback 且不启用 token。
+如需 Bearer 鉴权，请在 install 前设置 `ZVEC_GREP_SERVER_TOKEN`，并传入
+`--mcp-token-env ZVEC_GREP_SERVER_TOKEN`。MCP URL 为
+`http://127.0.0.1:7999/mcp`；使用 `zg server off` 停止 daemon。
 
 CLI 的索引检索和建索引命令支持 `--mode direct`、`--mode server` 和 `--mode auto`。默认模式为 `auto`：只在 daemon ready 时使用 server，否则在提交请求前回退 Direct。
 Daemon 以 JSON Lines 写日志到 `~/.zvec-grep/daemon/logs/server.log`，不会记录凭证或完整查询文本。
@@ -155,7 +160,7 @@ zg query --rg -F "ZVEC_GREP_HOME" src
 zg query --human "root local index discovery" --limit 3
 ```
 
-MCP 客户端可使用五个工具：`zvec_grep_search`、`zvec_grep_rg`、`zvec_grep_index`、`zvec_grep_index_status` 和 `zvec_grep_server_status`。MCP 输入使用 JSON 友好的字段，例如 `globs: ["src/**"]`。installer 会为 Codex、Claude Code、OpenCode 和 Cursor 写入用户级 MCP 配置，不会安装 skill 或 agent guidance。`cc` 和 `claude-code` 仍可作为正式 target `claude` 的兼容别名。
+MCP 客户端可使用 `zvec_grep_search`、`zvec_grep_rg`、`zvec_grep_index`、`zvec_grep_index_drop`、`zvec_grep_index_status` 和 `zvec_grep_server_status`。MCP 输入使用 JSON 友好的字段，例如 `globs: ["src/**"]`。installer 会为 Codex、Claude Code、OpenCode 和 Cursor 写入用户级 MCP 配置；Codex 和 Claude Code 还会获得托管指导与本机工具信任配置。`cc` 和 `claude-code` 仍可作为正式 target `claude` 的兼容别名。
 
 ## <a id="models"></a>🧠 模型
 
@@ -172,7 +177,7 @@ zg index --embedding local/qwen3-embedding-0.6b
 
 ```bash
 zg index \
-  --embedding qwen/qwen3.7-text-embedding \
+  --embedding qwen/text-embedding-v4 \
   --api-key "$DASHSCOPE_API_KEY"
 ```
 
@@ -182,7 +187,7 @@ zg index \
 {
   "version": 1,
   "defaults": {
-    "embedding": "qwen/qwen3.7-text-embedding"
+    "embedding": "qwen/text-embedding-v4"
   },
   "providers": {
     "qwen": {

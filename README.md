@@ -24,7 +24,7 @@ zg query "where query auto update happens"
 - **Agent-Ready Output**: Default output is grouped by file and keeps previews small to save tokens.
 - **Human Output Mode**: Add `--human` for a terminal-friendly summary with full previews by default.
 - **Managed ripgrep Route**: `zg query --rg` supports common `rg` flags and works even before a repository is indexed.
-- **Explicit Model Choice**: The first index build requires a model such as `local/embeddinggemma-300m`, `local/qwen3-embedding-0.6b`, or `qwen/qwen3.7-text-embedding`.
+- **Explicit Model Choice**: The first index build requires a model such as `local/embeddinggemma-300m`, `local/qwen3-embedding-0.6b`, or `qwen/text-embedding-v4`.
 - **Schema Reuse**: Re-running `zg index` on an existing index reuses the stored embedding schema unless you explicitly change it.
 - **Shared MCP Server**: Run `zg server on` to expose indexed search, managed ripgrep, indexing, index-status, and server-status tools over loopback Streamable HTTP.
 - **Library API**: Use `createZvecGrep()` directly from Node.js tools, agents, or MCP servers.
@@ -55,11 +55,10 @@ npm install -g .
 zg version
 ```
 
-Start the local background server:
+Configure the detected Claude Code and Codex integrations:
 
 ```bash
-zg server on
-zg server status
+zg install
 ```
 
 Install the MCP integration for Codex, Claude Code, OpenCode, or Cursor:
@@ -71,7 +70,16 @@ zg install --target opencode --yes
 zg install --target cursor --yes
 ```
 
-Codex MCP tool calls and OpenCode MCP initialization default to a 600-second timeout. Override it during installation with `--mcp-tool-timeout <seconds>`. The local server has no token by default and only listens on loopback. To require Bearer authentication, start it with `zg server on --token-file <path>` (or set `ZVEC_GREP_SERVER_TOKEN`), then install with `zg install --mcp-token-env ZVEC_GREP_SERVER_TOKEN` so the MCP client sends the same token. The installed MCP URL is `http://127.0.0.1:7999/mcp`. Stop the daemon with `zg server off`.
+Interactive setup detects supported agents and installs the selected integration.
+Codex and Claude Code also receive managed guidance and pre-approval for the local
+`zvec_grep` MCP tools. MCP trust and Remote Embedding authorization are separate:
+zg still asks before query text or workspace content is sent to a remote provider.
+Codex MCP tool calls and OpenCode MCP initialization default to a 600-second
+timeout; override it with `--mcp-tool-timeout <seconds>`. The local server only
+listens on loopback and has no token by default. To require Bearer authentication,
+set `ZVEC_GREP_SERVER_TOKEN` before install and pass
+`--mcp-token-env ZVEC_GREP_SERVER_TOKEN`. The MCP URL is
+`http://127.0.0.1:7999/mcp`; stop the daemon with `zg server off`.
 
 CLI indexed queries and index commands can use `--mode direct`, `--mode server`, or `--mode auto`. The default is `auto`: it uses the daemon only when it is ready and otherwise falls back before submitting a request.
 Daemon logs are written as JSON lines to `~/.zvec-grep/daemon/logs/server.log`; credentials and complete query text are not recorded.
@@ -129,7 +137,7 @@ Switch to human-readable output:
 zg query --human "root local index discovery" --limit 3
 ```
 
-Use the five MCP tools `zvec_grep_search`, `zvec_grep_rg`, `zvec_grep_index`, `zvec_grep_index_status`, and `zvec_grep_server_status`. MCP inputs use JSON-friendly fields such as `globs: ["src/**"]`. The installer writes user-level MCP configuration for Codex, Claude Code, OpenCode, and Cursor; it does not install skills or agent guidance. `cc` and `claude-code` remain accepted aliases for the canonical `claude` target.
+Use the MCP tools `zvec_grep_search`, `zvec_grep_rg`, `zvec_grep_index`, `zvec_grep_index_drop`, `zvec_grep_index_status`, and `zvec_grep_server_status`. MCP inputs use JSON-friendly fields such as `globs: ["src/**"]`. The installer writes user-level MCP configuration for Codex, Claude Code, OpenCode, and Cursor. Codex and Claude Code also receive managed guidance and local tool trust configuration. `cc` and `claude-code` remain accepted aliases for the canonical `claude` target.
 
 ## <a id="models"></a>🧠 Models
 
@@ -146,7 +154,7 @@ Remote Qwen embeddings are useful when you prefer a managed embedding service or
 
 ```bash
 zg index \
-  --embedding qwen/qwen3.7-text-embedding \
+  --embedding qwen/text-embedding-v4 \
   --api-key "$DASHSCOPE_API_KEY"
 ```
 
@@ -156,7 +164,7 @@ After a successful index, explicitly passed global model and provider options ar
 {
   "version": 1,
   "defaults": {
-    "embedding": "qwen/qwen3.7-text-embedding"
+    "embedding": "qwen/text-embedding-v4"
   },
   "providers": {
     "qwen": {

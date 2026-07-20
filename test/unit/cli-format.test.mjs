@@ -431,12 +431,40 @@ test("status formatters cover collections, anonymous states, failures, filters, 
       },
       { color: "never" },
     );
+    printServerIndexInfo(
+      {
+        root: "/failed-repo",
+        indexed: false,
+        index_policy: "undecided",
+        source: "unindexed",
+        persistent: {
+          home: "/failed-repo/.zvec-grep",
+          index_path: "/failed-repo/.zvec-grep/index",
+        },
+        runtime: {
+          job_state: "failed",
+          error: {
+            code: "MODEL_LOAD_FAILED",
+            message: "Embedding schema could not be resolved.",
+          },
+        },
+      },
+      { color: "never" },
+    );
   });
   assert.match(output.logs.join("\n"), /failed_reasons/);
   assert.match(output.logs.join("\n"), /1m 5s/);
   assert.match(output.logs.join("\n"), /ignore-file=\.rgignore/);
   assert.match(output.logs.join("\n"), /Default indexing skips/);
-  assert.match(output.logs.join("\n"), /progress\s+3\/4/);
+  assert.match(
+    output.logs.join("\n"),
+    /◐ Workspace index is updating[\s\S]*Coverage\s+█{15}░{5}\s+75%\s+3 \/ 4 files/,
+  );
+  assert.match(output.logs.join("\n"), /Error\s+MODEL_LOAD_FAILED/);
+  assert.match(
+    output.logs.join("\n"),
+    /Embedding schema could not be resolved/,
+  );
 
   for (const stateInfo of [
     {
@@ -490,7 +518,96 @@ test("status formatters cover collections, anonymous states, failures, filters, 
     const rendered = await captureConsole(() =>
       printAnonymousInfo(anonymous, { color: "never" }),
     );
-    assert.match(rendered.logs.join("\n"), /state/);
+    assert.match(rendered.logs.join("\n"), /Workspace index/);
+  }
+});
+
+test("workspace status uses a status-first grouped layout", async () => {
+  const originalTerm = process.env.TERM;
+  process.env.TERM = "xterm-256color";
+  try {
+    const output = await captureConsole(() =>
+      printAnonymousInfo(
+        {
+          root: "/repo",
+          indexed: true,
+          indexPolicy: "enabled",
+          source: "index",
+          home: "/repo/.zvec-grep",
+          indexPath: "/repo/.zvec-grep/index",
+          collection: collection({
+            rootPaths: [{ absolutePath: "/repo", recursive: true }],
+          }),
+          status: status({
+            filesScanned: 1132,
+            filesStored: 1132,
+            filesIndexed: 1132,
+            entitiesIndexed: 22037,
+            filesPending: 0,
+            filesFailed: 0,
+            filesAdded: 0,
+            filesModified: 0,
+            filesDeleted: 0,
+          }),
+        },
+        { color: "never" },
+      ),
+    );
+
+    assert.deepEqual(output.logs, [
+      "✓ Workspace index is ready",
+      "  /repo",
+      "",
+      "  Coverage    ████████████████████ 100%  1,132 / 1,132 files",
+      "  Entities    22,037",
+      "  Queue       0 pending · 0 failed",
+      "",
+      "  Embedding   qwen/text-embedding-v4",
+      "              16 dimensions · cosine",
+      "",
+      "  Storage     .zvec-grep/index",
+    ]);
+
+    const colored = await captureConsole(() =>
+      printServerIndexInfo(
+        {
+          root: "/repo",
+          indexed: true,
+          index_policy: "enabled",
+          source: "index",
+          persistent: {
+            home: "/repo/.zvec-grep",
+            index_path: "/repo/.zvec-grep/index",
+            collection: {
+              root_paths: [{ absolute_path: "/repo", recursive: true }],
+              embedding: {
+                provider: "qwen",
+                model: "text-embedding-v4",
+                dimension: 1024,
+                metric: "cosine",
+              },
+            },
+            files: {
+              stored: 2,
+              indexed: 1,
+              pending: 1,
+              failed: 1,
+              entities: 3,
+            },
+          },
+        },
+        { color: "always" },
+      ),
+    );
+    const text = colored.logs.join("\n");
+    assert.match(text, /\x1b\[31m✗ Workspace index failed/);
+    assert.match(text, /\x1b\[38;2;22;163;74m█/);
+    assert.match(text, /\x1b\[33m1 pending/);
+    assert.match(text, /\x1b\[31m1 failed/);
+    assert.doesNotMatch(text, /policy|indexed\s+yes|source\s+index|home/);
+  } finally {
+    if (originalTerm === undefined) delete process.env.TERM;
+    else process.env.TERM = originalTerm;
   }
 });
 
@@ -524,7 +641,13 @@ test("progress reporter covers TTY and non-TTY phases, counters, truncation, and
     process.stderr,
     "isTTY",
   );
+  const columnsDescriptor = Object.getOwnPropertyDescriptor(
+    process.stderr,
+    "columns",
+  );
+  const originalTerm = process.env.TERM;
   const writes = [];
+  let ttyStart;
   process.stderr.write = (value) => {
     writes.push(String(value));
     return true;
@@ -549,19 +672,27 @@ test("progress reporter covers TTY and non-TTY phases, counters, truncation, and
     nonTty.report({ phase: "indexing", embedding: {} });
     nonTty.report({ phase: "done" });
     nonTty.report({ phase: "done", detail: "Custom completion" });
+    nonTty.reportLine("Server index progress");
     nonTty.finish();
     nonTty.finish();
 
+    ttyStart = writes.length;
+    process.env.TERM = "xterm-256color";
     Object.defineProperty(process.stderr, "isTTY", {
       configurable: true,
       value: true,
     });
-    const tty = createIndexProgressReporter();
+    Object.defineProperty(process.stderr, "columns", {
+      configurable: true,
+      value: 100,
+    });
+    const tty = createIndexProgressReporter({ color: "always" });
     tty.report({
       phase: "indexing",
       filesIndexed: 1,
       filesTotal: 10,
       detail: "a long progress detail",
+      embedding: { concurrency: 3 },
     });
     tty.report({ phase: "done", detail: "done" });
     tty.finish();
@@ -572,12 +703,31 @@ test("progress reporter covers TTY and non-TTY phases, counters, truncation, and
     } else {
       delete process.stderr.isTTY;
     }
+    if (columnsDescriptor) {
+      Object.defineProperty(process.stderr, "columns", columnsDescriptor);
+    } else {
+      delete process.stderr.columns;
+    }
+    if (originalTerm === undefined) {
+      delete process.env.TERM;
+    } else {
+      process.env.TERM = originalTerm;
+    }
   }
 
   const text = writes.join("");
+  const ttyText = writes.slice(ttyStart).join("");
   assert.match(text, /Scanning workspace/);
   assert.match(text, /failed=1/);
   assert.match(text, /concurrency=3 retries=2/);
   assert.match(text, /Indexing complete/);
-  assert.match(text, /\rdone\s+\n/);
+  assert.match(text, /Server index progress/);
+  assert.match(ttyText, /\x1b\[\?25l/);
+  assert.match(ttyText, /\r\x1b\[2K/);
+  assert.match(ttyText, /\x1b\[38;2;\d+;\d+;\d+m█/);
+  assert.match(ttyText, /░/);
+  assert.match(ttyText, /10%\s+1\/10\s+3 workers/);
+  assert.match(ttyText, /100%\s+10\/10\s+3 workers/);
+  assert.doesNotMatch(ttyText, /a long progress detail/);
+  assert.match(ttyText, /\n\x1b\[\?25h$/);
 });

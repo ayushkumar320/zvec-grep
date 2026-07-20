@@ -13,6 +13,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { DaemonBackend } from "../dist/daemon/backend.js";
 import { DaemonHttpServer } from "../dist/daemon/http-server.js";
 import { EmbeddingModel } from "../dist/engine/models/embeddings.js";
@@ -70,6 +71,9 @@ test("Streamable HTTP serves health, MCP contracts and a real cached index searc
   });
   const backend = new DaemonBackend({
     version: "1.0.0",
+    serviceOptions: {
+      authorizationSigningKeyPath: join(temporaryDirectory, "auth.key"),
+    },
     modelPoolOptions: {
       createModel: () => {
         modelLoads += 1;
@@ -161,6 +165,7 @@ test("Streamable HTTP serves health, MCP contracts and a real cached index searc
   const listed = await clients[0].listTools();
   assert.deepEqual(listed.tools.map((tool) => tool.name).toSorted(), [
     "zvec_grep_index",
+    "zvec_grep_index_drop",
     "zvec_grep_index_status",
     "zvec_grep_rg",
     "zvec_grep_search",
@@ -419,7 +424,11 @@ test("Streamable HTTP indexes and searches with qwen text-embedding-v4", async (
 
   const backend = new DaemonBackend({
     version: "1.0.0",
-    serviceOptions: { apiKey: "qwen-test-key", endpoint },
+    serviceOptions: {
+      apiKey: "qwen-test-key",
+      endpoint,
+      authorizationSigningKeyPath: join(temporaryDirectory, "auth.key"),
+    },
   });
   const server = new DaemonHttpServer({
     host: "127.0.0.1",
@@ -432,6 +441,10 @@ test("Streamable HTTP indexes and searches with qwen text-embedding-v4", async (
   const client = await connectClient(
     new URL(`http://127.0.0.1:${address.port}/mcp`),
     "qwen-client",
+    async () => ({
+      action: "accept",
+      content: { decision: "allow_workspace" },
+    }),
   );
   t.after(async () => {
     await client.close();
@@ -479,6 +492,12 @@ test("Streamable HTTP indexes and searches with qwen text-embedding-v4", async (
   });
   assert.equal(unsupported.isError, undefined);
   assert.equal(unsupported.structuredContent.state, "failed");
+  assert.deepEqual(unsupported.structuredContent.error, {
+    code: "MODEL_LOAD_FAILED",
+    message:
+      "[MODEL_LOAD_FAILED] Server MVP cannot resolve embedding schema for qwen/unsupported-embedding.",
+  });
+  assert.match(unsupported.content[0].text, /qwen\/unsupported-embedding/);
   const unsupportedStatus = await client.callTool({
     name: "zvec_grep_index_status",
     arguments: { root: unsupportedRoot },
@@ -491,8 +510,14 @@ test("Streamable HTTP indexes and searches with qwen text-embedding-v4", async (
   await assert.rejects(access(join(unsupportedRoot, ".zvec-grep", "index")));
 });
 
-async function connectClient(url, name) {
-  const client = new Client({ name, version: "1.0.0" });
+async function connectClient(url, name, onElicitation) {
+  const client = new Client(
+    { name, version: "1.0.0" },
+    onElicitation ? { capabilities: { elicitation: { form: {} } } } : undefined,
+  );
+  if (onElicitation) {
+    client.setRequestHandler(ElicitRequestSchema, onElicitation);
+  }
   const transport = new StreamableHTTPClientTransport(url, {
     requestInit: {
       headers: { Authorization: `Bearer ${token}` },

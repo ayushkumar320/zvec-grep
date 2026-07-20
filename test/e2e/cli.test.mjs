@@ -1,9 +1,75 @@
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import { join } from "node:path";
 import test from "node:test";
 import { createTemporaryDirectory, runCli } from "../helpers/fixtures.mjs";
 import { createFakeEmbeddingServer } from "../helpers/fake-embedding.mjs";
+
+test("server-mode index reports Workspace progress", async (t) => {
+  const temporaryDirectory = await createTemporaryDirectory(
+    t,
+    "zvec-grep-server-progress-",
+  );
+  const root = join(temporaryDirectory, "repo");
+  const home = join(temporaryDirectory, "home");
+  await mkdir(join(root, "src"), { recursive: true });
+  await writeFile(
+    join(root, "src", "example.ts"),
+    "export const ServerProgressSymbol = 42;\n",
+  );
+
+  const endpoint = await createFakeEmbeddingServer(t);
+  const port = await availablePort();
+  const env = {
+    HOME: home,
+    NO_COLOR: "1",
+    ZVEC_GREP_API_KEY: "test-key",
+    ZVEC_GREP_ENDPOINT: endpoint,
+    ZVEC_GREP_HOME: home,
+    ZVEC_GREP_SERVER_URL: `http://127.0.0.1:${port}/mcp`,
+  };
+  await runCli(
+    ["server", "on", "--listen", `127.0.0.1:${port}`, "--home", home],
+    { cwd: root, env },
+  );
+  t.after(async () => {
+    await runCli(["server", "off", "--home", home], {
+      cwd: root,
+      env,
+    }).catch(() => undefined);
+  });
+
+  const indexed = await runCli(
+    [
+      "index",
+      "--mode",
+      "server",
+      "--embedding",
+      "qwen/text-embedding-v4",
+      "--allow-remote",
+      "once",
+      root,
+    ],
+    { cwd: root, env, timeout: 120_000 },
+  );
+
+  assert.match(indexed.stdout, /Workspace index: succeeded/);
+  assert.match(indexed.stderr, /Scanning/);
+  assert.match(indexed.stderr, /Indexing complete/);
+
+  const dropped = await runCli(
+    ["index", "--drop", "--yes", "--mode", "server", root],
+    { cwd: root, env },
+  );
+  assert.match(dropped.stdout, /Dropped index/);
+
+  const status = await runCli(["status", "--mode", "server", root], {
+    cwd: root,
+    env,
+  });
+  assert.match(status.stdout, /Workspace index is not configured/i);
+});
 
 test("CLI completes index, search, automatic refresh, status, and rg workflows", async (t) => {
   const temporaryDirectory = await createTemporaryDirectory(
@@ -30,6 +96,8 @@ test("CLI completes index, search, automatic refresh, status, and rg workflows",
       "test-key",
       "--endpoint",
       endpoint,
+      "--allow-remote",
+      "workspace",
       "-g",
       "src/**",
       "-t",
@@ -38,7 +106,7 @@ test("CLI completes index, search, automatic refresh, status, and rg workflows",
     ],
     { cwd: root, env, timeout: 120_000 },
   );
-  assert.match(indexed.stdout, /Indexed|index/i);
+  assert.match(indexed.stdout, /Workspace index/);
 
   const first = await runCli(
     [
@@ -71,7 +139,8 @@ test("CLI completes index, search, automatic refresh, status, and rg workflows",
   assert.doesNotMatch(refreshed.stdout, /FirstWorkflowSymbol/);
 
   const status = await runCli(["status", root], { cwd: root, env });
-  assert.match(status.stdout, /enabled|indexed/i);
+  assert.match(status.stdout, /Workspace index is ready/i);
+  assert.match(status.stdout, /Coverage\s+.*100%\s+1 \/ 1 files/i);
   assert.match(status.stdout, /glob=src\/\*\*/);
   assert.match(status.stdout, /type=ts/);
 
@@ -143,12 +212,15 @@ test("CLI completes index, search, automatic refresh, status, and rg workflows",
   });
   assert.match(dropped.stdout, /Dropped index/);
   const droppedStatus = await runCli(["status", root], { cwd: root, env });
-  assert.match(droppedStatus.stdout, /indexed\s+no/i);
+  assert.match(droppedStatus.stdout, /Workspace index is not configured/i);
 });
 
 test("CLI exposes stable help, version, and failure behavior", async () => {
   const help = await runCli(["help"]);
   assert.match(help.stdout, /Usage:/);
+  const indexHelp = await runCli(["index", "-h"]);
+  assert.match(indexHelp.stdout, /qwen\/text-embedding-v4/);
+  assert.doesNotMatch(indexHelp.stdout, /qwen3\.7-text-embedding/);
   const version = await runCli(["version"]);
   assert.match(version.stdout.trim(), /^\d+\.\d+\.\d+/);
   const verboseVersion = await runCli(["version", "-v"]);
@@ -167,3 +239,19 @@ test("CLI exposes stable help, version, and failure behavior", async () => {
     /only be used with zg collections index/,
   );
 });
+
+async function availablePort() {
+  const server = createServer();
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  await new Promise((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+  if (!address || typeof address === "string") {
+    throw new Error("Could not allocate a test port.");
+  }
+  return address.port;
+}

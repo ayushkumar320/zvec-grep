@@ -73,6 +73,8 @@ import type {
   ZvecGrepIndexOptions,
 } from "./types.js";
 import { enrichLexicalItemsWithStructure } from "./structure-enrichment.js";
+import { remoteEmbeddingAuthorizationGuard } from "../../authorization/operation.js";
+import { RemoteEmbeddingAuthorizationStore } from "../../authorization/store.js";
 
 const DEFAULT_CONTEXT_LIMIT = 10;
 const DEFAULT_CONTEXT_TOTAL_LIMIT = 30;
@@ -1097,7 +1099,7 @@ class ZvecGrepService implements ZvecGrep {
           ),
           detail(
             "examples",
-            "local/embeddinggemma-300m, qwen/qwen3.7-text-embedding",
+            "local/embeddinggemma-300m, qwen/text-embedding-v4",
           ),
         ]),
       });
@@ -1576,6 +1578,14 @@ function providerOptions(
       modelCacheDir(options, root, registryHome),
     llamaGpu: runtime.llamaGpu,
     embeddingParallelism: runtime.embeddingParallelism,
+    authorizeRemoteEmbedding:
+      provider === "qwen"
+        ? remoteEmbeddingAuthorizationGuard({
+            store: new RemoteEmbeddingAuthorizationStore({
+              signingKeyPath: options.authorizationSigningKeyPath,
+            }),
+          })
+        : undefined,
   };
 }
 
@@ -1590,6 +1600,7 @@ function providerOptionsFingerprint(options: {
   modelCacheDir?: string;
   llamaGpu?: "auto" | "metal" | "vulkan" | "cuda" | false;
   embeddingParallelism?: number;
+  authorizeRemoteEmbedding?: unknown;
 }): string {
   return createHash("sha256")
     .update(

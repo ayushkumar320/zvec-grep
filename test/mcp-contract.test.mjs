@@ -7,6 +7,9 @@ import {
   createZvecGrepMcpServer,
   ZVEC_GREP_MCP_INSTRUCTIONS,
 } from "../dist/mcp/tools.js";
+import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { withProgressHeartbeat } from "../dist/mcp/progress-heartbeat.js";
+import { indexProgressFromMessage } from "../dist/index-progress.js";
 
 const root = resolve("test/fixtures/repository");
 
@@ -19,6 +22,10 @@ function createBackend() {
       reused: false,
       action: input.drop ? "drop" : "index",
       dropped: input.drop ? true : undefined,
+    }),
+    dropIndex: async (input) => ({
+      root: input.root,
+      removed: true,
     }),
     search: async (input) => ({
       root: input.root,
@@ -145,6 +152,7 @@ test("server contract exposes final tools with stable annotations", async (t) =>
     tools.map((tool) => tool.name),
     [
       "zvec_grep_index",
+      "zvec_grep_index_drop",
       "zvec_grep_index_status",
       "zvec_grep_rg",
       "zvec_grep_search",
@@ -188,6 +196,9 @@ test("server contract exposes final tools with stable annotations", async (t) =>
   assert.equal(annotations.zvec_grep_index.readOnlyHint, false);
   assert.equal(annotations.zvec_grep_index.destructiveHint, true);
   assert.equal(annotations.zvec_grep_rg.readOnlyHint, true);
+  assert.equal(annotations.zvec_grep_index_drop.readOnlyHint, false);
+  assert.equal(annotations.zvec_grep_index_drop.destructiveHint, true);
+  assert.equal(annotations.zvec_grep_index_drop.idempotentHint, true);
   assert.equal(annotations.zvec_grep_search.readOnlyHint, false);
   assert.equal(annotations.zvec_grep_index_status.readOnlyHint, true);
   assert.equal(annotations.zvec_grep_server_status.readOnlyHint, true);
@@ -239,6 +250,292 @@ test("index contract documents background submission as the default", async (t) 
     /never guess/,
   );
   assert.match(index.inputSchema.properties.rebuild.description, /requested/);
+  assert.ok(index.outputSchema.properties.error);
+});
+
+test("index drop returns the daemon deletion result", async (t) => {
+  const { client, server } = await connect();
+  t.after(async () => {
+    await client.close();
+    await server.close();
+  });
+
+  const result = await client.callTool({
+    name: "zvec_grep_index_drop",
+    arguments: { root },
+  });
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(result.structuredContent, { root, removed: true });
+  assert.match(result.content[0].text, /Dropped Workspace index/);
+});
+
+test("index result includes an immediately available failure reason", async (t) => {
+  const backend = createBackend();
+  backend.index = async (input) => ({
+    root: input.root,
+    jobId: "job-failed",
+    state: "failed",
+    reused: false,
+    error: {
+      code: "MODEL_LOAD_FAILED",
+      message: "Embedding schema could not be resolved.",
+    },
+  });
+  const { client, server } = await connect(backend);
+  t.after(async () => {
+    await client.close();
+    await server.close();
+  });
+
+  const result = await client.callTool({
+    name: "zvec_grep_index",
+    arguments: { root, embedding: "qwen/unsupported", wait: true },
+  });
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(result.structuredContent.error, {
+    code: "MODEL_LOAD_FAILED",
+    message: "Embedding schema could not be resolved.",
+  });
+  assert.match(result.content[0].text, /error_code: MODEL_LOAD_FAILED/);
+  assert.match(
+    result.content[0].text,
+    /Embedding schema could not be resolved/,
+  );
+});
+
+test("index streams daemon progress through MCP", async (t) => {
+  const backend = createBackend();
+  backend.index = async (input, options) => {
+    options.onProgress({
+      phase: "scanning",
+      detail: "Scanning workspace...",
+    });
+    options.onProgress({
+      phase: "indexing",
+      filesIndexed: 2,
+      filesTotal: 5,
+      detail: "embedding src/example.ts",
+    });
+    options.onProgress({ phase: "done", detail: "Indexing complete" });
+    return {
+      root: input.root,
+      jobId: "job-progress",
+      state: "succeeded",
+      reused: false,
+    };
+  };
+  const { client, server } = await connect(backend);
+  t.after(async () => {
+    await client.close();
+    await server.close();
+  });
+
+  const progressLines = [];
+  const progressUpdates = [];
+  const result = await client.callTool(
+    {
+      name: "zvec_grep_index",
+      arguments: { root, embedding: "test/deterministic", wait: true },
+    },
+    undefined,
+    {
+      onprogress: (progress) => {
+        const update = indexProgressFromMessage(progress.message);
+        if (update) {
+          progressLines.push(update.line);
+          progressUpdates.push(update.progress);
+        }
+      },
+    },
+  );
+
+  assert.equal(result.structuredContent.state, "succeeded");
+  assert.deepEqual(progressLines, [
+    "Scanning workspace...",
+    "Indexing files: 2/5 embedding src/example.ts",
+    "Indexing complete",
+  ]);
+  assert.deepEqual(progressUpdates[1], {
+    phase: "indexing",
+    filesIndexed: 2,
+    filesTotal: 5,
+    detail: "embedding src/example.ts",
+  });
+});
+
+test("search elicits merged Remote Embedding authorization and reuses session scope", async (t) => {
+  const backend = createBackend();
+  let elicitations = 0;
+  let granted = 0;
+  let receivedPermit;
+  const target = {
+    workspaceRoots: [root],
+    workspaceFingerprint: "workspace-fingerprint",
+    provider: "qwen",
+    model: "text-embedding-v4",
+    endpoint: "https://qwen.test/embeddings",
+    targetFingerprint: "target-fingerprint",
+  };
+  backend.planSearchAuthorization = async () => ({
+    operation: "query_and_index",
+    target,
+    disclosure: { queryText: true, workspaceContent: "changed" },
+    reason: "query",
+    grantPath: `${root}/.zvec-grep/authorization.json`,
+  });
+  backend.existingRemoteEmbeddingPermit = async () => undefined;
+  backend.grantRemoteEmbedding = async (_plan, scope) => {
+    granted += 1;
+    return {
+      capability: "remote_embedding",
+      scope,
+      target,
+      issuedAt: Date.now(),
+      operationId: `operation-${granted}`,
+    };
+  };
+  const originalSearch = backend.search;
+  backend.search = async (input, options) => {
+    receivedPermit = options.authorization;
+    return await originalSearch(input);
+  };
+
+  const server = createZvecGrepMcpServer(backend, "1.0.0");
+  const client = new Client(
+    { name: "mcp-auth-test", version: "1.0.0" },
+    { capabilities: { elicitation: { form: {} } } },
+  );
+  client.setRequestHandler(ElicitRequestSchema, async (request) => {
+    elicitations += 1;
+    assert.equal(
+      request.params.message,
+      [
+        "Remote Embedding authorization",
+        "",
+        "Send query text and changed workspace files?",
+        "",
+        "  From  repository",
+        "  To    qwen/text-embedding-v4",
+        "        qwen.test",
+        "",
+        "API charges may apply.",
+      ].join("\n"),
+    );
+    assert.equal(request.params.message.includes("\n"), true);
+    assert.equal(request.params.message.includes(root), false);
+    assert.equal(
+      request.params.requestedSchema.properties.decision.description,
+      "Choose how long zvec-grep may reuse this permission.",
+    );
+    return {
+      action: "accept",
+      content: { decision: "allow_session" },
+    };
+  });
+  const [clientTransport, serverTransport] =
+    InMemoryTransport.createLinkedPair();
+  await Promise.all([
+    server.connect(serverTransport),
+    client.connect(clientTransport),
+  ]);
+  t.after(async () => {
+    await client.close();
+    await server.close();
+  });
+
+  for (let index = 0; index < 2; index++) {
+    const result = await client.callTool({
+      name: "zvec_grep_search",
+      arguments: { root, query: "authorization flow" },
+    });
+    assert.equal(result.isError, undefined);
+  }
+  assert.equal(elicitations, 1);
+  assert.equal(granted, 2);
+  assert.equal(receivedPermit.scope, "session");
+});
+
+test("Remote Embedding authorization stays alive while waiting for user input", async (t) => {
+  const backend = createBackend();
+  const target = {
+    workspaceRoots: [root],
+    workspaceFingerprint: "workspace-fingerprint",
+    provider: "qwen",
+    model: "text-embedding-v4",
+    endpoint: "https://qwen.test/embeddings",
+    targetFingerprint: "target-fingerprint",
+  };
+  backend.planSearchAuthorization = async () => ({
+    operation: "query",
+    target,
+    disclosure: { queryText: true, workspaceContent: "none" },
+    reason: "query",
+    grantPath: `${root}/.zvec-grep/authorization.json`,
+  });
+  backend.existingRemoteEmbeddingPermit = async () => undefined;
+  backend.grantRemoteEmbedding = async (_plan, scope) => ({
+    capability: "remote_embedding",
+    scope,
+    target,
+    issuedAt: Date.now(),
+    operationId: "long-wait-operation",
+  });
+
+  const server = createZvecGrepMcpServer(backend, "1.0.0", {
+    authorizationHeartbeatMs: 5,
+    authorizationRequestTimeoutMs: 20,
+  });
+  const client = new Client(
+    { name: "mcp-long-auth-test", version: "1.0.0" },
+    { capabilities: { elicitation: { form: {} } } },
+  );
+  client.setRequestHandler(
+    ElicitRequestSchema,
+    async (_request, extra) =>
+      await withProgressHeartbeat(
+        extra,
+        async () => {
+          await new Promise((resolve) => setTimeout(resolve, 80));
+          return {
+            action: "accept",
+            content: { decision: "allow_once" },
+          };
+        },
+        {
+          intervalMs: 5,
+          message: "Waiting for simulated user input.",
+        },
+      ),
+  );
+  const [clientTransport, serverTransport] =
+    InMemoryTransport.createLinkedPair();
+  await Promise.all([
+    server.connect(serverTransport),
+    client.connect(clientTransport),
+  ]);
+  t.after(async () => {
+    await client.close();
+    await server.close();
+  });
+
+  let progressNotifications = 0;
+  const result = await client.callTool(
+    {
+      name: "zvec_grep_search",
+      arguments: { root, query: "authorization flow" },
+    },
+    undefined,
+    {
+      timeout: 20,
+      onprogress: () => {
+        progressNotifications += 1;
+      },
+      resetTimeoutOnProgress: true,
+    },
+  );
+
+  assert.equal(result.isError, undefined);
+  assert.ok(progressNotifications >= 2);
 });
 
 test("root tools require an absolute root", async (t) => {
@@ -261,6 +558,13 @@ test("root tools require an absolute root", async (t) => {
   });
   assert.equal(statusRelative.isError, true);
   assert.match(statusRelative.content[0].text, /absolute path/i);
+
+  const dropRelative = await client.callTool({
+    name: "zvec_grep_index_drop",
+    arguments: { root: "relative/path" },
+  });
+  assert.equal(dropRelative.isError, true);
+  assert.match(dropRelative.content[0].text, /absolute path/i);
 
   const searchRelative = await client.callTool({
     name: "zvec_grep_search",
@@ -508,6 +812,7 @@ test("all tools return output-schema-compatible structured content", async (t) =
 
   const calls = [
     ["zvec_grep_index", { root }],
+    ["zvec_grep_index_drop", { root }],
     ["zvec_grep_search", { root, query: "query", maxContentChars: 20 }],
     ["zvec_grep_rg", { root, pattern: "needle", maxContentChars: 20 }],
     ["zvec_grep_index_status", { root }],

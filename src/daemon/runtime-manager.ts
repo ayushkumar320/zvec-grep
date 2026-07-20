@@ -144,29 +144,32 @@ export class RuntimeManager {
     return this.runtimes.get(canonicalRoot);
   }
 
-  async evict(canonicalRoot: string): Promise<void> {
-    const runtime = this.runtimes.get(canonicalRoot);
-    if (!runtime) {
-      return;
+  snapshot(): RuntimeManagerSnapshot {
+    return { activeRuntimes: this.runtimes.size };
+  }
+
+  async evict(canonicalRoot: string): Promise<boolean> {
+    const creating = this.creating.get(canonicalRoot);
+    if (creating) {
+      await creating;
     }
     const timer = this.idleTimers.get(canonicalRoot);
     if (timer) clearTimeout(timer);
     this.idleTimers.delete(canonicalRoot);
+    const runtime = this.runtimes.get(canonicalRoot);
     this.runtimes.delete(canonicalRoot);
     for (const [alias, target] of this.aliases) {
       if (alias === canonicalRoot || target === canonicalRoot) {
         this.aliases.delete(alias);
       }
     }
+    if (!runtime) return false;
     try {
       await this.options.onRuntimeEvicted?.(canonicalRoot);
     } finally {
       await runtime.close();
     }
-  }
-
-  snapshot(): RuntimeManagerSnapshot {
-    return { activeRuntimes: this.runtimes.size };
+    return true;
   }
 
   async close(): Promise<void> {

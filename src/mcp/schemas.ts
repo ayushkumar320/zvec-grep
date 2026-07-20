@@ -231,6 +231,10 @@ export const zvecGrepIndexStatusInputSchema = z.object({
   root: absoluteRootSchema,
 });
 
+export const zvecGrepIndexDropInputSchema = z.object({
+  root: absoluteRootSchema,
+});
+
 export const zvecGrepServerStatusInputSchema = z.object({});
 
 export const zvecGrepRgInputSchema = z.object({
@@ -304,6 +308,10 @@ const jobStateSchema = z.enum([
   "failed",
   "cancelled",
 ]);
+const jobErrorSchema = z.object({
+  code: z.string(),
+  message: z.string(),
+});
 const rangeSchema = z.union([
   z.object({ kind: z.literal("file") }),
   z.object({
@@ -414,6 +422,12 @@ export const zvecGrepIndexOutputSchema = z.object({
   reused: z.boolean(),
   action: z.enum(["index", "drop"]).optional(),
   dropped: z.boolean().optional(),
+  error: jobErrorSchema.optional(),
+});
+
+export const zvecGrepIndexDropOutputSchema = z.object({
+  root: z.string(),
+  removed: z.boolean(),
 });
 
 export const zvecGrepSearchIndexingSchema = z
@@ -519,12 +533,7 @@ export const zvecGrepIndexStatusOutputSchema = z.object({
           detail: z.string().optional(),
         })
         .optional(),
-      error: z
-        .object({
-          code: z.string(),
-          message: z.string(),
-        })
-        .optional(),
+      error: jobErrorSchema.optional(),
     })
     .optional(),
 });
@@ -690,6 +699,9 @@ export const legacyRgInputSchema = z.object({
 });
 
 export type ZvecGrepIndexInput = z.infer<typeof zvecGrepIndexInputSchema>;
+export type ZvecGrepIndexDropInput = z.infer<
+  typeof zvecGrepIndexDropInputSchema
+>;
 export type ZvecGrepSearchInput = z.infer<typeof zvecGrepSearchInputSchema>;
 export type ZvecGrepIndexStatusInput = z.infer<
   typeof zvecGrepIndexStatusInputSchema
