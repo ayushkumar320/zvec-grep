@@ -6,6 +6,7 @@ import type {
   IndexResult,
   ZvecGrepInfoResult,
 } from "../../index.js";
+import type { RemoteEmbeddingAuthorizationStatus } from "../../authorization/types.js";
 import type { CliOptions } from "../types.js";
 import { shouldUseColor } from "./highlight.js";
 import { formatGreenProgressBar } from "./progress.js";
@@ -116,6 +117,76 @@ type ServerIndexInfo = {
     };
   };
 };
+
+export function printRemoteEmbeddingAuthorizationStatus(
+  root: string,
+  status: RemoteEmbeddingAuthorizationStatus,
+  options: CliOptions,
+): void {
+  const theme = createStatusTheme(options);
+  const validGrants = status.grants.filter((grant) => grant.valid);
+
+  if (status.grants.length === 0) {
+    console.log(theme.warning("○ Remote Embedding is not authorized"));
+  } else if (validGrants.length === status.grants.length) {
+    console.log(theme.success("✓ Remote Embedding is authorized"));
+  } else if (validGrants.length === 0) {
+    console.log(theme.danger("✗ Remote Embedding authorization is invalid"));
+  } else {
+    console.log(
+      theme.warning("! Remote Embedding authorization needs attention"),
+    );
+  }
+  console.log(`  ${theme.path(formatDisplayPath(root))}`);
+
+  if (status.grants.length === 0) {
+    console.log("");
+    console.log(theme.accent("Run"));
+    console.log(
+      `  ${theme.path("zg auth grant --capability embedding --scope workspace")}`,
+    );
+    return;
+  }
+
+  console.log("");
+  console.log(theme.accent("Authorization"));
+  status.grants.forEach((grant, index) => {
+    if (index > 0) console.log("");
+    for (const line of formatStatusField(
+      theme,
+      "Scope",
+      grant.valid
+        ? theme.success("Workspace")
+        : theme.danger("Invalid Workspace grant"),
+    )) {
+      console.log(line);
+    }
+    for (const line of formatStatusField(
+      theme,
+      "Target",
+      `${grant.provider}/${grant.model}`,
+    )) {
+      console.log(line);
+    }
+    for (const line of formatStatusField(
+      theme,
+      "Endpoint",
+      formatEndpointHost(grant.endpoint),
+    )) {
+      console.log(line);
+    }
+  });
+
+  console.log("");
+  console.log(theme.accent("Storage"));
+  for (const line of formatStatusField(
+    theme,
+    "Grant",
+    theme.path(formatStoragePath(status.path, root)),
+  )) {
+    console.log(line);
+  }
+}
 
 export function printCollectionList(
   collections: readonly CollectionInfo[],
@@ -485,6 +556,14 @@ function formatDisplayPath(path: string): string {
   return path.startsWith(`${home}${sep}`)
     ? `~${path.slice(home.length)}`
     : path;
+}
+
+function formatEndpointHost(endpoint: string): string {
+  try {
+    return new URL(endpoint).host || endpoint;
+  } catch {
+    return endpoint;
+  }
 }
 
 function formatCount(value: number): string {

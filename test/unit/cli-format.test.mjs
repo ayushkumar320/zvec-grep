@@ -15,6 +15,7 @@ import {
   printCollectionRemoveResult,
   printIndexPathFilterTip,
   printIndexResult,
+  printRemoteEmbeddingAuthorizationStatus,
   printServerIndexInfo,
 } from "../../dist/cli/format/status.js";
 import { EngineError } from "../../dist/engine/errors/index.js";
@@ -609,6 +610,72 @@ test("workspace status uses a status-first grouped layout", async () => {
     if (originalTerm === undefined) delete process.env.TERM;
     else process.env.TERM = originalTerm;
   }
+});
+
+test("Remote Embedding authorization status uses grouped colors and compact paths", async () => {
+  const status = {
+    path: "/repo/.zvec-grep/authorization.json",
+    grants: [
+      {
+        version: 1,
+        id: "grant-1",
+        capability: "remote_embedding",
+        scope: "workspace",
+        workspaceRoots: ["/repo"],
+        workspaceFingerprint: "workspace",
+        provider: "qwen",
+        model: "text-embedding-v4",
+        endpoint:
+          "https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings",
+        targetFingerprint: "target",
+        grantedAt: 1,
+        valid: true,
+      },
+    ],
+  };
+  const output = await captureConsole(() =>
+    printRemoteEmbeddingAuthorizationStatus("/repo", status, {
+      color: "never",
+    }),
+  );
+  assert.deepEqual(output.logs, [
+    "✓ Remote Embedding is authorized",
+    "  /repo",
+    "",
+    "Authorization",
+    "  Scope       Workspace",
+    "  Target      qwen/text-embedding-v4",
+    "  Endpoint    dashscope.aliyuncs.com",
+    "",
+    "Storage",
+    "  Grant       .zvec-grep/authorization.json",
+  ]);
+
+  const colored = await captureConsole(() =>
+    printRemoteEmbeddingAuthorizationStatus("/repo", status, {
+      color: "always",
+    }),
+  );
+  const coloredText = colored.logs.join("\n");
+  assert.match(coloredText, /\x1b\[32m✓ Remote Embedding is authorized/);
+  assert.match(coloredText, /\x1b\[32mWorkspace/);
+  assert.match(coloredText, /\x1b\[36m\/repo/);
+  assert.match(coloredText, /\x1b\[36m\.zvec-grep\/authorization\.json/);
+
+  const missing = await captureConsole(() =>
+    printRemoteEmbeddingAuthorizationStatus(
+      "/repo",
+      { path: status.path, grants: [] },
+      { color: "never" },
+    ),
+  );
+  assert.deepEqual(missing.logs, [
+    "○ Remote Embedding is not authorized",
+    "  /repo",
+    "",
+    "Run",
+    "  zg auth grant --capability embedding --scope workspace",
+  ]);
 });
 
 test("error formatter renders engine context, causes, plain values, and color", async () => {

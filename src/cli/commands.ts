@@ -57,6 +57,7 @@ import {
   printCollectionRemoveResult,
   printIndexPathFilterTip,
   printIndexResult,
+  printRemoteEmbeddingAuthorizationStatus,
   printServerIndexInfo,
 } from "./format/status.js";
 import {
@@ -293,21 +294,7 @@ async function runAuth(parsed: ParsedArgs): Promise<void> {
   const store = authorizationStore(parsed.options);
   if (parsed.options.authAction === "status") {
     const status = await store.status(root);
-    console.log("Remote Embedding authorization");
-    console.log(`Workspace: ${root}`);
-    console.log(`Store: ${status.path}`);
-    if (status.grants.length === 0) {
-      console.log("Status: not granted");
-      return;
-    }
-    for (const grant of status.grants) {
-      console.log("");
-      console.log(`Provider: ${grant.provider}`);
-      console.log(`Model: ${grant.model}`);
-      console.log(`Endpoint: ${grant.endpoint}`);
-      console.log(`Scope: ${grant.scope}`);
-      console.log(`Status: ${grant.valid ? "granted" : "invalid"}`);
-    }
+    printRemoteEmbeddingAuthorizationStatus(root, status, parsed.options);
     return;
   }
   if (parsed.options.authAction === "revoke") {
