@@ -358,6 +358,37 @@ test("search normalizes query, path and time inputs before calling the backend",
   assert.equal(received.autoUpdate, true);
 });
 
+test("search accepts JSON-encoded string lists from loose MCP clients", async (t) => {
+  let received;
+  const backend = createBackend();
+  backend.search = async (input) => {
+    received = input;
+    return createBackend().search(input);
+  };
+  const { client, server } = await connect(backend);
+  t.after(async () => {
+    await client.close();
+    await server.close();
+  });
+
+  await client.callTool({
+    name: "zvec_grep_search",
+    arguments: {
+      root,
+      fts: JSON.stringify(["RocksdbContext", "rocksdb_context_"]),
+      exclude: JSON.stringify(["thirdparty/**", "build/**"]),
+      fileTypes: JSON.stringify(["h", "cc"]),
+    },
+  });
+
+  assert.deepEqual(received.routes, [
+    { mode: "fts", query: "RocksdbContext" },
+    { mode: "fts", query: "rocksdb_context_" },
+  ]);
+  assert.deepEqual(received.excludePaths, ["thirdparty/**", "build/**"]);
+  assert.deepEqual(received.fileTypes, ["h", "cc"]);
+});
+
 test("search can return the current index without scheduling an update", async (t) => {
   let received;
   const backend = createBackend();

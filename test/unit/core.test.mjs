@@ -34,7 +34,10 @@ import {
   ripgrepGlobMatches,
   ripgrepGlobMatchesCaseInsensitive,
 } from "../../dist/engine/utils/glob.js";
-import { matchesFileSelection } from "../../dist/engine/utils/file-selection.js";
+import {
+  matchesFileSelection,
+  resolveFileTypePatterns,
+} from "../../dist/engine/utils/file-selection.js";
 import {
   isPathInside,
   normalizePath,
@@ -495,6 +498,13 @@ test("glob and path helpers cover literal, wildcard, and descendant matching", (
   assert.equal(isPathInside(parent, resolve(parent, "child")), true);
   assert.equal(isPathInside(parent, resolve(parent, "..", "other")), false);
   assert.equal(toDisplayPath(parent).includes("\\"), false);
+});
+
+test("file type filters accept extension aliases for ripgrep types", async () => {
+  const types = await resolveFileTypePatterns([".h", "cc"], undefined);
+  assert.equal(matchesFileSelection("include/api.h", {}, types), true);
+  assert.equal(matchesFileSelection("src/main.cc", {}, types), true);
+  assert.equal(matchesFileSelection("src/main.ts", {}, types), false);
 });
 
 test("timing helpers aggregate entries and concurrent work", async () => {

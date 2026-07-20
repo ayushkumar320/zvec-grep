@@ -214,8 +214,7 @@ export function normalizeQueryList(value: StringListInput): string[] {
 export function normalizePlainStringList(
   value: StringListInput,
 ): string[] | undefined {
-  const items =
-    value === undefined ? [] : Array.isArray(value) ? value : [value];
+  const items = stringListItems(value);
   const normalized = items
     .map((item) => item.trim())
     .filter((item) => item.length > 0);
@@ -223,9 +222,36 @@ export function normalizePlainStringList(
 }
 
 export function normalizePathFilters(value: StringListInput): string[] {
-  const items =
-    value === undefined ? [] : Array.isArray(value) ? value : [value];
+  const items = stringListItems(value);
   return items.flatMap(splitPathFilters);
+}
+
+function stringListItems(value: StringListInput): string[] {
+  if (value === undefined) {
+    return [];
+  }
+  if (Array.isArray(value)) {
+    return value;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed.startsWith("[")) {
+    return [value];
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (
+      Array.isArray(parsed) &&
+      parsed.every((item) => typeof item === "string")
+    ) {
+      return parsed;
+    }
+  } catch {
+    // Treat malformed JSON-like input as a literal string.
+  }
+
+  return [value];
 }
 
 export function normalizeModifiedTime(

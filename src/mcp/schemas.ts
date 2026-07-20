@@ -78,10 +78,10 @@ const searchFields = {
     "Ordered case-insensitive rg-style glob rules. Later rules override earlier rules.",
   ),
   fileTypes: pathFilterInputSchema.describe(
-    "Registered file types to include, such as ts or py.",
+    "Registered file types or common extension aliases to include, such as ts, py, h, or cc.",
   ),
   excludedFileTypes: pathFilterInputSchema.describe(
-    "Registered file types to exclude.",
+    "Registered file types or common extension aliases to exclude.",
   ),
   hidden: z.boolean().optional().describe("Include hidden paths."),
   noIgnore: z.boolean().optional().describe("Ignore no ignore files."),
@@ -173,10 +173,10 @@ export const zvecGrepIndexInputSchema = z.object({
     "Ordered case-insensitive rg-style glob rules for indexed files.",
   ),
   fileTypes: pathFilterInputSchema.describe(
-    "Registered file types to include, such as ts or py.",
+    "Registered file types or common extension aliases to include, such as ts, py, h, or cc.",
   ),
   excludedFileTypes: pathFilterInputSchema.describe(
-    "Registered file types to exclude.",
+    "Registered file types or common extension aliases to exclude.",
   ),
   hidden: z.boolean().optional().describe("Include hidden paths."),
   noIgnore: z.boolean().optional().describe("Ignore no ignore files."),

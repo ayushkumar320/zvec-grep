@@ -20,6 +20,32 @@ export type FileSelection = {
 let ripgrepTypeMapPromise:
   Promise<ReadonlyMap<string, readonly string[]>> | undefined;
 
+const RIPGREP_FILE_TYPE_ALIASES: Readonly<Record<string, string>> = {
+  bash: "sh",
+  cjs: "js",
+  cp: "cpp",
+  cc: "cpp",
+  cpp: "cpp",
+  cxx: "cpp",
+  hpp: "h",
+  hxx: "h",
+  hh: "h",
+  h: "h",
+  js: "js",
+  jsx: "js",
+  mjs: "js",
+  markdown: "md",
+  mdx: "md",
+  pyi: "py",
+  py: "py",
+  rb: "ruby",
+  rs: "rust",
+  ts: "ts",
+  tsx: "ts",
+  yml: "yaml",
+  zsh: "sh",
+};
+
 export async function resolveFileTypePatterns(
   includedTypes: readonly string[] | undefined,
   excludedTypes: readonly string[] | undefined,
@@ -98,13 +124,31 @@ function resolveTypeNames(
       patterns.push("**");
       continue;
     }
-    const typePatterns = types.get(name);
+    const typeName = resolveRipgrepTypeName(name, types);
+    const typePatterns = types.get(typeName);
     if (!typePatterns) {
       throw new Error(`Unknown ripgrep file type: ${rawName}`);
     }
     patterns.push(...typePatterns);
   }
   return [...new Set(patterns)];
+}
+
+function resolveRipgrepTypeName(
+  name: string,
+  types: ReadonlyMap<string, readonly string[]>,
+): string {
+  if (types.has(name)) {
+    return name;
+  }
+
+  const extensionName = name.startsWith(".") ? name.slice(1) : name;
+  const alias = RIPGREP_FILE_TYPE_ALIASES[extensionName];
+  if (alias && types.has(alias)) {
+    return alias;
+  }
+
+  return name;
 }
 
 async function ripgrepTypeMap(): Promise<
