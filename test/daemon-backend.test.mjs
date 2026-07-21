@@ -327,7 +327,11 @@ test("eventual search can skip background reconciliation", async () => {
       autoUpdate: false,
     });
     assert.equal(result.freshness, "possibly_stale");
-    assert.deepEqual(result.indexing, { state: "idle" });
+    assert.deepEqual(result.indexing, {
+      state: "idle",
+      completed: 0,
+      total: 1,
+    });
     assert.equal(backend.scheduler.getByRoot(await realpath(root)), undefined);
   } finally {
     await backend.close();
@@ -383,8 +387,8 @@ test("eventual search reports active indexing progress", async () => {
     assert.equal(result.freshness, "possibly_stale");
     assert.deepEqual(result.indexing, {
       state: "running",
-      completed: 4,
-      total: 10,
+      completed: 1,
+      total: 1,
     });
   } finally {
     releaseIndexing();
@@ -446,7 +450,11 @@ test("eventual search queries while background reconciliation is running", async
 
     const stale = await backend.search(searchInput(root, "answer", "eventual"));
     assert.equal(stale.freshness, "possibly_stale");
-    assert.equal(stale.indexing.state, "running");
+    assert.deepEqual(stale.indexing, {
+      state: "running",
+      completed: 0,
+      total: 1,
+    });
     await backgroundStarted;
 
     const plan = await backend.planSearchAuthorization(
@@ -459,7 +467,11 @@ test("eventual search queries while background reconciliation is running", async
     );
 
     assert.equal(duringReconcile.freshness, "possibly_stale");
-    assert.equal(duringReconcile.indexing.state, "running");
+    assert.deepEqual(duringReconcile.indexing, {
+      state: "running",
+      completed: 0,
+      total: 1,
+    });
   } finally {
     blockBackgroundEmbedding = false;
     releaseBackground();
@@ -555,6 +567,11 @@ test("wait_for_fresh consumes a running watch job without a full reconciliation"
       autoUpdate: true,
     });
     assert.equal(eventualResult.freshness, "possibly_stale");
+    assert.deepEqual(eventualResult.indexing, {
+      state: "running",
+      completed: 0,
+      total: 1,
+    });
     assert.equal(backend.scheduler.getByRoot(canonicalRoot).id, watchJob.id);
     let searchSettled = false;
     const search = backend

@@ -74,6 +74,11 @@ type IndexPassResult = {
   stats: IndexStats;
 };
 
+type IndexProgressBase = {
+  filesSucceeded: number;
+  filesTotal: number;
+};
+
 type IndexProgressReporter = (
   stats: IndexStats,
   detail?: string,
@@ -212,20 +217,30 @@ async function indexCollectionUnchecked(
     timings,
   );
   const passes = [firstPass];
+  let progressBase: IndexProgressBase | undefined;
   if (firstPass.stats.filesFailed > 0) {
     const failed = firstPass.stats.filesFailed;
+    progressBase = retryProgressBase(firstPass);
     report({
       phase: "scanning",
+      filesTotal: progressBase.filesTotal,
+      filesIndexed: progressBase.filesSucceeded,
       detail: `Retrying ${failed} failed ${failed === 1 ? "file" : "files"}...`,
     });
     passes.push(
-      await runIndexPass(ctx, report, "Scanning retry candidates...", timings),
+      await runIndexPass(
+        ctx,
+        report,
+        "Scanning retry candidates...",
+        timings,
+        progressBase,
+      ),
     );
   }
 
   const finalPass = passes[passes.length - 1];
   throwIfIndexCancelled(ctx);
-  reportIndexFinalizing(ctx, report, finalPass);
+  reportIndexFinalizing(ctx, report, finalPass, progressBase);
   await timings.time("index_optimize", () => optimizeStorage(ctx));
 
   const result = buildIndexResult(ctx, passes, Date.now() - start, timings);
@@ -279,12 +294,22 @@ async function indexCollectionPathsUnchecked(
     timings,
   );
   const passes = [firstPass];
+  let progressBase: IndexProgressBase | undefined;
   if (firstPass.stats.filesFailed > 0) {
-    passes.push(await runPathIndexPass(ctx, report, normalizedPaths, timings));
+    progressBase = retryProgressBase(firstPass);
+    passes.push(
+      await runPathIndexPass(
+        ctx,
+        report,
+        normalizedPaths,
+        timings,
+        progressBase,
+      ),
+    );
   }
   const finalPass = passes[passes.length - 1];
   throwIfIndexCancelled(ctx);
-  reportIndexFinalizing(ctx, report, finalPass);
+  reportIndexFinalizing(ctx, report, finalPass, progressBase);
   await timings.time("index_optimize", () => optimizeStorage(ctx));
   const result = buildIndexResult(ctx, passes, Date.now() - start, timings);
   if (result.filesFailed > 0) {
@@ -305,8 +330,9 @@ async function runPathIndexPass(
   report: (progress: IndexProgress) => void,
   changedPaths: readonly string[],
   timings: TimingCollector,
+  progressBase?: IndexProgressBase,
 ): Promise<IndexPassResult> {
-  report({ phase: "scanning", detail: "Scanning changed paths..." });
+  reportScanning(report, "Scanning changed paths...", progressBase);
   const scanned = await timings.time("index_scan_paths", async () => {
     const files: FileInfo[] = [];
     for (const path of changedPaths) {
@@ -339,7 +365,7 @@ async function runPathIndexPass(
         .map((file) => [file.id, file]),
     ).values(),
   ];
-  return runDiffPass(ctx, report, scanned, existing, timings);
+  return runDiffPass(ctx, report, scanned, existing, timings, progressBase);
 }
 
 async function runIndexPass(
@@ -347,15 +373,23 @@ async function runIndexPass(
   report: (progress: IndexProgress) => void,
   scanningDetail: string,
   timings: TimingCollector,
+  progressBase?: IndexProgressBase,
 ): Promise<IndexPassResult> {
-  report({ phase: "scanning", detail: scanningDetail });
+  reportScanning(report, scanningDetail, progressBase);
   const scan = await timings.time("index_scan", () =>
     scanRootPaths(ctx.collection.id, ctx.collection.rootPaths, {
       signal: ctx.signal,
     }),
   );
   throwIfIndexCancelled(ctx);
-  return runDiffPass(ctx, report, scan.files, ctx.storage.listFiles(), timings);
+  return runDiffPass(
+    ctx,
+    report,
+    scan.files,
+    ctx.storage.listFiles(),
+    timings,
+    progressBase,
+  );
 }
 
 async function runDiffPass(
@@ -364,6 +398,7 @@ async function runDiffPass(
   scannedFiles: readonly FileInfo[],
   existingFiles: readonly FileInfo[],
   timings: TimingCollector,
+  progressBase?: IndexProgressBase,
 ): Promise<IndexPassResult> {
   const diff = await timings.time("index_diff", () =>
     computeDiffFromFiles(scannedFiles, existingFiles),
@@ -373,7 +408,8 @@ async function runDiffPass(
 
   report({
     phase: "scanning",
-    filesTotal: scannedFiles.length,
+    filesTotal: progressBase?.filesTotal ?? scannedFiles.length,
+    filesIndexed: progressBase?.filesSucceeded ?? 0,
     detail: `${diff.added.length} added, ${diff.modified.length} modified, ${diff.pending.length} pending, ${diff.deleted.length} deleted, ${diff.unchanged.length} unchanged`,
   });
 
@@ -402,8 +438,11 @@ async function runDiffPass(
   ) => {
     report({
       phase: "indexing",
-      filesTotal: pending.length,
-      filesIndexed: currentStats.filesIndexed + currentStats.filesFailed,
+      filesTotal: progressBase?.filesTotal ?? pending.length,
+      filesIndexed:
+        (progressBase?.filesSucceeded ?? 0) +
+        currentStats.filesIndexed +
+        currentStats.filesFailed,
       filesFailed: currentStats.filesFailed,
       detail,
       embedding,
@@ -432,16 +471,48 @@ function reportIndexFinalizing(
   ctx: IndexContext,
   report: (progress: IndexProgress) => void,
   pass: IndexPassResult,
+  progressBase?: IndexProgressBase,
 ): void {
   report({
     phase: "indexing",
     filesTotal:
+      progressBase?.filesTotal ??
+      pass.diff.added.length +
+        pass.diff.modified.length +
+        pass.diff.pending.length,
+    filesIndexed:
+      (progressBase?.filesSucceeded ?? 0) +
+      pass.stats.filesIndexed +
+      pass.stats.filesFailed,
+    filesFailed: pass.stats.filesFailed,
+    detail: "finalizing index",
+  });
+}
+
+function retryProgressBase(pass: IndexPassResult): IndexProgressBase {
+  return {
+    filesSucceeded: pass.stats.filesIndexed,
+    filesTotal:
       pass.diff.added.length +
       pass.diff.modified.length +
       pass.diff.pending.length,
-    filesIndexed: pass.stats.filesIndexed + pass.stats.filesFailed,
-    filesFailed: pass.stats.filesFailed,
-    detail: "finalizing index",
+  };
+}
+
+function reportScanning(
+  report: (progress: IndexProgress) => void,
+  detail: string,
+  progressBase?: IndexProgressBase,
+): void {
+  report({
+    phase: "scanning",
+    ...(progressBase
+      ? {
+          filesTotal: progressBase.filesTotal,
+          filesIndexed: progressBase.filesSucceeded,
+        }
+      : {}),
+    detail,
   });
 }
 

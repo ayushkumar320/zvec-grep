@@ -13,7 +13,7 @@ zg query "where query auto update happens"
 >
 > - **Hybrid Code Search**: Query code with natural language, exact terms, or both in one command.
 > - **Explicit Index Lifecycle**: New repositories require `zg index --embedding <model>`; agents do not silently create indexes.
-> - **Automatic Refresh**: Server queries return current results and refresh stale anonymous indexes in the background; use `--fresh` to wait.
+> - **Refresh Control**: Use `--refresh background|wait|off`. Server defaults to `background`; Direct defaults to `off`.
 > - **Token-Efficient Output**: Agent output defaults to `--preview none`; `--human` defaults to full source previews.
 > - **No-Index Lexical Search**: `zg query --rg` provides managed ripgrep search without requiring an index.
 

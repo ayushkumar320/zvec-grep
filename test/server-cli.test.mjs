@@ -7,7 +7,10 @@ import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import { parseArgs } from "../dist/cli/args.js";
-import { resolveServerSearchPolicy } from "../dist/client/search-policy.js";
+import {
+  resolveDirectSearchPolicy,
+  resolveServerSearchPolicy,
+} from "../dist/client/search-policy.js";
 import { DaemonClient } from "../dist/client/daemon-client.js";
 import { parseListenAddress } from "../dist/daemon/config.js";
 import { DaemonHttpServer } from "../dist/daemon/http-server.js";
@@ -50,24 +53,54 @@ test("server lifecycle and client mode arguments are parsed", () => {
   );
 });
 
-test("server queries default to eventual freshness and allow explicit fresh reads", () => {
+test("server queries map refresh modes to search policy", () => {
   assert.deepEqual(resolveServerSearchPolicy({}), {
     freshness: "eventual",
     autoUpdate: true,
   });
-  assert.deepEqual(resolveServerSearchPolicy({ fresh: true }), {
+  assert.deepEqual(resolveServerSearchPolicy({ refresh: "wait" }), {
     freshness: "wait_for_fresh",
     autoUpdate: true,
   });
-  assert.deepEqual(resolveServerSearchPolicy({ noAutoUpdate: true }), {
+  assert.deepEqual(resolveServerSearchPolicy({ refresh: "off" }), {
     freshness: "eventual",
     autoUpdate: false,
   });
-  assert.equal(parseArgs(["query", "--fresh", "query"]).options.fresh, true);
-  assert.throws(
-    () => parseArgs(["query", "--fresh", "--no-auto-update", "query"]),
-    /cannot be combined/i,
+  assert.equal(
+    parseArgs(["query", "--refresh", "background", "query"]).options.refresh,
+    "background",
   );
+  assert.equal(
+    parseArgs(["query", "--refresh=wait", "query"]).options.refresh,
+    "wait",
+  );
+  assert.throws(
+    () => parseArgs(["query", "--refresh", "invalid", "query"]),
+    /background, wait, or off/i,
+  );
+  assert.throws(
+    () => parseArgs(["query", "--fresh", "query"]),
+    /Unknown option/,
+  );
+  assert.throws(
+    () => parseArgs(["query", "--no-auto-update", "query"]),
+    /Unknown option/,
+  );
+});
+
+test("direct queries only refresh when wait is requested", () => {
+  assert.deepEqual(resolveDirectSearchPolicy({}), {
+    freshness: "eventual",
+    autoUpdate: false,
+  });
+  assert.deepEqual(resolveDirectSearchPolicy({ refresh: "background" }), {
+    freshness: "eventual",
+    autoUpdate: false,
+  });
+  assert.deepEqual(resolveDirectSearchPolicy({ refresh: "wait" }), {
+    freshness: "wait_for_fresh",
+    autoUpdate: true,
+  });
 });
 
 test("server run rejects non-loopback addresses and unrelated listen flags", () => {

@@ -67,9 +67,10 @@ Result options:
   --preview <none|short|full>       Indexed source preview size
   --debug                           Print diagnostics to stderr
   --trace                           Include per-hit indexed search trace
-  --fresh                           Wait for pending Server updates
-  --no-auto-update                  Do not refresh a stale anonymous index
+  --refresh <background|wait|off>   Refresh policy (Server: background; Direct: off)
   --mode <direct|server|auto>       Select indexed query transport
+
+Direct mode warns and uses off when background is requested.
 
 File filters:
   -g, --glob <glob>                 Include paths; prefix with ! to exclude; repeatable

@@ -71,7 +71,7 @@ test("server-mode index reports Workspace progress", async (t) => {
   assert.match(status.stdout, /Workspace index is not configured/i);
 });
 
-test("CLI completes index, search, automatic refresh, status, and rg workflows", async (t) => {
+test("CLI completes index, search, explicit refresh, status, and rg workflows", async (t) => {
   const temporaryDirectory = await createTemporaryDirectory(
     t,
     "zvec-grep-e2e-",
@@ -127,8 +127,49 @@ test("CLI completes index, search, automatic refresh, status, and rg workflows",
     join(root, "src", "example.ts"),
     "export const RefreshedWorkflowSymbol = 42;\nexport const OtherWorkflowSymbol = 43;\n",
   );
+  const stale = await runCli(
+    [
+      "query",
+      "--mode",
+      "direct",
+      "--fts",
+      "RefreshedWorkflowSymbol",
+      "--limit",
+      "5",
+    ],
+    { cwd: root, env, timeout: 120_000 },
+  );
+  assert.doesNotMatch(stale.stdout, /RefreshedWorkflowSymbol/);
+  assert.match(stale.stderr, /status: possibly_stale/);
+  assert.match(stale.stderr, /indexing: idle \(0\/1\)/);
+
+  const background = await runCli(
+    [
+      "query",
+      "--mode",
+      "direct",
+      "--refresh",
+      "background",
+      "--fts",
+      "RefreshedWorkflowSymbol",
+      "--limit",
+      "5",
+    ],
+    { cwd: root, env, timeout: 120_000 },
+  );
+  assert.match(background.stderr, /requires Server mode/);
+  assert.match(background.stderr, /indexing: idle \(0\/1\)/);
+
   const refreshed = await runCli(
-    ["query", "--fts", "RefreshedWorkflowSymbol", "--limit", "5"],
+    [
+      "query",
+      "--fts",
+      "RefreshedWorkflowSymbol",
+      "--limit",
+      "5",
+      "--refresh",
+      "wait",
+    ],
     {
       cwd: root,
       env,
@@ -156,7 +197,7 @@ test("CLI completes index, search, automatic refresh, status, and rg workflows",
   assert.match(reindexed.stdout, /glob=src\/\*\*/);
   assert.match(reindexed.stdout, /type=ts/);
   const outside = await runCli(
-    ["query", "--fts", "OutsideStoredFilterSymbol", "--no-auto-update"],
+    ["query", "--fts", "OutsideStoredFilterSymbol", "--refresh", "off"],
     { cwd: root, env },
   );
   assert.doesNotMatch(outside.stdout, /outside\.ts/);

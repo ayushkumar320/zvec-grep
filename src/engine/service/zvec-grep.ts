@@ -32,7 +32,6 @@ import {
 } from "../models/index.js";
 import type {
   CollectionEmbeddingSchema,
-  CollectionIndexStatus,
   CollectionInfo,
   Content,
   FileInfo,
@@ -42,6 +41,7 @@ import type {
   SearchPlan,
   SearchPlanResult,
 } from "../types.js";
+import { indexStatusNeedsRefresh } from "../index-status.js";
 import {
   ANONYMOUS_COLLECTION_NAME,
   anonymousCollectionPath,
@@ -398,6 +398,13 @@ class ZvecGrepService implements ZvecGrep {
     const request = normalizeContextRequest(options);
 
     if (options.collection) {
+      if (options.autoUpdate !== false) {
+        await this.refreshNamedCollectionForContext(
+          options.collection,
+          options,
+          timings,
+        );
+      }
       return this.contextFromNamedCollection(request, options, timings);
     }
 
@@ -698,7 +705,7 @@ class ZvecGrepService implements ZvecGrep {
           );
           try {
             const status = await registry.status(ANONYMOUS_COLLECTION_NAME);
-            return status ? collectionIndexStatusNeedsRefresh(status) : false;
+            return indexStatusNeedsRefresh(status);
           } finally {
             registry.close();
           }
@@ -759,6 +766,25 @@ class ZvecGrepService implements ZvecGrep {
     } finally {
       daemonWritePermit?.release();
     }
+  }
+
+  private async refreshNamedCollectionForContext(
+    collectionName: string,
+    options: ZvecGrepContextOptions,
+    timings: TimingCollector,
+  ): Promise<void> {
+    const status = await timings.time("status_scan", () =>
+      this.collectionStatus(collectionName),
+    );
+    if (!indexStatusNeedsRefresh(status)) return;
+
+    const result = await timings.time("auto_update", () =>
+      this.indexCollection(collectionName, undefined, {
+        embeddingConcurrency: options.embeddingConcurrency,
+        onProgress: options.onAutoUpdateProgress,
+      }),
+    );
+    timings.addEntries(result.timings, "auto_update_");
   }
 
   private async contextFromNamedCollection(
@@ -1211,22 +1237,10 @@ async function collectionNeedsRefresh(
   const registry = new CollectionRegistry(home, undefined, true);
   try {
     const status = await registry.status(collectionName);
-    return status ? collectionIndexStatusNeedsRefresh(status) : false;
+    return indexStatusNeedsRefresh(status);
   } finally {
     registry.close();
   }
-}
-
-function collectionIndexStatusNeedsRefresh(
-  status: CollectionIndexStatus,
-): boolean {
-  return (
-    status.filesAdded > 0 ||
-    status.filesModified > 0 ||
-    status.filesDeleted > 0 ||
-    status.filesPending > 0 ||
-    status.filesFailed > 0
-  );
 }
 
 function acquireHomeLock(

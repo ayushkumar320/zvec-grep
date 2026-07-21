@@ -6,6 +6,7 @@ import type {
   ColorMode,
   ParsedArgs,
   PreviewMode,
+  QueryRefreshMode,
 } from "./types.js";
 import { VALID_SYMBOL_TYPES } from "./types.js";
 
@@ -242,10 +243,12 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
       options.force = true;
     } else if (arg === "--reset-paths") {
       options.resetPaths = true;
-    } else if (arg === "--no-auto-update") {
-      options.noAutoUpdate = true;
-    } else if (arg === "--fresh") {
-      options.fresh = true;
+    } else if (isLongOptionWithValue(arg, "--refresh")) {
+      options.refresh = parseQueryRefreshMode(valueFromLongOption(arg));
+    } else if (arg === "--refresh") {
+      options.refresh = parseQueryRefreshMode(
+        readOptionValue(args, ++index, arg),
+      );
     } else if (arg === "--prefer-symbol") {
       options.preferSymbol = true;
     } else if (arg === "--collection") {
@@ -657,7 +660,7 @@ function validateCliShape(
     [options.human, "--human"],
     [options.preview, "--preview"],
     [options.limit, "--limit"],
-    [options.noAutoUpdate, "--no-auto-update"],
+    [options.refresh, "--refresh"],
     [options.preferSymbol, "--prefer-symbol"],
     [options.symbolTypes?.length, "--symbol-type"],
     [options.modifiedAfter, "--modified-after"],
@@ -767,9 +770,6 @@ function validateCliShape(
     throw new Error("--force-direct requires --mode direct");
   }
 
-  if (options.fresh && options.noAutoUpdate) {
-    throw new Error("--fresh cannot be combined with --no-auto-update");
-  }
   if (options.rg && options.preview) {
     throw new Error(
       "--preview is not supported with --rg; use -A/-B/-C for rg context",
@@ -783,7 +783,7 @@ function validateCliShape(
   }
   if (
     options.rg &&
-    (options.noAutoUpdate || options.embeddingConcurrency !== undefined)
+    (options.refresh || options.embeddingConcurrency !== undefined)
   ) {
     throw new Error("--rg cannot be combined with indexed refresh options");
   }
@@ -792,9 +792,6 @@ function validateCliShape(
     throw new Error(`${option} can only be used with --rg`);
   }
 
-  if (options.fresh && command !== "query") {
-    throw new Error("--fresh can only be used with zg query");
-  }
   if (
     options.mode !== undefined &&
     command !== "query" &&
@@ -936,6 +933,13 @@ function parseClientMode(value: string): "direct" | "server" | "auto" {
   if (value === "direct" || value === "server" || value === "auto")
     return value;
   throw new Error("--mode must be direct, server, or auto");
+}
+
+function parseQueryRefreshMode(value: string): QueryRefreshMode {
+  if (value === "background" || value === "wait" || value === "off") {
+    return value;
+  }
+  throw new Error("--refresh must be background, wait, or off");
 }
 
 function parseAllowRemote(value: string): "once" | "workspace" {

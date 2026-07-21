@@ -10,6 +10,7 @@ import type { RemoteEmbeddingAuthorizationStatus } from "../../authorization/typ
 import type { CliOptions } from "../types.js";
 import { shouldUseColor } from "./highlight.js";
 import { formatGreenProgressBar } from "./progress.js";
+import { indexStatusNeedsRefresh as statusNeedsRefresh } from "../../engine/index-status.js";
 
 type StatusTheme = {
   color: boolean;
@@ -722,16 +723,6 @@ function printIndexStatus(
       : theme.success(String(status.filesPending)),
   );
   printField(theme, "failed", failedCount(theme, status.filesFailed));
-}
-
-function statusNeedsRefresh(status: CollectionIndexStatus): boolean {
-  return (
-    status.filesAdded > 0 ||
-    status.filesModified > 0 ||
-    status.filesDeleted > 0 ||
-    status.filesPending > 0 ||
-    status.filesFailed > 0
-  );
 }
 
 function printFailedFilesNote(

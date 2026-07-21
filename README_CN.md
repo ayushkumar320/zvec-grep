@@ -38,7 +38,7 @@ zg query "where query auto update happens"
 >
 > - **混合代码检索**：可以用自然语言、精确关键词，或两者组合来搜索代码。
 > - **明确的索引生命周期**：新仓库必须显式运行 `zg index --embedding <model>`；agent 不会静默创建索引。
-> - **自动刷新**：Server 查询默认返回当前结果并在后台刷新过期的匿名索引；使用 `--fresh` 可等待刷新完成。
+> - **刷新控制**：使用 `--refresh background|wait|off`。Server 默认 `background`，Direct 默认 `off`。
 > - **节省 Token 的输出**：agent 默认输出 `--preview none`；`--human` 默认展示完整源码 preview。
 > - **无索引文本搜索**：`zg query --rg` 提供托管的 ripgrep 搜索，不需要先建索引。
 

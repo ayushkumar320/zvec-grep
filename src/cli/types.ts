@@ -5,6 +5,8 @@ export type ColorMode = "auto" | "always" | "never";
 
 export type PreviewMode = "none" | "short" | "full";
 
+export type QueryRefreshMode = "background" | "wait" | "off";
+
 export type CliOptions = {
   configAction?: "model-set";
   authAction?: "grant" | "status" | "revoke";
@@ -45,8 +47,7 @@ export type CliOptions = {
   drop?: boolean;
   force?: boolean;
   resetPaths?: boolean;
-  noAutoUpdate?: boolean;
-  fresh?: boolean;
+  refresh?: QueryRefreshMode;
   preferSymbol?: boolean;
   globs?: string[];
   insensitiveGlobs?: string[];

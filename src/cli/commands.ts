@@ -34,7 +34,10 @@ import {
   updateGlobalConfigFromExplicitOptions,
 } from "../engine/config.js";
 import { DaemonClient } from "../client/daemon-client.js";
-import { resolveServerSearchPolicy } from "../client/search-policy.js";
+import {
+  resolveDirectSearchPolicy,
+  resolveServerSearchPolicy,
+} from "../client/search-policy.js";
 import {
   resolveClientMode,
   resolveServerUrl,
@@ -73,6 +76,10 @@ import {
   type RemoteEmbeddingOperationPermit,
 } from "../authorization/index.js";
 import type { CollectionEmbeddingSchema } from "../engine/types.js";
+import {
+  indexCompletionFromStatus,
+  indexStatusNeedsRefresh,
+} from "../engine/index-status.js";
 import type { NormalizedSearchInput } from "../mcp/input-normalization.js";
 import { indexProgressFromMessage } from "../index-progress.js";
 
@@ -1354,6 +1361,11 @@ async function runDirectQuery(
   commandOptions: CliOptions,
   queries: readonly string[],
 ): Promise<void> {
+  if (commandOptions.refresh === "background") {
+    console.error(
+      "warning: --refresh background requires Server mode; Direct mode uses --refresh off",
+    );
+  }
   const zvecGrep = await createZvecGrep(
     createServiceOptions(commandOptions, undefined),
   );
@@ -1400,6 +1412,12 @@ async function runDirectQuery(
     }
     for (const line of contextWarningLines(result)) {
       console.error(line);
+    }
+    if (
+      effectiveContextRequest.autoUpdate !== true &&
+      indexStatusNeedsRefresh(info.status)
+    ) {
+      printStaleIndexStatus("idle", indexCompletionFromStatus(info.status));
     }
 
     if (commandOptions.debug) {
@@ -1457,17 +1475,23 @@ async function runServerQuery(
   if (options.human) printHumanContextResult(result, options);
   else printAgentContextResult(result, options);
   if (response.freshness === "possibly_stale") {
-    console.error("status: possibly_stale");
     const indexing = response.indexing as
       { state?: string; completed?: number; total?: number } | undefined;
-    if (indexing?.state) {
-      const progress =
-        indexing.completed === undefined || indexing.total === undefined
-          ? ""
-          : ` (${indexing.completed}/${indexing.total})`;
-      console.error(`indexing: ${indexing.state}${progress}`);
-    }
+    printStaleIndexStatus(indexing?.state, indexing);
   }
+}
+
+function printStaleIndexStatus(
+  state: string | undefined,
+  completion: { completed?: number; total?: number } | undefined,
+): void {
+  console.error("status: possibly_stale");
+  if (!state) return;
+  const progress =
+    completion?.completed === undefined || completion.total === undefined
+      ? ""
+      : ` (${completion.completed}/${completion.total})`;
+  console.error(`indexing: ${state}${progress}`);
 }
 
 function daemonClient(options: CliOptions): DaemonClient {
@@ -1653,12 +1677,12 @@ function normalizedDirectSearchInput(
   queries: readonly string[],
   root: string,
 ): NormalizedSearchInput {
+  const policy = resolveDirectSearchPolicy(options);
   return {
     root,
     queries: !options.rg && queries.length > 0 ? [...queries] : undefined,
     routes: [...(options.routes ?? [])],
-    freshness: options.fresh ? "wait_for_fresh" : "eventual",
-    autoUpdate: !options.noAutoUpdate,
+    ...policy,
   };
 }
 
@@ -1689,6 +1713,7 @@ function contextOptions(
   queries: readonly string[],
   onAutoUpdateProgress?: (progress: IndexProgress) => void,
 ): ZvecGrepContextOptions {
+  const policy = resolveDirectSearchPolicy(options);
   return {
     queries: queries.length > 0 ? queries : undefined,
     rg: options.rg,
@@ -1698,7 +1723,7 @@ function contextOptions(
     fuse: options.fuse,
     collection: options.collection,
     limit: options.limit,
-    autoUpdate: !options.noAutoUpdate,
+    autoUpdate: policy.autoUpdate,
     onAutoUpdateProgress,
     trace: options.trace,
     preferSymbol: options.preferSymbol,

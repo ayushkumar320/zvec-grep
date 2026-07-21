@@ -31,10 +31,10 @@ Start with indexed hybrid search, then add exact or semantic routes as needed:
 zg query "request validation" "error handling" -g "src/**" -g "!tests/**" -g "!dist/**" --limit 10 --preview short
 zg query "authentication flow" --fts "AuthService" --fts "ForbiddenError" -g "src/**"
 zg query --vector "where incoming requests are authorized" -g "src/**"
-zg query "changes that must be indexed before search" --fresh
+zg query "changes that must be indexed before search" --refresh wait
 ```
 
-When Auto selects Server, queries return the current index and refresh stale data in the background by default. Add `--fresh` only when the query must wait for pending index changes. Use `--preview none` for broad candidate scans, `--preview short` for a small deterministic window, and `--preview full` only after narrowing.
+When Auto selects Server, queries return the current index and refresh stale data in the background by default. Direct queries do not refresh by default. Add `--refresh wait` when the query must wait for pending index changes, or `--refresh off` to disable refresh explicitly. Use `--preview none` for broad candidate scans, `--preview short` for a small deterministic window, and `--preview full` only after narrowing.
 
 ## Recover from a Direct model failure
 

@@ -86,6 +86,26 @@ test("service indexes, searches, refreshes, and manages named collections", asyn
   assert.equal((await service.collections.list()).length, 1);
   assert.equal((await service.collections.info("docs"))?.name, "docs");
   assert.equal((await service.collections.status("docs"))?.filesIndexed, 1);
+  await writeFile(
+    join(root, "src", "alpha.ts"),
+    "export const NamedCollectionUpdatedSymbol = 43;\n",
+  );
+  const staleNamed = await service.context({
+    collection: "docs",
+    routes: [{ mode: "fts", query: "NamedCollectionUpdatedSymbol" }],
+    autoUpdate: false,
+  });
+  assert.equal(staleNamed.items.length, 0);
+  const refreshedNamed = await service.context({
+    collection: "docs",
+    routes: [{ mode: "fts", query: "NamedCollectionUpdatedSymbol" }],
+    autoUpdate: true,
+  });
+  assert.ok(
+    refreshedNamed.items.some((item) =>
+      item.content.includes("NamedCollectionUpdatedSymbol"),
+    ),
+  );
   assert.equal(await service.collections.remove("docs"), true);
   assert.equal(await service.collections.remove("docs"), false);
 
@@ -143,11 +163,46 @@ test("service records failed files, retries them, deletes stale records, and reb
   });
   t.after(() => service.close());
 
+  const completedFiles = [];
+  const retryScanningProgress = [];
+  let retryStarted = false;
   await assert.rejects(
-    service.index({ embeddingConcurrency: 2 }),
+    service.index({
+      embeddingConcurrency: 2,
+      onProgress: (progress) => {
+        if (
+          progress.phase === "scanning" &&
+          progress.detail?.toLowerCase().includes("retry")
+        ) {
+          retryStarted = true;
+        }
+        if (retryStarted && progress.phase === "scanning") {
+          retryScanningProgress.push(progress);
+        }
+        if (progress.filesIndexed !== undefined) {
+          completedFiles.push(
+            progress.filesIndexed - (progress.filesFailed ?? 0),
+          );
+        }
+      },
+    }),
     (error) =>
       error.code === "ZVEC_GREP.ENGINE.INDEXING.FILES_FAILED" &&
       /failing\.ts/.test(error.context),
+  );
+  assert.ok(
+    completedFiles.every(
+      (completed, index) =>
+        index === 0 || completed >= completedFiles[index - 1],
+    ),
+  );
+  assert.ok(retryScanningProgress.length > 0);
+  assert.ok(
+    retryScanningProgress.every(
+      (progress) =>
+        progress.filesIndexed !== undefined &&
+        progress.filesTotal !== undefined,
+    ),
   );
   const failedStatus = await service.info();
   assert.equal(failedStatus.status?.filesFailed, 1);

@@ -426,13 +426,13 @@ export const zvecGrepSearchIndexingSchema = z
       .int()
       .nonnegative()
       .optional()
-      .describe("Files completed by the current indexing job."),
+      .describe("Up-to-date indexed files in the configured file scope."),
     total: z
       .number()
       .int()
       .nonnegative()
       .optional()
-      .describe("Files expected in the current indexing job."),
+      .describe("Total files in the configured file scope."),
   })
   .describe("Compact indexing snapshot included with possibly stale results.");
 

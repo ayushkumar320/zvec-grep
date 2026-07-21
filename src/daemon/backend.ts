@@ -10,6 +10,10 @@ import type {
   IndexProgress,
 } from "../engine/types.js";
 import {
+  indexCompletionFromStatus,
+  mergeIndexCompletion,
+} from "../engine/index-status.js";
+import {
   contextOptionsFromRgInput,
   normalizePlainStringList,
   type NormalizedSearchInput,
@@ -465,7 +469,10 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
       freshness,
       indexing:
         freshness === "possibly_stale"
-          ? searchIndexingSnapshot(job)
+          ? searchIndexingSnapshot(
+              job,
+              this.currentIndexCompletion(runtime.canonicalRoot),
+            )
           : undefined,
       result,
     };
@@ -476,6 +483,12 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
       result_count: result.items.length,
     });
     return response;
+  }
+
+  private currentIndexCompletion(canonicalRoot: string) {
+    return indexCompletionFromStatus(
+      this.statusCache.get(canonicalRoot)?.status,
+    );
   }
 
   async indexStatus(
@@ -596,13 +609,13 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
     signal?: AbortSignal,
   ): Promise<IndexReconciliationProof> {
     const startedAt = Date.now();
-    const includeStatus = !input.changedPaths;
+    const includeFinalStatus = !input.changedPaths;
     const before = await inspectRoot(
       runtime.canonicalRoot,
       this.options.serviceOptions,
-      includeStatus,
+      true,
     );
-    if (includeStatus) this.statusCache.set(runtime.canonicalRoot, before);
+    this.statusCache.set(runtime.canonicalRoot, before);
     const schema = this.indexSchema(before, input);
     runtime.updateModelRequest({
       schema,
@@ -653,16 +666,16 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
       }
     }
 
-    if (includeStatus) {
+    if (includeFinalStatus) {
       await this.watchers.get(runtime.canonicalRoot)?.flushPending();
     }
     const proofReconciliationEpoch = runtime.reconciliationEpoch();
     const after = await inspectRoot(
       runtime.canonicalRoot,
       this.options.serviceOptions,
-      includeStatus,
+      includeFinalStatus,
     );
-    if (includeStatus) this.statusCache.set(runtime.canonicalRoot, after);
+    if (includeFinalStatus) this.statusCache.set(runtime.canonicalRoot, after);
     if (!after.collection?.embedding) {
       throw new DaemonError(
         "INDEX_MISSING",
@@ -680,8 +693,8 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
       scope: input.changedPaths ? "paths" : "reconcile",
       changed_paths: input.changedPaths?.length,
     });
-    const reconciled = includeStatus && indexStatusIsFresh(after);
-    if (includeStatus && !reconciled) {
+    const reconciled = includeFinalStatus && indexStatusIsFresh(after);
+    if (includeFinalStatus && !reconciled) {
       runtime.requireFullReconciliation(true);
     }
     return {
@@ -1120,13 +1133,15 @@ function formatProgress(
 
 function searchIndexingSnapshot(
   job: IndexJobSnapshot | undefined,
+  completion: ReturnType<typeof indexCompletionFromStatus>,
 ): NonNullable<ZvecGrepSearchResult["indexing"]> {
   const state = !job || job.state === "succeeded" ? "idle" : job.state;
-  const completed = job?.progress?.filesIndexed;
-  const total = job?.progress?.filesTotal;
+  const effectiveCompletion =
+    job?.state === "succeeded"
+      ? completion
+      : mergeIndexCompletion(completion, job?.progress);
   return {
     state,
-    ...(completed === undefined ? {} : { completed }),
-    ...(total === undefined ? {} : { total }),
+    ...effectiveCompletion,
   };
 }
