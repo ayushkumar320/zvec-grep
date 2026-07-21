@@ -219,6 +219,24 @@ test("server contract exposes final tools with stable annotations", async (t) =>
   const search = tools.find((tool) => tool.name === "zvec_grep_search");
   assert.match(search.description, /Search an existing repository index first/);
   assert.match(search.description, /missing indexes/);
+  for (const tool of [index, search]) {
+    assert.match(
+      tool.inputSchema.properties.fileTypes.description,
+      /rg --type-list/,
+    );
+    assert.match(
+      tool.inputSchema.properties.excludedFileTypes.description,
+      /rg --type-list/,
+    );
+    assert.doesNotMatch(
+      tool.inputSchema.properties.fileTypes.description,
+      /extension aliases/i,
+    );
+    assert.doesNotMatch(
+      tool.inputSchema.properties.excludedFileTypes.description,
+      /extension aliases/i,
+    );
+  }
   const rg = tools.find((tool) => tool.name === "zvec_grep_rg");
   assert.match(rg.description, /explicit rg-mode request/);
   assert.match(rg.description, /do not switch to rg merely/);

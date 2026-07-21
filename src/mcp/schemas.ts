@@ -45,6 +45,11 @@ export const codeSymbolTypeSchema = z.enum([
   "alias",
 ]);
 
+const fileTypesDescription =
+  "Ripgrep file type names from rg --type-list to include, such as ts, py, h, or cpp.";
+const excludedFileTypesDescription =
+  "Ripgrep file type names from rg --type-list to exclude.";
+
 export const absoluteRootSchema = z
   .string()
   .trim()
@@ -77,11 +82,9 @@ const searchFields = {
   insensitiveGlobs: pathFilterInputSchema.describe(
     "Ordered case-insensitive rg-style glob rules. Later rules override earlier rules.",
   ),
-  fileTypes: pathFilterInputSchema.describe(
-    "Registered file types or common extension aliases to include, such as ts, py, h, or cc.",
-  ),
+  fileTypes: pathFilterInputSchema.describe(fileTypesDescription),
   excludedFileTypes: pathFilterInputSchema.describe(
-    "Registered file types or common extension aliases to exclude.",
+    excludedFileTypesDescription,
   ),
   hidden: z.boolean().optional().describe("Include hidden paths."),
   noIgnore: z.boolean().optional().describe("Ignore no ignore files."),
@@ -172,11 +175,9 @@ export const zvecGrepIndexInputSchema = z.object({
   insensitiveGlobs: pathFilterInputSchema.describe(
     "Ordered case-insensitive rg-style glob rules for indexed files.",
   ),
-  fileTypes: pathFilterInputSchema.describe(
-    "Registered file types or common extension aliases to include, such as ts, py, h, or cc.",
-  ),
+  fileTypes: pathFilterInputSchema.describe(fileTypesDescription),
   excludedFileTypes: pathFilterInputSchema.describe(
-    "Registered file types or common extension aliases to exclude.",
+    excludedFileTypesDescription,
   ),
   hidden: z.boolean().optional().describe("Include hidden paths."),
   noIgnore: z.boolean().optional().describe("Ignore no ignore files."),
