@@ -127,3 +127,63 @@ test("Transformers.js adapter validates the returned batch tensor", async (t) =>
   );
   await model.dispose();
 });
+
+test("Transformers.js adapter maps Metal to WebGPU", async (t) => {
+  const loads = [];
+  const extractor = Object.assign(
+    async () => ({ dims: [1, 3], data: new Float32Array(3) }),
+    { tokenizer: { model_max_length: 4096 }, async dispose() {} },
+  );
+  setTransformersJsRuntimeForTesting(async () => ({
+    async pipeline(task, repo, options) {
+      loads.push({ task, repo, options });
+      return extractor;
+    },
+  }));
+  t.after(() => setTransformersJsRuntimeForTesting(null));
+
+  const model = new TransformersJsEmbeddingModel(entry(), {
+    apiKey: "",
+    llamaGpu: "metal",
+  });
+  await model.embed([{ kind: "text", text: "value" }]);
+
+  assert.deepEqual(loads[0].options.session_options, {
+    executionProviders: ["webgpu"],
+  });
+  await model.dispose();
+});
+
+test("Transformers.js adapter falls back to CPU when GPU initialization fails", async (t) => {
+  const providers = [];
+  const extractor = Object.assign(
+    async () => ({ dims: [1, 3], data: new Float32Array(3) }),
+    { tokenizer: { model_max_length: 4096 }, async dispose() {} },
+  );
+  setTransformersJsRuntimeForTesting(async () => ({
+    async pipeline(_task, _repo, options) {
+      const provider = options.session_options?.executionProviders[0];
+      providers.push(provider);
+      if (provider === "webgpu") {
+        throw new Error("GPU unavailable");
+      }
+      return extractor;
+    },
+  }));
+  t.after(() => setTransformersJsRuntimeForTesting(null));
+
+  const writes = [];
+  t.mock.method(process.stderr, "write", (message) => {
+    writes.push(String(message));
+    return true;
+  });
+  const model = new TransformersJsEmbeddingModel(entry(), {
+    apiKey: "",
+    llamaGpu: "metal",
+  });
+  await model.embed([{ kind: "text", text: "value" }]);
+
+  assert.deepEqual(providers, ["webgpu", "cpu"]);
+  assert.match(writes.join(""), /falling back to CPU/);
+  await model.dispose();
+});

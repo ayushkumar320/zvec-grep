@@ -37,11 +37,15 @@ type TransformersJsModule = {
       cache_dir: string;
       revision: string;
       dtype: "fp32" | "q8" | "q4";
+      session_options?: {
+        executionProviders: TransformersJsExecutionProvider[];
+      };
     },
   ): Promise<FeatureExtractionPipeline>;
 };
 
 type TransformersJsLoader = () => Promise<TransformersJsModule>;
+type TransformersJsExecutionProvider = "cpu" | "webgpu" | "cuda" | "dml";
 
 const DEFAULT_MODEL_CACHE_DIR = join(defaultHome(), "models");
 let transformersJsImport: Promise<TransformersJsModule> | null = null;
@@ -84,6 +88,7 @@ export class TransformersJsEmbeddingModel extends EmbeddingModel {
   override readonly maxIndexConcurrency = 1;
 
   private readonly modelCacheDir: string;
+  private readonly executionProvider: TransformersJsExecutionProvider | null;
   private pipeline: FeatureExtractionPipeline | null = null;
   private pipelineLoadPromise: Promise<FeatureExtractionPipeline> | null = null;
   private disposed = false;
@@ -104,6 +109,7 @@ export class TransformersJsEmbeddingModel extends EmbeddingModel {
       options.modelCacheDir ??
       process.env.ZVEC_GREP_MODEL_CACHE ??
       DEFAULT_MODEL_CACHE_DIR;
+    this.executionProvider = resolveExecutionProvider(options.llamaGpu);
   }
 
   protected async doEmbed(
@@ -161,17 +167,37 @@ export class TransformersJsEmbeddingModel extends EmbeddingModel {
 
   private async loadPipeline(): Promise<FeatureExtractionPipeline> {
     const runtime = await loadTransformersJs();
-    const pipeline = await runtime.pipeline(
-      "feature-extraction",
-      this.entry.repo,
-      {
-        cache_dir: this.modelCacheDir,
-        revision: this.entry.revision,
-        dtype: this.entry.dtype,
-      },
-    );
+    let pipeline: FeatureExtractionPipeline;
+
+    try {
+      pipeline = await this.createPipeline(runtime, this.executionProvider);
+    } catch (cause) {
+      if (!this.executionProvider || this.executionProvider === "cpu") {
+        throw cause;
+      }
+
+      process.stderr.write(
+        `zvec-grep warning: Transformers.js ${this.executionProvider} embedding initialization failed (${formatErrorMessage(cause)}), falling back to CPU.\n`,
+      );
+      pipeline = await this.createPipeline(runtime, "cpu");
+    }
+
     pipeline.tokenizer.model_max_length = this.entry.maxInputTokens;
     return pipeline;
+  }
+
+  private async createPipeline(
+    runtime: TransformersJsModule,
+    executionProvider: TransformersJsExecutionProvider | null,
+  ): Promise<FeatureExtractionPipeline> {
+    return await runtime.pipeline("feature-extraction", this.entry.repo, {
+      cache_dir: this.modelCacheDir,
+      revision: this.entry.revision,
+      dtype: this.entry.dtype,
+      ...(executionProvider
+        ? { session_options: { executionProviders: [executionProvider] } }
+        : {}),
+    });
   }
 
   private ensureNotDisposed(): void {
@@ -182,6 +208,35 @@ export class TransformersJsEmbeddingModel extends EmbeddingModel {
       });
     }
   }
+}
+
+function resolveExecutionProvider(
+  gpu: ModelProviderOptions["llamaGpu"],
+): TransformersJsExecutionProvider | null {
+  if (gpu === undefined) {
+    return null;
+  }
+  if (gpu === false) {
+    return "cpu";
+  }
+  if (gpu === "metal" || gpu === "vulkan") {
+    return "webgpu";
+  }
+  if (gpu === "cuda") {
+    return "cuda";
+  }
+
+  if (process.platform === "win32") {
+    return "dml";
+  }
+  if (process.platform === "linux" && process.arch === "x64") {
+    return "cuda";
+  }
+  return "webgpu";
+}
+
+function formatErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function formatText(
