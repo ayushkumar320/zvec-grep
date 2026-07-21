@@ -396,6 +396,79 @@ test("eventual search reports active indexing progress", async () => {
   }
 });
 
+test("eventual search queries while background reconciliation is running", async () => {
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-background-query-"),
+  );
+  const root = join(temporaryDirectory, "repo");
+  await mkdir(root);
+  const source = join(root, "answer.ts");
+  await writeFile(source, "export const answer = 42;\n");
+  const service = await createZvecGrep({
+    root,
+    embeddingModel: new QwenTestEmbeddingModel(),
+  });
+  await service.index();
+  await service.close();
+
+  let blockBackgroundEmbedding = false;
+  let markBackgroundStarted;
+  let releaseBackground = () => {};
+  const backgroundStarted = new Promise((resolve) => {
+    markBackgroundStarted = resolve;
+  });
+  const backgroundReleased = new Promise((resolve) => {
+    releaseBackground = resolve;
+  });
+  const backend = new DaemonBackend({
+    version: "1.0.0",
+    modelPoolOptions: {
+      createModel: () =>
+        new QwenTestEmbeddingModel(async (contents) => {
+          if (
+            blockBackgroundEmbedding &&
+            contents.some(
+              (content) =>
+                content.kind === "text" &&
+                content.text.includes("changedAnswer"),
+            )
+          ) {
+            markBackgroundStarted();
+            await backgroundReleased;
+          }
+        }),
+    },
+    watchManagerFactory: noopWatchManagerFactory,
+  });
+  try {
+    await writeFile(source, "export const changedAnswer = 43;\n");
+    blockBackgroundEmbedding = true;
+
+    const stale = await backend.search(searchInput(root, "answer", "eventual"));
+    assert.equal(stale.freshness, "possibly_stale");
+    assert.equal(stale.indexing.state, "running");
+    await backgroundStarted;
+
+    const plan = await backend.planSearchAuthorization(
+      searchInput(root, "answer", "eventual"),
+    );
+    assert.equal(plan.operation, "query_and_index");
+
+    const duringReconcile = await backend.search(
+      searchInput(root, "answer", "eventual"),
+    );
+
+    assert.equal(duringReconcile.freshness, "possibly_stale");
+    assert.equal(duringReconcile.indexing.state, "running");
+  } finally {
+    blockBackgroundEmbedding = false;
+    releaseBackground();
+    await backend.scheduler.waitForRootIdle(await realpath(root));
+    await backend.close();
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
 test("wait_for_fresh consumes a running watch job without a full reconciliation", async () => {
   const temporaryDirectory = await mkdtemp(
     join(tmpdir(), "zvec-grep-fresh-followup-"),
@@ -1273,6 +1346,10 @@ class TestEmbeddingModel extends EmbeddingModel {
     await this.beforeEmbed(contents);
     return contents.map(() => [1, 0, 0, 0, 0, 0, 0, 0]);
   }
+}
+
+class QwenTestEmbeddingModel extends TestEmbeddingModel {
+  ref = { provider: "qwen", model: "text-embedding-v4" };
 }
 
 function searchInput(root, query, freshness) {

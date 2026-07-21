@@ -232,6 +232,41 @@ test("root runtime replaces a cached session when the embedding schema changes",
   await pool.close();
 });
 
+test("root runtime searches the writer context as soon as it becomes available", async () => {
+  const pool = new EmbeddingModelPool({
+    createModel: () => ({ dispose: async () => {} }),
+  });
+  const runtime = new RootRuntime({
+    canonicalRoot: "/tmp/repo",
+    modelPool: pool,
+    modelRequest: modelRequest("model-a"),
+  });
+
+  runtime.setWriterPending(true);
+  let searchSettled = false;
+  const search = runtime.search({ query: "eventual" }).then((result) => {
+    searchSettled = true;
+    return result;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(searchSettled, false);
+
+  const releaseWriterContext = runtime.setWriterContext(async (options) => {
+    assert.equal(options.root, "/tmp/repo");
+    assert.equal(options.autoUpdate, false);
+    return { ...emptyContextResult(), query: options.query };
+  });
+
+  const result = await search;
+  assert.equal(searchSettled, true);
+  assert.equal(result.query, "eventual");
+
+  await releaseWriterContext();
+  runtime.setWriterPending(false);
+  await runtime.close();
+  await pool.close();
+});
+
 test("root runtime releases its daemon lease when read cache close fails", async () => {
   let releases = 0;
   const pool = new EmbeddingModelPool({

@@ -172,7 +172,21 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
     ) {
       return undefined;
     }
-    const info = await inspectRoot(input.root, this.options.serviceOptions);
+    let info: ZvecGrepInfoResult;
+    try {
+      info = await inspectRoot(input.root, this.options.serviceOptions);
+      this.statusCache.set(requestedRoot, info);
+    } catch (error) {
+      const cached = this.statusCache.get(requestedRoot);
+      if (
+        !cached ||
+        !isEngineError(error) ||
+        error.code !== "ZVEC_GREP.ENGINE.LOCK.BUSY"
+      ) {
+        throw error;
+      }
+      info = cached;
+    }
     const canonicalRoot = await resolveRequestedRoot(info.root, false);
     return await planRemoteSearchAuthorization({
       info,

@@ -78,13 +78,17 @@ export class RootRuntime {
     if (this.closed) {
       throw new Error("Root runtime is closed.");
     }
-    const writerContext = this.writerContext;
-    if (writerContext) {
-      return await this.withWriterContext(writerContext, options);
-    }
-    while (this.writerPending && this.writerReady) {
+    while (true) {
+      const writerContext = this.writerContext;
+      if (writerContext) {
+        return await this.withWriterContext(writerContext, options);
+      }
+      if (!this.writerPending || !this.writerReady) {
+        break;
+      }
       await this.writerReady;
     }
+
     return this.runGenerationSerial(async () => {
       if (this.closed) {
         throw new Error("Root runtime is closed.");
@@ -124,13 +128,9 @@ export class RootRuntime {
     }
     this.writerPending = pending;
     if (pending) {
-      this.writerReady = new Promise<void>((resolve) => {
-        this.writerReadyResolve = resolve;
-      });
+      this.armWriterReady();
     } else {
-      this.writerReadyResolve?.();
-      this.writerReadyResolve = undefined;
-      this.writerReady = undefined;
+      this.notifyWriterStateChanged();
     }
   }
 
@@ -140,11 +140,15 @@ export class RootRuntime {
     ) => Promise<ZvecGrepContextResult>,
   ): () => Promise<void> {
     this.writerContext = context;
+    this.notifyWriterStateChanged();
+    this.armWriterReady();
     return async () => {
       if (this.writerContext !== context) {
         return;
       }
       this.writerContext = undefined;
+      this.notifyWriterStateChanged();
+      this.armWriterReady();
       if (this.activeWriterSearches > 0) {
         this.writerSearchesDrained ??= new Promise<void>((resolve) => {
           this.writerSearchesDrainedResolve = resolve;
@@ -168,6 +172,22 @@ export class RootRuntime {
     if (!probeAllowed) {
       this.nonProbeableFullEpoch = this.fullReconciliationEpoch;
     }
+  }
+
+  private armWriterReady(): void {
+    if (!this.writerPending || this.writerReady) {
+      return;
+    }
+    this.writerReady = new Promise<void>((resolve) => {
+      this.writerReadyResolve = resolve;
+    });
+  }
+
+  private notifyWriterStateChanged(): void {
+    const resolve = this.writerReadyResolve;
+    this.writerReadyResolve = undefined;
+    this.writerReady = undefined;
+    resolve?.();
   }
 
   reconciliationEpoch(): number {
