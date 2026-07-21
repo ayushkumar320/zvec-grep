@@ -8,3 +8,8 @@ export {
   LlamaCppEmbeddingModel,
   setLlamaCppRuntimeForTesting,
 } from "./llama-cpp/index.js";
+
+export {
+  TransformersJsEmbeddingModel,
+  setTransformersJsRuntimeForTesting,
+} from "./transformers-js/index.js";

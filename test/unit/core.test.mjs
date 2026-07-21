@@ -453,7 +453,7 @@ test("file, model, content, and entity helpers classify inputs", () => {
   });
   assert.equal(detectFileType("archive.zip"), null);
   assert.deepEqual(detectFileType("NOTICE"), { kind: "text", format: "text" });
-  assert.equal(listEmbeddingModels().length, 3);
+  assert.equal(listEmbeddingModels().length, 5);
   assert.equal(
     getEmbeddingModelCatalogEntry("local/embeddinggemma-300m")?.dimension,
     768,
@@ -469,6 +469,22 @@ test("file, model, content, and entity helpers classify inputs", () => {
       model: "qwen3-embedding-0.6b",
     })?.dimension,
     1024,
+  );
+  assert.equal(
+    getEmbeddingModelCatalogEntry("local/bge-small-en-v1.5")?.backend,
+    "transformers-js",
+  );
+  assert.equal(
+    getEmbeddingModelCatalogEntry("local/bge-small-en-v1.5")?.maxBatchSize,
+    4,
+  );
+  assert.equal(
+    getEmbeddingModelCatalogEntry("local/all-minilm-l6-v2")?.maxInputTokens,
+    256,
+  );
+  assert.equal(
+    getEmbeddingModelCatalogEntry("local/all-minilm-l6-v2")?.maxBatchSize,
+    4,
   );
   assert.equal(isTextContent({ kind: "text", text: "hello" }), true);
   assert.equal(

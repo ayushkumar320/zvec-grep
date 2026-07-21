@@ -38,6 +38,7 @@ export type LlamaGpuMode = "auto" | "metal" | "vulkan" | "cuda" | false;
 export type LocalEmbeddingFormat = "embeddinggemma" | "qwen3";
 
 export type LlamaCppEmbeddingCatalogEntry = {
+  backend: "llama-cpp";
   id: string;
   provider: "local";
   model: string;
@@ -57,5 +58,25 @@ export type RemoteEmbeddingCatalogEntry = {
   metric: VectorMetric;
 };
 
+export type TransformersJsEmbeddingCatalogEntry = {
+  backend: "transformers-js";
+  id: string;
+  provider: "local";
+  model: string;
+  repo: string;
+  revision: string;
+  dtype: "fp32" | "q8" | "q4";
+  dimension: number;
+  metric: VectorMetric;
+  pooling: "mean" | "cls";
+  normalize: boolean;
+  queryPrefix?: string;
+  documentPrefix?: string;
+  maxInputTokens: number;
+  maxBatchSize: number;
+};
+
 export type EmbeddingCatalogEntry =
-  LlamaCppEmbeddingCatalogEntry | RemoteEmbeddingCatalogEntry;
+  | LlamaCppEmbeddingCatalogEntry
+  | RemoteEmbeddingCatalogEntry
+  | TransformersJsEmbeddingCatalogEntry;

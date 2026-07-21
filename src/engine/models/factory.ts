@@ -9,6 +9,7 @@ import {
   Qwen37TextEmbeddingModel,
   Qwen3VlEmbeddingModel,
   QwenTextEmbeddingV4Model,
+  TransformersJsEmbeddingModel,
 } from "./providers/index.js";
 import type { ModelProviderOptions, ModelRef } from "./types.js";
 
@@ -28,7 +29,11 @@ export function createEmbeddingModel(
       );
     }
 
-    return new LlamaCppEmbeddingModel(entry, options);
+    if (entry.backend === "llama-cpp") {
+      return new LlamaCppEmbeddingModel(entry, options);
+    }
+
+    return new TransformersJsEmbeddingModel(entry, options);
   }
 
   if (ref.provider === "qwen" && ref.model === "text-embedding-v4") {

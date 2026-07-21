@@ -13,6 +13,8 @@ export {
   Qwen3VlEmbeddingModel,
   QwenTextEmbeddingV4Model,
   setLlamaCppRuntimeForTesting,
+  setTransformersJsRuntimeForTesting,
+  TransformersJsEmbeddingModel,
 } from "./providers/index.js";
 
 export type {
@@ -33,4 +35,5 @@ export type {
   LlamaGpuMode,
   LocalEmbeddingFormat,
   ModelProviderOptions,
+  TransformersJsEmbeddingCatalogEntry,
 } from "./types.js";

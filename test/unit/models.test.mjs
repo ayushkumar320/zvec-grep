@@ -11,6 +11,7 @@ import {
   Qwen3VlEmbeddingModel,
   QwenTextEmbeddingV4Model,
 } from "../../dist/engine/models/providers/qwen/embedding.js";
+import { TransformersJsEmbeddingModel } from "../../dist/engine/models/providers/transformers-js/embedding.js";
 
 const vector = (dimension, value = 0.25) => Array(dimension).fill(value);
 
@@ -434,6 +435,12 @@ test("embedding factory resolves catalog and explicit references and rejects unk
     createEmbeddingModelFromReference("local/qwen3-embedding-0.6b", options).ref
       .model,
     "qwen3-embedding-0.6b",
+  );
+  assert.ok(
+    createEmbeddingModelFromReference(
+      "local/bge-small-en-v1.5",
+      options,
+    ) instanceof TransformersJsEmbeddingModel,
   );
   assert.throws(
     () => createEmbeddingModelFromCatalog("missing", options),

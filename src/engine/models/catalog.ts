@@ -21,13 +21,19 @@ export const MODEL_CATALOG = {
   },
 
   local: {
-    embedding: ["embeddinggemma-300m", "qwen3-embedding-0.6b"],
+    embedding: [
+      "embeddinggemma-300m",
+      "qwen3-embedding-0.6b",
+      "bge-small-en-v1.5",
+      "all-minilm-l6-v2",
+    ],
     ranking: [],
   },
 } as const satisfies ModelCatalog;
 
 export const EMBEDDING_MODEL_CATALOG = {
   "local/embeddinggemma-300m": {
+    backend: "llama-cpp",
     id: "local/embeddinggemma-300m",
     provider: "local",
     model: "embeddinggemma-300m",
@@ -40,6 +46,7 @@ export const EMBEDDING_MODEL_CATALOG = {
   },
 
   "local/qwen3-embedding-0.6b": {
+    backend: "llama-cpp",
     id: "local/qwen3-embedding-0.6b",
     provider: "local",
     model: "qwen3-embedding-0.6b",
@@ -57,6 +64,39 @@ export const EMBEDDING_MODEL_CATALOG = {
     model: "text-embedding-v4",
     dimension: 1024,
     metric: "cosine",
+  },
+
+  "local/bge-small-en-v1.5": {
+    backend: "transformers-js",
+    id: "local/bge-small-en-v1.5",
+    provider: "local",
+    model: "bge-small-en-v1.5",
+    repo: "onnx-community/bge-small-en-v1.5-ONNX",
+    revision: "4a9a46c7b88fa408e650a571a1800243f26309bd",
+    dtype: "q4",
+    dimension: 384,
+    metric: "cosine",
+    pooling: "cls",
+    normalize: true,
+    queryPrefix: "Represent this sentence for searching relevant passages: ",
+    maxInputTokens: 512,
+    maxBatchSize: 4,
+  },
+
+  "local/all-minilm-l6-v2": {
+    backend: "transformers-js",
+    id: "local/all-minilm-l6-v2",
+    provider: "local",
+    model: "all-minilm-l6-v2",
+    repo: "onnx-community/all-MiniLM-L6-v2-ONNX",
+    revision: "aff7a1dc4e8a1ea593e6ea21e95c22ef0a25966f",
+    dtype: "q4",
+    dimension: 384,
+    metric: "cosine",
+    pooling: "mean",
+    normalize: true,
+    maxInputTokens: 256,
+    maxBatchSize: 4,
   },
 } as const satisfies Record<string, EmbeddingCatalogEntry>;
 

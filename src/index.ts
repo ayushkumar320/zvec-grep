@@ -72,4 +72,5 @@ export type {
   LlamaGpuMode,
   LocalEmbeddingFormat,
   ModelProviderOptions,
+  TransformersJsEmbeddingCatalogEntry,
 } from "./engine/models/index.js";
