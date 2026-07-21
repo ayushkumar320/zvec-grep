@@ -186,7 +186,43 @@ test("scheduler preserves an explicit manual follow-up while a root is running",
   await scheduler.close();
 });
 
-test("scheduler cancels queued jobs and lets a running job finish during close", async () => {
+test("scheduler cancels queued and running jobs during close", async () => {
+  const scheduler = new JobScheduler({ concurrency: 1 });
+  let runningSignal;
+  let runningCancelled = false;
+  const running = scheduler.submit({
+    canonicalRoot: "/repo-a",
+    reason: "manual",
+    run: (_report, signal) => {
+      runningSignal = signal;
+      return new Promise((resolve) => {
+        signal.addEventListener(
+          "abort",
+          () => {
+            runningCancelled = true;
+            resolve();
+          },
+          { once: true },
+        );
+      });
+    },
+  });
+  const queued = scheduler.submit({
+    canonicalRoot: "/repo-b",
+    reason: "manual",
+    run: async () => assert.fail("queued job must not start"),
+  });
+  await waitFor(() => runningSignal !== undefined);
+  const closing = scheduler.close();
+  assert.equal((await scheduler.wait(queued.job.id)).state, "cancelled");
+  await closing;
+  const result = await scheduler.wait(running.job.id);
+  assert.equal(runningSignal.aborted, true);
+  assert.equal(runningCancelled, true);
+  assert.equal(result.state, "cancelled");
+});
+
+test("scheduler preserves a running job success before close", async () => {
   const scheduler = new JobScheduler({ concurrency: 1 });
   let releaseRunning;
   const running = scheduler.submit({
@@ -197,17 +233,10 @@ test("scheduler cancels queued jobs and lets a running job finish during close",
         releaseRunning = resolve;
       }),
   });
-  const queued = scheduler.submit({
-    canonicalRoot: "/repo-b",
-    reason: "manual",
-    run: async () => assert.fail("queued job must not start"),
-  });
   await waitFor(() => releaseRunning !== undefined);
-  const closing = scheduler.close();
-  assert.equal((await scheduler.wait(queued.job.id)).state, "cancelled");
   releaseRunning();
-  await closing;
   assert.equal((await scheduler.wait(running.job.id)).state, "succeeded");
+  await scheduler.close();
 });
 
 test("scheduler status redacts credentials from failures", async () => {
