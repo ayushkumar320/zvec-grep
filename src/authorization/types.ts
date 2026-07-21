@@ -1,7 +1,6 @@
 export const REMOTE_EMBEDDING_CAPABILITY = "remote_embedding" as const;
 
-export type RemoteEmbeddingAuthorizationScope =
-  "once" | "session" | "workspace";
+export type RemoteEmbeddingAuthorizationScope = "once" | "workspace";
 
 export type RemoteEmbeddingOperation = "query" | "index" | "query_and_index";
 

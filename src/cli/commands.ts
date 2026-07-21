@@ -2386,7 +2386,7 @@ Use zvec-grep before grep, rg, or broad file reads when you need to understand o
 
 - **MCP tools**: Use \`zvec_grep_search\` for indexed semantic/lexical code search, \`zvec_grep_index\` to ensure an index, and the two status tools to inspect index or server state.
 - **Indexing and status**: Every repository MCP call uses an absolute root visible to the local daemon. Start it with \`zg server on\`. For \`zvec_grep_index\`, \`wait\` defaults to false: submit it in the background and poll \`zvec_grep_index_status\`; set \`wait: true\` only when completion is required before continuing.
-- **Remote data authorization**: MCP tool trust does not authorize Remote Embedding. zvec-grep requests its own once, session, or workspace authorization before sending query text or workspace content to a remote provider.
+- **Remote data authorization**: MCP tool trust does not authorize Remote Embedding. zvec-grep requests its own once or workspace authorization before sending query text or workspace content to a remote provider.
 - **Shell fallback**: If the MCP server is unavailable, use \`zg status\`, \`zg query "<query>"\`, and \`zg query --rg "<pattern>"\`.
 
 Prefer focused -g/--glob and -t/--type filters, and exclude dependencies, generated output, caches, build artifacts, and logs unless the task is about those files.

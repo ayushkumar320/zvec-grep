@@ -436,7 +436,7 @@ test("index authorization keeps the requested model and offers no local fallback
     const decisions = request.params.requestedSchema.properties.decision.oneOf;
     assert.deepEqual(
       decisions.map((decision) => decision.const),
-      ["allow_once", "allow_session", "allow_workspace", "cancel"],
+      ["allow_once", "allow_workspace", "cancel"],
     );
     assert.doesNotMatch(JSON.stringify(decisions), /local/i);
     return {
@@ -465,7 +465,7 @@ test("index authorization keeps the requested model and offers no local fallback
   assert.equal(receivedPermit.scope, "once");
 });
 
-test("search elicits merged Remote Embedding authorization and reuses session scope", async (t) => {
+test("search elicits merged Remote Embedding authorization for every once-scoped operation", async (t) => {
   const backend = createBackend();
   let elicitations = 0;
   let granted = 0;
@@ -527,11 +527,11 @@ test("search elicits merged Remote Embedding authorization and reuses session sc
     assert.equal(request.params.message.includes(root), false);
     assert.equal(
       request.params.requestedSchema.properties.decision.description,
-      "Choose how long zvec-grep may reuse this permission.",
+      "Allow this operation once or remember permission for this workspace.",
     );
     return {
       action: "accept",
-      content: { decision: "allow_session" },
+      content: { decision: "allow_once" },
     };
   });
   const [clientTransport, serverTransport] =
@@ -552,9 +552,9 @@ test("search elicits merged Remote Embedding authorization and reuses session sc
     });
     assert.equal(result.isError, undefined);
   }
-  assert.equal(elicitations, 1);
+  assert.equal(elicitations, 2);
   assert.equal(granted, 2);
-  assert.equal(receivedPermit.scope, "session");
+  assert.equal(receivedPermit.scope, "once");
 });
 
 test("Remote Embedding authorization stays alive while waiting for user input", async (t) => {

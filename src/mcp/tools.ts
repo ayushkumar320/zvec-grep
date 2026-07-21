@@ -238,7 +238,6 @@ export function registerZvecGrepTools(
   backend: ZvecGrepDaemonBackend,
   options: ZvecGrepMcpServerOptions = {},
 ): void {
-  const remoteEmbeddingSessionGrants = new Set<string>();
   server.registerTool(
     "zvec_grep_index",
     {
@@ -261,7 +260,6 @@ export function registerZvecGrepTools(
             server,
             backend,
             plan,
-            remoteEmbeddingSessionGrants,
             undefined,
             extra,
             options,
@@ -331,7 +329,6 @@ export function registerZvecGrepTools(
             server,
             backend,
             plan,
-            remoteEmbeddingSessionGrants,
             "local_search",
             extra,
             options,
@@ -516,13 +513,12 @@ function createMcpIndexProgressReporter(
 }
 
 const REMOTE_EMBEDDING_SCOPE_DESCRIPTION =
-  "Choose how long zvec-grep may reuse this permission.";
+  "Allow this operation once or remember permission for this workspace.";
 
 async function resolveRemoteEmbeddingAuthorization(
   server: McpServer,
   backend: ZvecGrepDaemonBackend,
   plan: RemoteEmbeddingAuthorizationPlan,
-  sessionGrants: Set<string>,
   alternative: "local_search" | undefined,
   extra: RequestHandlerExtra<ServerRequest, ServerNotification>,
   options: ZvecGrepMcpServerOptions = {},
@@ -534,11 +530,6 @@ async function resolveRemoteEmbeddingAuthorization(
   if (existing) return { authorization: existing };
   if (!backend.grantRemoteEmbedding) {
     throw new Error("Remote Embedding authorization is required.");
-  }
-  if (sessionGrants.has(plan.target.targetFingerprint)) {
-    return {
-      authorization: await backend.grantRemoteEmbedding(plan, "session"),
-    };
   }
 
   const elicitation = await elicitRemoteEmbeddingAuthorization(
@@ -563,7 +554,6 @@ async function resolveRemoteEmbeddingAuthorization(
             description: REMOTE_EMBEDDING_SCOPE_DESCRIPTION,
             oneOf: [
               { const: "allow_once", title: "Allow once" },
-              { const: "allow_session", title: "Allow for this session" },
               {
                 const: "allow_workspace",
                 title: "Allow for this workspace",
@@ -590,24 +580,13 @@ async function resolveRemoteEmbeddingAuthorization(
   if (decision === "use_local_search") {
     return { alternative: "local_search" };
   }
-  if (
-    decision !== "allow_once" &&
-    decision !== "allow_session" &&
-    decision !== "allow_workspace"
-  ) {
+  if (decision !== "allow_once" && decision !== "allow_workspace") {
     throw new Error(
       "Remote Embedding authorization was declined. No remote data was sent.",
     );
   }
   const scope: RemoteEmbeddingAuthorizationScope =
-    decision === "allow_workspace"
-      ? "workspace"
-      : decision === "allow_session"
-        ? "session"
-        : "once";
-  if (scope === "session") {
-    sessionGrants.add(plan.target.targetFingerprint);
-  }
+    decision === "allow_workspace" ? "workspace" : "once";
   return {
     authorization: await backend.grantRemoteEmbedding(plan, scope),
   };

@@ -150,8 +150,7 @@ Manage the signed Remote Embedding grant stored in the Workspace under
 .zvec-grep/authorization.json. Workspace grants are shared by zg CLI and zg MCP.
 
 Scopes used during operations:
-  once                              Current CLI command only
-  session                           Current Agent/MCP session only
+  once                              Current CLI command or Agent tool call only
   workspace                         Persisted in this Workspace
 
 Use --allow-remote once|workspace on zg query or zg index for non-interactive
