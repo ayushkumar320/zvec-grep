@@ -454,7 +454,7 @@ test("Claude Code installer configures MCP trust and guidance", async (t) => {
   assert.match(stdout, /Installing integrations/);
   assert.match(stdout, /Claude Code/);
   assert.doesNotMatch(stdout, /Guidance/);
-  assert.match(stdout, /MCP trust\s+Approved/);
+  assert.doesNotMatch(stdout, /Trust|MCP trust/);
   assert.match(stdout, /Remote data\s+Authorization requested/);
 });
 

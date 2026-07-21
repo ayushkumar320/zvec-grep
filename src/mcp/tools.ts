@@ -258,19 +258,15 @@ export function registerZvecGrepTools(
             backend,
             plan,
             remoteEmbeddingSessionGrants,
-            plan.reason === "index_create" ? "local_index" : undefined,
+            undefined,
             extra,
             options,
           )
         : {};
-      const effectiveInput =
-        resolution.alternative === "local_index"
-          ? { ...input, embedding: "local/embeddinggemma-300m" }
-          : input;
       const progress = createMcpIndexProgressReporter(extra);
       let result: ZvecGrepIndexResult;
       try {
-        result = await backend.index(effectiveInput, {
+        result = await backend.index(input, {
           authorization: resolution.authorization,
           onProgress: progress.report,
         });
@@ -529,12 +525,12 @@ async function resolveRemoteEmbeddingAuthorization(
   backend: ZvecGrepDaemonBackend,
   plan: RemoteEmbeddingAuthorizationPlan,
   sessionGrants: Set<string>,
-  alternative: "local_search" | "local_index" | undefined,
+  alternative: "local_search" | undefined,
   extra: RequestHandlerExtra<ServerRequest, ServerNotification>,
   options: ZvecGrepMcpServerOptions = {},
 ): Promise<{
   authorization?: RemoteEmbeddingOperationPermit;
-  alternative?: "local_search" | "local_index";
+  alternative?: "local_search";
 }> {
   const existing = await backend.existingRemoteEmbeddingPermit?.(plan);
   if (existing) return { authorization: existing };
@@ -581,14 +577,7 @@ async function resolveRemoteEmbeddingAuthorization(
                       title: "Use FTS only",
                     },
                   ]
-                : alternative === "local_index"
-                  ? [
-                      {
-                        const: "use_local_index",
-                        title: "Use a local embedding model",
-                      },
-                    ]
-                  : []),
+                : []),
               { const: "cancel", title: "Cancel" },
             ],
             default: "cancel",
@@ -602,9 +591,6 @@ async function resolveRemoteEmbeddingAuthorization(
     elicitation.action === "accept" ? elicitation.content?.decision : undefined;
   if (decision === "use_local_search") {
     return { alternative: "local_search" };
-  }
-  if (decision === "use_local_index") {
-    return { alternative: "local_index" };
   }
   if (
     decision !== "allow_once" &&

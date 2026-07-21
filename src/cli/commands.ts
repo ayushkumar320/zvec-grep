@@ -80,7 +80,6 @@ type AgentInstaller = {
   id: string;
   label: string;
   executable: string;
-  trustApproved: boolean;
   install: (options: InstallAgentOptions) => Promise<InstallAgentResult>;
   uninstall: () => Promise<InstallAgentResult>;
 };
@@ -100,7 +99,6 @@ const AGENT_INSTALLERS: readonly AgentInstaller[] = [
     id: "claude",
     label: "Claude Code",
     executable: "claude",
-    trustApproved: true,
     install: installClaudeIntegration,
     uninstall: uninstallClaudeIntegration,
   },
@@ -108,7 +106,6 @@ const AGENT_INSTALLERS: readonly AgentInstaller[] = [
     id: "codex",
     label: "Codex",
     executable: "codex",
-    trustApproved: true,
     install: installCodexIntegration,
     uninstall: uninstallCodexIntegration,
   },
@@ -116,7 +113,6 @@ const AGENT_INSTALLERS: readonly AgentInstaller[] = [
     id: "opencode",
     label: "OpenCode",
     executable: "opencode",
-    trustApproved: false,
     install: installOpenCodeIntegration,
     uninstall: uninstallOpenCodeIntegration,
   },
@@ -124,7 +120,6 @@ const AGENT_INSTALLERS: readonly AgentInstaller[] = [
     id: "cursor",
     label: "Cursor",
     executable: "cursor",
-    trustApproved: false,
     install: installCursorIntegration,
     uninstall: uninstallCursorIntegration,
   },
@@ -136,7 +131,6 @@ const ZVEC_GREP_AGENTS_START = "<!-- ZVEC_GREP_START -->";
 const ZVEC_GREP_AGENTS_END = "<!-- ZVEC_GREP_END -->";
 const CLAUDE_MCP_PERMISSION = "mcp__zvec_grep__*";
 const DEFAULT_MCP_TOOL_TIMEOUT_SECONDS = 600;
-const DEFAULT_LOCAL_EMBEDDING = "local/embeddinggemma-300m";
 
 export async function runParsedCommand(parsed: ParsedArgs): Promise<void> {
   switch (parsed.command) {
@@ -236,9 +230,6 @@ async function runInstall(parsed: ParsedArgs): Promise<void> {
     });
     console.log(`  ${installSuccessMark()} ${installer.label}`);
     console.log("    MCP       configured");
-    if (installer.trustApproved) {
-      console.log("    Trust     approved");
-    }
     console.log("");
   }
 
@@ -255,12 +246,6 @@ async function runInstall(parsed: ParsedArgs): Promise<void> {
   console.log(
     `  Agents       ${installers.map((installer) => installer.label).join(", ")}`,
   );
-  const trusted = installers.filter((installer) => installer.trustApproved);
-  if (trusted.length > 0) {
-    console.log(
-      `  MCP trust    Approved for ${trusted.map((installer) => installer.label).join(", ")}`,
-    );
-  }
   console.log("  Remote data  Authorization requested on first remote use");
   console.log(
     "\nRestart the selected agents or start a new session to load the integration.",
@@ -894,11 +879,10 @@ async function runDirectIndex(
   rootPath: RootPath,
   explicitRoot: boolean,
 ): Promise<void> {
-  let zvecGrep = await createZvecGrep(
+  const zvecGrep = await createZvecGrep(
     createServiceOptions(parsed.options, rootPath.absolutePath),
   );
   const progress = createIndexProgressReporter({ color: parsed.options.color });
-  let usedLocalFallback = false;
   try {
     const infoBefore = await zvecGrep.info({ root: rootPath.absolutePath });
     const schema = resolveAuthorizationSchema(
@@ -923,20 +907,8 @@ async function runDirectIndex(
         })
       : undefined;
     const authorizationResolution = plan
-      ? await authorizeCliPlan(
-          plan,
-          parsed.options,
-          plan.reason === "index_create" ? "local_index" : undefined,
-        )
+      ? await authorizeCliPlan(plan, parsed.options)
       : {};
-    if (authorizationResolution.alternative === "local_index") {
-      await zvecGrep.close();
-      zvecGrep = await createZvecGrep({
-        ...createServiceOptions(parsed.options, rootPath.absolutePath),
-        embedding: DEFAULT_LOCAL_EMBEDDING,
-      });
-      usedLocalFallback = true;
-    }
     printIndexPathFilterTip(parsed.options);
     const result = await withRemoteEmbeddingOperationPermit(
       authorizationResolution.authorization,
@@ -968,12 +940,10 @@ async function runDirectIndex(
       parsed.options,
       info.collection?.rootPaths,
     );
-    if (!usedLocalFallback) {
-      persistExplicitGlobalConfig(
-        parsed.options,
-        embeddingReference(info.collection?.embedding),
-      );
-    }
+    persistExplicitGlobalConfig(
+      parsed.options,
+      embeddingReference(info.collection?.embedding),
+    );
   } catch (error) {
     progress.finish();
     throw error;
@@ -1523,10 +1493,10 @@ function authorizationStore(
 async function authorizeCliPlan(
   plan: RemoteEmbeddingAuthorizationPlan,
   options: CliOptions,
-  alternative?: "local_search" | "local_index",
+  alternative?: "local_search",
 ): Promise<{
   authorization?: RemoteEmbeddingOperationPermit;
-  alternative?: "local_search" | "local_index";
+  alternative?: "local_search";
 }> {
   const manager = new RemoteEmbeddingAuthorizationManager(
     authorizationStore(options),
@@ -1561,9 +1531,6 @@ async function authorizeCliPlan(
   console.error("1. Allow once");
   console.error("2. Allow for this workspace");
   if (alternative === "local_search") console.error("3. Use FTS only");
-  if (alternative === "local_index") {
-    console.error("3. Use a local embedding model");
-  }
   const cancelChoice = alternative ? 4 : 3;
   console.error(`${cancelChoice}. Cancel`);
   const readline = createInterface({

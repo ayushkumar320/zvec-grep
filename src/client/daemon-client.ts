@@ -67,12 +67,7 @@ export class DaemonClient {
           : "";
       const localDecision = requested.includes("use_local_search")
         ? { value: "use_local_search", label: "Use FTS only" }
-        : requested.includes("use_local_index")
-          ? {
-              value: "use_local_index",
-              label: "Use a local embedding model",
-            }
-          : undefined;
+        : undefined;
       if (localDecision) console.error(`3. ${localDecision.label}`);
       const cancelChoice = localDecision ? 4 : 3;
       console.error(`${cancelChoice}. Cancel`);

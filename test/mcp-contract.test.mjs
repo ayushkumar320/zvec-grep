@@ -363,6 +363,78 @@ test("index streams daemon progress through MCP", async (t) => {
   });
 });
 
+test("index authorization keeps the requested model and offers no local fallback", async (t) => {
+  const backend = createBackend();
+  let receivedInput;
+  let receivedPermit;
+  const target = {
+    workspaceRoots: [root],
+    workspaceFingerprint: "workspace-fingerprint",
+    provider: "qwen",
+    model: "text-embedding-v4",
+    endpoint: "https://qwen.test/embeddings",
+    targetFingerprint: "target-fingerprint",
+  };
+  backend.planIndexAuthorization = async () => ({
+    operation: "query_and_index",
+    target,
+    disclosure: { queryText: false, workspaceContent: "selected" },
+    reason: "index_create",
+    grantPath: `${root}/.zvec-grep/authorization.json`,
+  });
+  backend.existingRemoteEmbeddingPermit = async () => undefined;
+  backend.grantRemoteEmbedding = async (_plan, scope) => ({
+    capability: "remote_embedding",
+    scope,
+    target,
+    issuedAt: Date.now(),
+    operationId: "index-operation",
+  });
+  const originalIndex = backend.index;
+  backend.index = async (input, options) => {
+    receivedInput = input;
+    receivedPermit = options.authorization;
+    return await originalIndex(input);
+  };
+
+  const server = createZvecGrepMcpServer(backend, "1.0.0");
+  const client = new Client(
+    { name: "mcp-index-auth-test", version: "1.0.0" },
+    { capabilities: { elicitation: { form: {} } } },
+  );
+  client.setRequestHandler(ElicitRequestSchema, async (request) => {
+    const decisions = request.params.requestedSchema.properties.decision.oneOf;
+    assert.deepEqual(
+      decisions.map((decision) => decision.const),
+      ["allow_once", "allow_session", "allow_workspace", "cancel"],
+    );
+    assert.doesNotMatch(JSON.stringify(decisions), /local/i);
+    return {
+      action: "accept",
+      content: { decision: "allow_once" },
+    };
+  });
+  const [clientTransport, serverTransport] =
+    InMemoryTransport.createLinkedPair();
+  await Promise.all([
+    server.connect(serverTransport),
+    client.connect(clientTransport),
+  ]);
+  t.after(async () => {
+    await client.close();
+    await server.close();
+  });
+
+  const result = await client.callTool({
+    name: "zvec_grep_index",
+    arguments: { root, embedding: "qwen/text-embedding-v4" },
+  });
+
+  assert.equal(result.isError, undefined);
+  assert.equal(receivedInput.embedding, "qwen/text-embedding-v4");
+  assert.equal(receivedPermit.scope, "once");
+});
+
 test("search elicits merged Remote Embedding authorization and reuses session scope", async (t) => {
   const backend = createBackend();
   let elicitations = 0;
