@@ -187,3 +187,54 @@ test("Transformers.js adapter falls back to CPU when GPU initialization fails", 
   assert.match(writes.join(""), /falling back to CPU/);
   await model.dispose();
 });
+
+test("Transformers.js adapter retries on CPU when GPU inference returns invalid values", async (t) => {
+  const providers = [];
+  let activeProvider;
+  let gpuDisposals = 0;
+  const makeExtractor = (provider) =>
+    Object.assign(
+      async () => ({
+        dims: [1, 3],
+        data:
+          provider === "webgpu"
+            ? new Float32Array([Number.NaN, 0, 0])
+            : new Float32Array([1, 2, 3]),
+      }),
+      {
+        tokenizer: { model_max_length: 4096 },
+        async dispose() {
+          if (provider === "webgpu") {
+            gpuDisposals++;
+          }
+        },
+      },
+    );
+  setTransformersJsRuntimeForTesting(async () => ({
+    async pipeline(_task, _repo, options) {
+      activeProvider = options.session_options?.executionProviders[0];
+      providers.push(activeProvider);
+      return makeExtractor(activeProvider);
+    },
+  }));
+  t.after(() => setTransformersJsRuntimeForTesting(null));
+
+  const writes = [];
+  t.mock.method(process.stderr, "write", (message) => {
+    writes.push(String(message));
+    return true;
+  });
+  const model = new TransformersJsEmbeddingModel(entry(), {
+    apiKey: "",
+    llamaGpu: "metal",
+  });
+
+  assert.deepEqual(await model.embed([{ kind: "text", text: "value" }]), [
+    [1, 2, 3],
+  ]);
+  assert.deepEqual(providers, ["webgpu", "cpu"]);
+  assert.equal(activeProvider, "cpu");
+  assert.equal(gpuDisposals, 1);
+  assert.match(writes.join(""), /inference failed.*falling back to CPU/);
+  await model.dispose();
+});

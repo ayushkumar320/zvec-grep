@@ -51,6 +51,7 @@ test("npm package contains and exposes the supported public surface", async (t) 
     "LICENSE",
     "README.md",
     "README_CN.md",
+    "docs/embedding.md",
     "dist/index.js",
     "dist/index.d.ts",
     "dist/cli/index.js",

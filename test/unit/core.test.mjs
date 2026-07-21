@@ -453,7 +453,7 @@ test("file, model, content, and entity helpers classify inputs", () => {
   });
   assert.equal(detectFileType("archive.zip"), null);
   assert.deepEqual(detectFileType("NOTICE"), { kind: "text", format: "text" });
-  assert.equal(listEmbeddingModels().length, 5);
+  assert.equal(listEmbeddingModels().length, 9);
   assert.equal(
     getEmbeddingModelCatalogEntry("local/embeddinggemma-300m")?.dimension,
     768,
@@ -485,6 +485,35 @@ test("file, model, content, and entity helpers classify inputs", () => {
   assert.equal(
     getEmbeddingModelCatalogEntry("local/all-minilm-l6-v2")?.maxBatchSize,
     4,
+  );
+  assert.deepEqual(
+    {
+      prefix: getEmbeddingModelCatalogEntry("local/multilingual-e5-small")
+        ?.queryPrefix,
+      dimension: getEmbeddingModelCatalogEntry("local/multilingual-e5-small")
+        ?.dimension,
+    },
+    { prefix: "query: ", dimension: 384 },
+  );
+  assert.deepEqual(
+    {
+      pooling: getEmbeddingModelCatalogEntry(
+        "local/jina-embeddings-v2-base-code",
+      )?.pooling,
+      maxInputTokens: getEmbeddingModelCatalogEntry(
+        "local/jina-embeddings-v2-base-code",
+      )?.maxInputTokens,
+    },
+    { pooling: "mean", maxInputTokens: 8192 },
+  );
+  assert.equal(
+    getEmbeddingModelCatalogEntry("local/gte-modernbert-base")?.pooling,
+    "cls",
+  );
+  assert.equal(
+    getEmbeddingModelCatalogEntry("local/nomic-embed-text-v1.5")
+      ?.documentPrefix,
+    "search_document: ",
   );
   assert.equal(isTextContent({ kind: "text", text: "hello" }), true);
   assert.equal(

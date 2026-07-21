@@ -442,6 +442,17 @@ test("embedding factory resolves catalog and explicit references and rejects unk
       options,
     ) instanceof TransformersJsEmbeddingModel,
   );
+  for (const reference of [
+    "local/multilingual-e5-small",
+    "local/jina-embeddings-v2-base-code",
+    "local/gte-modernbert-base",
+    "local/nomic-embed-text-v1.5",
+  ]) {
+    assert.ok(
+      createEmbeddingModelFromReference(reference, options) instanceof
+        TransformersJsEmbeddingModel,
+    );
+  }
   assert.throws(
     () => createEmbeddingModelFromCatalog("missing", options),
     /not in the zvec-grep catalog/,

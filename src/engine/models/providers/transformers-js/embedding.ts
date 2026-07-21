@@ -91,6 +91,7 @@ export class TransformersJsEmbeddingModel extends EmbeddingModel {
   private readonly executionProvider: TransformersJsExecutionProvider | null;
   private pipeline: FeatureExtractionPipeline | null = null;
   private pipelineLoadPromise: Promise<FeatureExtractionPipeline> | null = null;
+  private usingCpuFallback = false;
   private disposed = false;
 
   constructor(
@@ -121,20 +122,26 @@ export class TransformersJsEmbeddingModel extends EmbeddingModel {
       formatText(content.text, options.purpose, this.entry),
     );
 
+    let failure: unknown;
     try {
-      const pipeline = await this.ensurePipeline();
-      const tensor = await pipeline(texts, {
-        pooling: this.entry.pooling,
-        normalize: this.entry.normalize,
-      });
-      return tensorToVectors(tensor, texts.length, this.entry.dimension);
+      return await this.embedTexts(texts);
     } catch (cause) {
-      throw new EngineError("Transformers.js embedding failed", {
-        code: "ZVEC_GREP.ENGINE.MODELS.TRANSFORMERS_JS_EMBED_FAILED",
-        context: `model=${this.entry.id} repo=${this.entry.repo}`,
-        cause,
-      });
+      failure = cause;
     }
+
+    if (await this.fallbackToCpu(failure)) {
+      try {
+        return await this.embedTexts(texts);
+      } catch (cause) {
+        failure = cause;
+      }
+    }
+
+    throw new EngineError("Transformers.js embedding failed", {
+      code: "ZVEC_GREP.ENGINE.MODELS.TRANSFORMERS_JS_EMBED_FAILED",
+      context: `model=${this.entry.id} repo=${this.entry.repo}`,
+      cause: failure,
+    });
   }
 
   override async dispose(): Promise<void> {
@@ -168,22 +175,55 @@ export class TransformersJsEmbeddingModel extends EmbeddingModel {
   private async loadPipeline(): Promise<FeatureExtractionPipeline> {
     const runtime = await loadTransformersJs();
     let pipeline: FeatureExtractionPipeline;
+    const executionProvider = this.usingCpuFallback
+      ? "cpu"
+      : this.executionProvider;
 
     try {
-      pipeline = await this.createPipeline(runtime, this.executionProvider);
+      pipeline = await this.createPipeline(runtime, executionProvider);
     } catch (cause) {
-      if (!this.executionProvider || this.executionProvider === "cpu") {
+      if (!executionProvider || executionProvider === "cpu") {
         throw cause;
       }
 
       process.stderr.write(
-        `zvec-grep warning: Transformers.js ${this.executionProvider} embedding initialization failed (${formatErrorMessage(cause)}), falling back to CPU.\n`,
+        `zvec-grep warning: Transformers.js ${executionProvider} embedding initialization failed (${formatErrorMessage(cause)}), falling back to CPU.\n`,
       );
+      this.usingCpuFallback = true;
       pipeline = await this.createPipeline(runtime, "cpu");
     }
 
     pipeline.tokenizer.model_max_length = this.entry.maxInputTokens;
     return pipeline;
+  }
+
+  private async embedTexts(texts: string[]): Promise<EmbeddingVector[]> {
+    const pipeline = await this.ensurePipeline();
+    const tensor = await pipeline(texts, {
+      pooling: this.entry.pooling,
+      normalize: this.entry.normalize,
+    });
+    return tensorToVectors(tensor, texts.length, this.entry.dimension);
+  }
+
+  private async fallbackToCpu(cause: unknown): Promise<boolean> {
+    if (
+      this.usingCpuFallback ||
+      !this.executionProvider ||
+      this.executionProvider === "cpu"
+    ) {
+      return false;
+    }
+
+    process.stderr.write(
+      `zvec-grep warning: Transformers.js ${this.executionProvider} embedding inference failed (${formatErrorMessage(cause)}), falling back to CPU.\n`,
+    );
+    this.usingCpuFallback = true;
+    const pipeline = this.pipeline;
+    this.pipeline = null;
+    this.pipelineLoadPromise = null;
+    await pipeline?.dispose();
+    return true;
   }
 
   private async createPipeline(
@@ -266,9 +306,18 @@ function tensorToVectors(
   }
 
   return Array.from({ length: count }, (_, index) =>
-    Array.from(
-      { length: dimension },
-      (__, offset) => tensor.data[index * dimension + offset],
-    ),
+    Array.from({ length: dimension }, (__, offset) => {
+      const value = tensor.data[index * dimension + offset];
+      if (!Number.isFinite(value)) {
+        throw new EngineError(
+          "Transformers.js returned a non-finite tensor value",
+          {
+            code: "ZVEC_GREP.ENGINE.MODELS.TRANSFORMERS_JS_INVALID_TENSOR",
+            context: `index=${index} offset=${offset}`,
+          },
+        );
+      }
+      return value;
+    }),
   );
 }
