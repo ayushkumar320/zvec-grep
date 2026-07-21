@@ -328,13 +328,11 @@ async function runAuth(parsed: ParsedArgs): Promise<void> {
       grantPath: store.grantPath(target),
     };
     await manager.grant(plan, "workspace");
-    console.log("Granted Remote Embedding authorization.");
-    console.log(`Workspace: ${target.workspaceRoots.join(", ")}`);
-    console.log(`Provider: ${target.provider}`);
-    console.log(`Model: ${target.model}`);
-    console.log(`Endpoint: ${target.endpoint}`);
-    console.log(`Scope: workspace`);
-    console.log(`Store: ${plan.grantPath}`);
+    printRemoteEmbeddingAuthorizationStatus(
+      root,
+      await store.status(root),
+      parsed.options,
+    );
   } finally {
     await service.close();
   }
