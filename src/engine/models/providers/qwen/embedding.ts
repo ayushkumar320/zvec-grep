@@ -4,8 +4,8 @@ import type { Content, ImageFormat, TextContent } from "../../../types.js";
 import {
   EmbeddingModel,
   type EmbeddingLimits,
-  type EmbeddingOptions,
   type EmbeddingVector,
+  type NormalizedEmbeddingOptions,
 } from "../../embeddings.js";
 import type { ModelProviderOptions, ModelRef } from "../../types.js";
 
@@ -15,6 +15,7 @@ import type { ModelProviderOptions, ModelRef } from "../../types.js";
 
 const DEFAULT_QWEN_TEXT_EMBEDDING_ENDPOINT =
   "https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings";
+const DEFAULT_REMOTE_EMBEDDING_TIMEOUT_MS = 60_000;
 
 type QwenTextEmbeddingSpec = {
   model: string;
@@ -92,7 +93,7 @@ abstract class QwenTextEmbeddingModel extends EmbeddingModel {
 
   protected async doEmbed(
     contents: readonly Content[],
-    options: Required<EmbeddingOptions>,
+    options: NormalizedEmbeddingOptions,
   ): Promise<EmbeddingVector[]> {
     const texts = (contents as readonly TextContent[]).map(
       (content) => content.text,
@@ -108,6 +109,7 @@ abstract class QwenTextEmbeddingModel extends EmbeddingModel {
     });
 
     let response: Response;
+    const signal = remoteEmbeddingSignal(options.signal);
 
     try {
       response = await fetch(this.endpoint, {
@@ -122,11 +124,13 @@ abstract class QwenTextEmbeddingModel extends EmbeddingModel {
           dimensions: this.dimension,
           encoding_format: "float",
         }),
+        signal,
       });
     } catch (cause) {
+      throwIfEmbeddingCancelled(options.signal);
       throw new EngineError(`${this.displayName} request failed`, {
         code: this.errorCode("REQUEST_FAILED"),
-        context: `model=${this.ref.model} endpoint=${this.endpoint}`,
+        context: `model=${this.ref.model} endpoint=${this.endpoint} timeoutMs=${DEFAULT_REMOTE_EMBEDDING_TIMEOUT_MS}`,
         cause,
       });
     }
@@ -283,7 +287,7 @@ export class Qwen3VlEmbeddingModel extends EmbeddingModel {
 
   protected async doEmbed(
     contents: readonly Content[],
-    options: Required<EmbeddingOptions>,
+    options: NormalizedEmbeddingOptions,
   ): Promise<EmbeddingVector[]> {
     validateQwen3VlContents(this.ref.model, contents);
 
@@ -309,6 +313,7 @@ export class Qwen3VlEmbeddingModel extends EmbeddingModel {
     });
 
     let response: Response;
+    const signal = remoteEmbeddingSignal(options.signal);
 
     try {
       response = await fetch(this.endpoint, {
@@ -326,11 +331,13 @@ export class Qwen3VlEmbeddingModel extends EmbeddingModel {
             dimension: this.dimension,
           },
         }),
+        signal,
       });
     } catch (cause) {
+      throwIfEmbeddingCancelled(options.signal);
       throw new EngineError("Qwen3 VL embedding request failed", {
         code: "ZVEC_GREP.ENGINE.MODELS.QWEN3_VL_EMBEDDING_REQUEST_FAILED",
-        context: `model=${this.ref.model} endpoint=${this.endpoint}`,
+        context: `model=${this.ref.model} endpoint=${this.endpoint} timeoutMs=${DEFAULT_REMOTE_EMBEDDING_TIMEOUT_MS}`,
         cause,
       });
     }
@@ -578,4 +585,18 @@ function bytesToBase64(bytes: Uint8Array): string {
   }
 
   return output;
+}
+
+function remoteEmbeddingSignal(signal: AbortSignal | undefined): AbortSignal {
+  const timeout = AbortSignal.timeout(DEFAULT_REMOTE_EMBEDDING_TIMEOUT_MS);
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
+
+function throwIfEmbeddingCancelled(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) {
+    return;
+  }
+  throw signal.reason instanceof Error
+    ? signal.reason
+    : new Error("Embedding request was cancelled.");
 }

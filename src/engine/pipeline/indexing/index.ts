@@ -96,6 +96,7 @@ type EmbeddingScheduler = {
   readonly taskConcurrency: number;
   run<T>(
     task: () => Promise<T>,
+    signal?: AbortSignal,
     onError?: (error: unknown) => void,
   ): Promise<T>;
   recordSuccess(): void;
@@ -721,7 +722,12 @@ async function embedAndCommitBatch(
       embeddingScheduler.snapshot(),
     );
     const vectors = await embeddingTiming.time(() =>
-      embedContentsWithRetry(contents, ctx.embeddingModel, embeddingScheduler),
+      embedContentsWithRetry(
+        contents,
+        ctx.embeddingModel,
+        embeddingScheduler,
+        ctx.signal,
+      ),
     );
     throwIfIndexCancelled(ctx);
     let offset = 0;
@@ -779,7 +785,12 @@ async function embedAndCommitFile(
   try {
     throwIfIndexCancelled(ctx);
     const vectors = await embeddingTiming.time(() =>
-      embedFragments(file.fragments, ctx.embeddingModel, embeddingScheduler),
+      embedFragments(
+        file.fragments,
+        ctx.embeddingModel,
+        embeddingScheduler,
+        ctx.signal,
+      ),
     );
     throwIfIndexCancelled(ctx);
     const committed = timings.timeSync("index_commit", () =>
@@ -906,6 +917,7 @@ async function embedFragments(
   fragments: readonly EntityFragment[],
   model: EmbeddingModel,
   embeddingScheduler: EmbeddingScheduler,
+  signal?: AbortSignal,
 ): Promise<EmbeddingVector[]> {
   const batches: { start: number; fragments: EntityFragment[] }[] = [];
 
@@ -926,6 +938,7 @@ async function embedFragments(
         model,
         batch.start,
         embeddingScheduler,
+        signal,
       ),
     ),
   );
@@ -955,11 +968,17 @@ async function embedFragmentBatch(
   model: EmbeddingModel,
   startIndex: number,
   embeddingScheduler: EmbeddingScheduler,
+  signal?: AbortSignal,
 ): Promise<EmbeddingVector[]> {
   const contents = fragments.map(vectorContentForFragment);
 
   try {
-    return await embedContentsWithRetry(contents, model, embeddingScheduler);
+    return await embedContentsWithRetry(
+      contents,
+      model,
+      embeddingScheduler,
+      signal,
+    );
   } catch (error) {
     if (fragments.length === 1 || isRetryableEmbeddingError(error)) {
       throw error;
@@ -970,6 +989,7 @@ async function embedFragmentBatch(
       model,
       startIndex,
       embeddingScheduler,
+      signal,
     );
   }
 }
@@ -979,6 +999,7 @@ async function embedFragmentBatchOneByOne(
   model: EmbeddingModel,
   startIndex: number,
   embeddingScheduler: EmbeddingScheduler,
+  signal?: AbortSignal,
 ): Promise<EmbeddingVector[]> {
   const vectors: EmbeddingVector[] = [];
 
@@ -988,6 +1009,7 @@ async function embedFragmentBatchOneByOne(
         [vectorContentForFragment(fragment)],
         model,
         embeddingScheduler,
+        signal,
       );
       vectors.push(vector);
     } catch (error) {
@@ -1059,6 +1081,7 @@ async function embedContentsWithRetry(
   contents: readonly Content[],
   model: EmbeddingModel,
   embeddingScheduler: EmbeddingScheduler,
+  signal?: AbortSignal,
 ): Promise<EmbeddingVector[]> {
   let attempt = 0;
 
@@ -1067,8 +1090,10 @@ async function embedContentsWithRetry(
     let delayMs = 0;
 
     try {
+      throwIfAborted(signal);
       const vectors = await embeddingScheduler.run(
-        () => model.embed(contents, { purpose: "document" }),
+        () => model.embed(contents, { purpose: "document", signal }),
+        signal,
         (error) => {
           retry = classifyEmbeddingRetry(error);
           delayMs = retryDelayMs(attempt, retry);
@@ -1083,6 +1108,11 @@ async function embedContentsWithRetry(
       embeddingScheduler.recordSuccess();
       return vectors;
     } catch (error) {
+      if (signal?.aborted) {
+        throw signal.reason instanceof Error
+          ? signal.reason
+          : new Error("Embedding was cancelled.");
+      }
       if (!retry.retryable) {
         retry = classifyEmbeddingRetry(error);
         delayMs = retryDelayMs(attempt, retry);
@@ -1092,7 +1122,7 @@ async function embedContentsWithRetry(
         throw error;
       }
 
-      await delay(delayMs);
+      await abortableDelay(delayMs, signal);
       attempt++;
     }
   }
@@ -1157,13 +1187,16 @@ class AdaptiveEmbeddingScheduler implements EmbeddingScheduler {
 
   async run<T>(
     task: () => Promise<T>,
+    signal?: AbortSignal,
     onError?: (error: unknown) => void,
   ): Promise<T> {
-    await this.waitForCooldown();
-    await this.acquire();
+    throwIfAborted(signal);
+    await this.waitForCooldown(signal);
+    await this.acquire(signal);
 
     try {
-      await this.waitForCooldown();
+      await this.waitForCooldown(signal);
+      throwIfAborted(signal);
       return await task();
     } catch (error) {
       onError?.(error);
@@ -1219,21 +1252,38 @@ class AdaptiveEmbeddingScheduler implements EmbeddingScheduler {
     };
   }
 
-  private async waitForCooldown(): Promise<void> {
+  private async waitForCooldown(signal?: AbortSignal): Promise<void> {
     const remaining = this.cooldownUntil - Date.now();
     if (remaining > 0) {
-      await delay(remaining);
+      await abortableDelay(remaining, signal);
     }
   }
 
-  private async acquire(): Promise<void> {
+  private async acquire(signal?: AbortSignal): Promise<void> {
+    throwIfAborted(signal);
     if (this.active < this.currentConcurrency) {
       this.active++;
       return;
     }
 
-    await new Promise<void>((resolve) => {
-      this.queue.push(resolve);
+    await new Promise<void>((resolve, reject) => {
+      const queued = () => {
+        signal?.removeEventListener("abort", abort);
+        resolve();
+      };
+      const abort = () => {
+        const index = this.queue.indexOf(queued);
+        if (index >= 0) {
+          this.queue.splice(index, 1);
+        }
+        reject(abortError(signal));
+      };
+      if (signal?.aborted) {
+        reject(abortError(signal));
+        return;
+      }
+      signal?.addEventListener("abort", abort, { once: true });
+      this.queue.push(queued);
     });
   }
 
@@ -1340,8 +1390,37 @@ function retryAfterMsFromText(text: string): number | undefined {
   return undefined;
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function abortableDelay(
+  ms: number,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  if (ms <= 0) {
+    return Promise.resolve();
+  }
+  throwIfAborted(signal);
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    }, ms);
+    const abort = () => {
+      clearTimeout(timer);
+      reject(abortError(signal));
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+  });
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) {
+    throw abortError(signal);
+  }
+}
+
+function abortError(signal: AbortSignal | undefined): Error {
+  return signal?.reason instanceof Error
+    ? signal.reason
+    : new Error("Embedding was cancelled.");
 }
 
 function countPublicEntities(fragments: readonly EntityFragment[]): number {

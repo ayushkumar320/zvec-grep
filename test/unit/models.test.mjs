@@ -39,9 +39,11 @@ class StubEmbeddingModel extends EmbeddingModel {
   limits = { maxBatchSize: 2, maxImageBytes: 3 };
   result = [[1, 0]];
   seenPurpose;
+  seenSignal;
 
   async doEmbed(_contents, options) {
     this.seenPurpose = options.purpose;
+    this.seenSignal = options.signal;
     return this.result;
   }
 }
@@ -52,8 +54,13 @@ test("embedding base class validates inputs, provider outputs, and purpose defau
     [1, 0],
   ]);
   assert.equal(model.seenPurpose, "document");
-  await model.embed([{ kind: "text", text: "query" }], { purpose: "query" });
+  const signal = new AbortController().signal;
+  await model.embed([{ kind: "text", text: "query" }], {
+    purpose: "query",
+    signal,
+  });
   assert.equal(model.seenPurpose, "query");
+  assert.equal(model.seenSignal, signal);
   await model.dispose();
 
   await assert.rejects(model.embed([]), /at least one/);
@@ -151,7 +158,34 @@ test("Qwen text model sends ordered batches and validates all response shapes", 
   assert.equal(result[0][0], 1);
   assert.equal(result[1][0], 2);
   assert.equal(request.headers.Authorization, "Bearer secret-value");
+  assert.ok(request.signal instanceof AbortSignal);
   assert.deepEqual(JSON.parse(request.body).input, ["first", "second"]);
+
+  await withFetch(
+    async (_url, init) =>
+      new Promise((resolve, reject) => {
+        if (init.signal.aborted) {
+          reject(init.signal.reason);
+          return;
+        }
+        init.signal.addEventListener(
+          "abort",
+          () => reject(init.signal.reason),
+          { once: true },
+        );
+      }),
+    async () => {
+      const controller = new AbortController();
+      const cancelled = assert.rejects(
+        model.embed([{ kind: "text", text: "cancel" }], {
+          signal: controller.signal,
+        }),
+        /stop embedding/,
+      );
+      controller.abort(new Error("stop embedding"));
+      await cancelled;
+    },
+  );
 
   await withFetch(
     async () => {
@@ -236,9 +270,11 @@ test("Qwen3.7 text embedding uses its model name and expanded limits", async () 
   });
 
   let body;
+  let requestSignal;
   const result = await withFetch(
     async (_url, init) => {
       body = JSON.parse(init.body);
+      requestSignal = init.signal;
       return jsonResponse({
         data: [{ index: 0, embedding: vector(1024, 3) }],
       });
@@ -250,6 +286,7 @@ test("Qwen3.7 text embedding uses its model name and expanded limits", async () 
   assert.equal(body.model, "qwen3.7-text-embedding");
   assert.equal(body.dimensions, 1024);
   assert.equal(body.encoding_format, "float");
+  assert.ok(requestSignal instanceof AbortSignal);
 
   await assert.rejects(
     model.embed(
@@ -291,9 +328,11 @@ test("Qwen VL model validates images, encodes bytes, and accepts provider index 
   );
 
   let body;
+  let vlRequestSignal;
   const result = await withFetch(
     async (_url, init) => {
       body = JSON.parse(init.body);
+      vlRequestSignal = init.signal;
       return jsonResponse({
         output: {
           embeddings: [
@@ -320,6 +359,7 @@ test("Qwen VL model validates images, encodes bytes, and accepts provider index 
   assert.equal(body.input.contents[1].image, "AQ==");
   assert.equal(body.input.contents[2].image, "AQI=");
   assert.equal(body.input.contents[3].image, "AQID");
+  assert.ok(vlRequestSignal instanceof AbortSignal);
 
   await withFetch(
     async () => {

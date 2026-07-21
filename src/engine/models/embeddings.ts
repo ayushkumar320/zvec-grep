@@ -8,6 +8,12 @@ export type EmbeddingPurpose = "document" | "query";
 
 export type EmbeddingOptions = {
   purpose?: EmbeddingPurpose;
+  signal?: AbortSignal;
+};
+
+export type NormalizedEmbeddingOptions = {
+  purpose: EmbeddingPurpose;
+  signal?: AbortSignal;
 };
 
 export type EmbeddingLimits = {
@@ -32,6 +38,7 @@ export abstract class EmbeddingModel {
     this.validateContents(contents);
     const vectors = await this.doEmbed(contents, {
       purpose: options.purpose ?? "document",
+      signal: options.signal,
     });
     this.validateVectors(contents, vectors);
 
@@ -44,7 +51,7 @@ export abstract class EmbeddingModel {
 
   protected abstract doEmbed(
     contents: readonly Content[],
-    options: Required<EmbeddingOptions>,
+    options: NormalizedEmbeddingOptions,
   ): Promise<EmbeddingVector[]>;
 
   private validateContents(contents: readonly Content[]): void {

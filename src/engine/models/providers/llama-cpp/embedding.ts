@@ -14,8 +14,8 @@ import { defaultHome } from "../../../utils/path.js";
 import {
   EmbeddingModel,
   type EmbeddingLimits,
-  type EmbeddingOptions,
   type EmbeddingVector,
+  type NormalizedEmbeddingOptions,
 } from "../../embeddings.js";
 import type {
   LlamaCppEmbeddingCatalogEntry,
@@ -176,7 +176,7 @@ export class LlamaCppEmbeddingModel extends EmbeddingModel {
 
   protected async doEmbed(
     contents: readonly Content[],
-    options: Required<EmbeddingOptions>,
+    options: NormalizedEmbeddingOptions,
   ): Promise<EmbeddingVector[]> {
     this.ensureNotDisposed();
     const texts = (contents as readonly TextContent[]).map((content) =>
@@ -594,7 +594,7 @@ function defaultLlamaCppCmakeOptions(): Record<string, string> | undefined {
 
 function formatTextForEmbedding(
   text: string,
-  purpose: Required<EmbeddingOptions>["purpose"],
+  purpose: NormalizedEmbeddingOptions["purpose"],
   entry: LlamaCppEmbeddingCatalogEntry,
 ): string {
   if (entry.format === "qwen3") {
