@@ -10,7 +10,10 @@ import type { RemoteEmbeddingAuthorizationStatus } from "../../authorization/typ
 import type { CliOptions } from "../types.js";
 import { shouldUseColor } from "./highlight.js";
 import { formatGreenProgressBar } from "./progress.js";
-import { indexStatusNeedsRefresh as statusNeedsRefresh } from "../../engine/index-status.js";
+import {
+  indexCompletionFromStatus,
+  indexStatusNeedsRefresh as statusNeedsRefresh,
+} from "../../engine/index-status.js";
 
 type StatusTheme = {
   color: boolean;
@@ -98,6 +101,7 @@ type ServerIndexInfo = {
     };
     files?: {
       stored: number;
+      scanned?: number;
       indexed: number;
       pending: number;
       failed: number;
@@ -119,6 +123,10 @@ type ServerIndexInfo = {
       files_total?: number;
       files_indexed?: number;
       files_failed?: number;
+    };
+    completion?: {
+      completed: number;
+      total: number;
     };
     error?: {
       code: string;
@@ -257,6 +265,7 @@ export function printAnonymousInfo(
 ): void {
   const theme = createStatusTheme(options);
   const status = info.status ?? undefined;
+  const completion = indexCompletionFromStatus(status);
   const suggestion =
     status && statusNeedsRefresh(status) ? "zg index" : info.suggestion;
 
@@ -269,8 +278,8 @@ export function printAnonymousInfo(
     roots: info.collection?.rootPaths,
     files: status
       ? {
-          indexed: status.filesUnchanged,
-          total: status.filesScanned + status.filesDeleted,
+          indexed: completion?.completed ?? 0,
+          total: completion?.total ?? 0,
           entities: status.entitiesIndexed ?? 0,
           pending: status.filesPending,
           failed: status.filesFailed,
@@ -299,7 +308,7 @@ export function printServerIndexInfo(
   const embedding = info.persistent.collection?.embedding;
   const roots = info.persistent.collection?.root_paths.map(mapServerRootPath);
   const files = info.persistent.files;
-  const progress = info.runtime?.progress;
+  const completion = info.runtime?.completion;
 
   printWorkspaceIndexStatus(theme, {
     root: info.root,
@@ -310,11 +319,14 @@ export function printServerIndexInfo(
     roots,
     files: files
       ? {
-          indexed: progress?.files_indexed ?? files.unchanged,
-          total: progress?.files_total ?? files.stored + files.added,
+          indexed: completion?.completed ?? files.unchanged,
+          total:
+            completion?.total ??
+            files.scanned ??
+            Math.max(0, files.stored + files.added - files.deleted),
           entities: files.entities,
           pending: files.pending,
-          failed: progress?.files_failed ?? files.failed,
+          failed: info.runtime?.progress?.files_failed ?? files.failed,
         }
       : undefined,
     changes: files

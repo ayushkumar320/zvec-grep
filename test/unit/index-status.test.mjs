@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  indexCompletionForJob,
   indexCompletionFromStatus,
   indexStatusNeedsRefresh,
   mergeIndexCompletion,
@@ -38,4 +39,21 @@ test("index completion uses the configured scope and advances with successful wo
     }),
     { completed: 3, total: 10 },
   );
+
+  const progress = {
+    phase: "indexing",
+    filesIndexed: 2,
+    filesFailed: 1,
+    filesTotal: 2,
+  };
+  assert.deepEqual(indexCompletionForJob(completion, "running", progress), {
+    completed: 4,
+    total: 5,
+  });
+  for (const state of ["queued", "succeeded", "failed", "cancelled"]) {
+    assert.deepEqual(indexCompletionForJob(completion, state, progress), {
+      completed: 3,
+      total: 5,
+    });
+  }
 });

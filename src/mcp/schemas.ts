@@ -495,6 +495,7 @@ export const zvecGrepIndexStatusOutputSchema = z.object({
     files: z
       .object({
         stored: z.number().int().nonnegative(),
+        scanned: z.number().int().nonnegative().optional(),
         indexed: z.number().int().nonnegative(),
         pending: z.number().int().nonnegative(),
         failed: z.number().int().nonnegative(),
@@ -521,6 +522,12 @@ export const zvecGrepIndexStatusOutputSchema = z.object({
           files_indexed: z.number().int().nonnegative().optional(),
           files_failed: z.number().int().nonnegative().optional(),
           detail: z.string().optional(),
+        })
+        .optional(),
+      completion: z
+        .object({
+          completed: z.number().int().nonnegative(),
+          total: z.number().int().nonnegative(),
         })
         .optional(),
       error: jobErrorSchema.optional(),

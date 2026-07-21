@@ -456,6 +456,12 @@ test("eventual search queries while background reconciliation is running", async
       total: 1,
     });
     await backgroundStarted;
+    const updatingStatus = await backend.indexStatus({ root });
+    assert.equal(updatingStatus.persistent.files.scanned, 1);
+    assert.deepEqual(updatingStatus.runtime.completion, {
+      completed: stale.indexing.completed,
+      total: stale.indexing.total,
+    });
 
     const plan = await backend.planSearchAuthorization(
       searchInput(root, "answer", "eventual"),

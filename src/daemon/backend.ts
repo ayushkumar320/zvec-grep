@@ -10,8 +10,8 @@ import type {
   IndexProgress,
 } from "../engine/types.js";
 import {
+  indexCompletionForJob,
   indexCompletionFromStatus,
-  mergeIndexCompletion,
 } from "../engine/index-status.js";
 import {
   contextOptionsFromRgInput,
@@ -531,6 +531,11 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
             activeJobId: job?.id,
             jobState: job?.state,
             progress: job?.progress ? formatProgress(job) : undefined,
+            completion: indexCompletionForJob(
+              indexCompletionFromStatus(info.status),
+              job?.state,
+              job?.progress,
+            ),
             error: job?.error,
           }
         : undefined,
@@ -1099,6 +1104,7 @@ function persistentStatus(
     files: info.status
       ? {
           stored: info.status.filesStored,
+          scanned: info.status.filesScanned,
           indexed: info.status.filesIndexed,
           pending: info.status.filesPending,
           failed: info.status.filesFailed,
@@ -1136,10 +1142,11 @@ function searchIndexingSnapshot(
   completion: ReturnType<typeof indexCompletionFromStatus>,
 ): NonNullable<ZvecGrepSearchResult["indexing"]> {
   const state = !job || job.state === "succeeded" ? "idle" : job.state;
-  const effectiveCompletion =
-    job?.state === "succeeded"
-      ? completion
-      : mergeIndexCompletion(completion, job?.progress);
+  const effectiveCompletion = indexCompletionForJob(
+    completion,
+    job?.state,
+    job?.progress,
+  );
   return {
     state,
     ...effectiveCompletion,

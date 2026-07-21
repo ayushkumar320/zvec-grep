@@ -418,6 +418,7 @@ test("status formatters cover collections, anonymous states, failures, filters, 
           },
           files: {
             stored: 4,
+            scanned: 4,
             indexed: 3,
             pending: 1,
             failed: 0,
@@ -432,6 +433,7 @@ test("status formatters cover collections, anonymous states, failures, filters, 
         runtime: {
           job_state: "running",
           progress: { files_indexed: 3, files_total: 4 },
+          completion: { completed: 3, total: 4 },
         },
       },
       { color: "never" },
@@ -643,6 +645,7 @@ test("server workspace status reports changed files as stale", async () => {
           },
           files: {
             stored: 8,
+            scanned: 6,
             indexed: 8,
             pending: 0,
             failed: 0,
@@ -661,7 +664,7 @@ test("server workspace status reports changed files as stale", async () => {
   assert.match(output.logs.join("\n"), /Workspace index needs an update/);
   assert.match(
     output.logs.join("\n"),
-    /Coverage\s+█{7}░{13}\s+33%\s+3 \/ 9 files/,
+    /Coverage\s+█{10}░{10}\s+50%\s+3 \/ 6 files/,
   );
   assert.match(
     output.logs.join("\n"),
@@ -684,13 +687,13 @@ test("direct workspace status excludes changed files from coverage", async () =>
         }),
         status: status({
           filesScanned: 173,
-          filesStored: 173,
-          filesIndexed: 173,
+          filesStored: 193,
+          filesIndexed: 193,
           filesPending: 0,
           filesFailed: 0,
           filesAdded: 0,
           filesModified: 1,
-          filesDeleted: 0,
+          filesDeleted: 20,
           filesUnchanged: 172,
         }),
       },
@@ -704,6 +707,51 @@ test("direct workspace status excludes changed files from coverage", async () =>
     /Coverage\s+█{20}\s+99%\s+172 \/ 173 files/,
   );
   assert.doesNotMatch(output.logs.join("\n"), /100%\s+173 \/ 173 files/);
+});
+
+test("server updating coverage uses the full configured scope", async () => {
+  const output = await captureConsole(() =>
+    printServerIndexInfo(
+      {
+        root: "/repo",
+        indexed: true,
+        index_policy: "enabled",
+        source: "index",
+        persistent: {
+          home: "/repo/.zvec-grep",
+          index_path: "/repo/.zvec-grep/index",
+          files: {
+            stored: 1011,
+            scanned: 1000,
+            indexed: 1000,
+            pending: 0,
+            failed: 0,
+            added: 9,
+            modified: 104,
+            deleted: 20,
+            unchanged: 887,
+            entities: 22138,
+          },
+        },
+        runtime: {
+          job_state: "running",
+          progress: {
+            files_indexed: 89,
+            files_total: 113,
+          },
+          completion: {
+            completed: 976,
+            total: 1000,
+          },
+        },
+      },
+      { color: "never" },
+    ),
+  );
+
+  const text = output.logs.join("\n");
+  assert.match(text, /Coverage\s+█{20}\s+98%\s+976 \/ 1,000 files/);
+  assert.doesNotMatch(text, /89 \/ 113 files/);
 });
 
 test("Remote Embedding authorization status uses grouped colors and compact paths", async () => {

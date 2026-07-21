@@ -114,6 +114,7 @@ export type ZvecGrepIndexStatusResult = {
     };
     files?: {
       stored: number;
+      scanned?: number;
       indexed: number;
       pending: number;
       failed: number;
@@ -137,6 +138,10 @@ export type ZvecGrepIndexStatusResult = {
       files_indexed?: number;
       files_failed?: number;
       detail?: string;
+    };
+    completion?: {
+      completed: number;
+      total: number;
     };
     error?: { code: string; message: string };
   };
@@ -658,6 +663,7 @@ function formatIndexStatus(
           active_job_id: result.runtime.activeJobId,
           job_state: result.runtime.jobState,
           progress: result.runtime.progress,
+          completion: result.runtime.completion,
           error: result.runtime.error,
         }
       : undefined,

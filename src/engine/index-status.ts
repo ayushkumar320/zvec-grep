@@ -51,3 +51,14 @@ export function mergeIndexCompletion(
     total: completion.total,
   };
 }
+
+export function indexCompletionForJob(
+  completion: IndexCompletion | undefined,
+  state:
+    "queued" | "running" | "succeeded" | "failed" | "cancelled" | undefined,
+  progress: IndexProgress | undefined,
+): IndexCompletion | undefined {
+  return state === "running"
+    ? mergeIndexCompletion(completion, progress)
+    : completion;
+}

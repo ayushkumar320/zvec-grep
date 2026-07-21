@@ -303,6 +303,10 @@ test("Streamable HTTP serves health, MCP contracts and a real cached index searc
     arguments: { root: unindexedRoot },
   });
   assert.equal(runningStatus.structuredContent.runtime.job_state, "running");
+  assert.deepEqual(runningStatus.structuredContent.runtime.completion, {
+    completed: 0,
+    total: 1,
+  });
 
   const duplicate = await clients[1].callTool({
     name: "zvec_grep_index",
