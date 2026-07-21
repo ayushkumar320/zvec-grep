@@ -99,6 +99,121 @@ test("drop index closes the active runtime and removes the persisted index", asy
   }
 });
 
+test("drop index cancels an active indexing job before removing files", async () => {
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-drop-cancel-"),
+  );
+  const root = join(temporaryDirectory, "repo");
+  await mkdir(root);
+  const canonicalRoot = await realpath(root);
+  let jobSignal;
+  let markJobStarted;
+  const jobStarted = new Promise((resolve) => {
+    markJobStarted = resolve;
+  });
+  let serviceClosed = false;
+  const backend = new DaemonBackend({
+    version: "1.0.0",
+    createService: async () => ({
+      dropIndex: async () => true,
+      close: async () => {
+        serviceClosed = true;
+      },
+    }),
+  });
+  try {
+    backend.scheduler.submit({
+      canonicalRoot,
+      reason: "manual",
+      run: (_report, signal) => {
+        jobSignal = signal;
+        markJobStarted();
+        return new Promise((resolve) => {
+          signal.addEventListener("abort", resolve, { once: true });
+        });
+      },
+    });
+    await jobStarted;
+
+    const result = await backend.dropIndex({ root });
+
+    assert.equal(jobSignal.aborted, true);
+    assert.deepEqual(result, { root: canonicalRoot, removed: true });
+    assert.equal(serviceClosed, true);
+    assert.equal(backend.scheduler.getByRoot(canonicalRoot).state, "cancelled");
+  } finally {
+    await backend.close();
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("drop index cancels an active backend index job before dropping", async () => {
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-drop-cancel-"),
+  );
+  const root = join(temporaryDirectory, "repo");
+  await mkdir(root);
+  let markIndexStarted;
+  const indexStarted = new Promise((resolve) => {
+    markIndexStarted = resolve;
+  });
+  let indexSignal;
+  let dropCalled = false;
+  const backend = new DaemonBackend({
+    version: "1.0.0",
+    watchManagerFactory: noopWatchManagerFactory,
+    modelPoolOptions: { createModel: () => new TestEmbeddingModel() },
+    resolveEmbeddingSchema: () => ({
+      provider: "test",
+      model: "deterministic",
+      dimension: 8,
+      metric: "cosine",
+    }),
+    createService: async () => ({
+      index: async (options) => {
+        indexSignal = options.signal;
+        markIndexStarted();
+        await new Promise((resolve, reject) => {
+          if (options.signal?.aborted) {
+            reject(options.signal.reason);
+            return;
+          }
+          options.signal?.addEventListener(
+            "abort",
+            () => reject(options.signal.reason),
+            { once: true },
+          );
+        });
+      },
+      dropIndex: async () => {
+        dropCalled = true;
+        return true;
+      },
+      close: async () => {},
+    }),
+  });
+  try {
+    const index = await backend.index({
+      root,
+      embedding: "test/deterministic",
+      wait: false,
+    });
+    await indexStarted;
+
+    const drop = await backend.dropIndex({ root });
+    const job = backend.scheduler.get(index.jobId);
+
+    assert.equal(indexSignal.aborted, true);
+    assert.equal(job.state, "cancelled");
+    assert.equal(job.error.code, "INDEX_CANCELLED");
+    assert.equal(dropCalled, true);
+    assert.deepEqual(drop, { root: await realpath(root), removed: true });
+  } finally {
+    await backend.close();
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
 test("wait_for_fresh reports a failed reconciliation instead of returning stale results", async () => {
   const temporaryDirectory = await mkdtemp(
     join(tmpdir(), "zvec-grep-freshness-"),
@@ -978,6 +1093,34 @@ test("concurrent backend close calls wait for the same shutdown drain", async ()
   release();
   await Promise.all([first, second]);
   assert.equal(secondClosed, true);
+});
+
+test("backend close cancels active indexing jobs", async () => {
+  const backend = new DaemonBackend({ version: "1.0.0" });
+  let jobSignal;
+  let markJobStarted;
+  const jobStarted = new Promise((resolve) => {
+    markJobStarted = resolve;
+  });
+  backend.scheduler.submit({
+    canonicalRoot: "/repo",
+    reason: "manual",
+    run: (_report, signal) => {
+      jobSignal = signal;
+      markJobStarted();
+      return new Promise((resolve) => {
+        signal.addEventListener("abort", resolve, { once: true });
+      });
+    },
+  });
+  await jobStarted;
+
+  await backend.close();
+
+  assert.equal(jobSignal.aborted, true);
+  const job = backend.scheduler.getByRoot("/repo");
+  assert.equal(job.state, "cancelled");
+  assert.equal(job.error.code, "INDEX_CANCELLED");
 });
 
 test("watch changes use the path-level index pipeline and advance revisions", async () => {

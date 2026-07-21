@@ -227,6 +227,7 @@ export type IndexOptions = {
   embeddingConcurrency?: number;
   onProgress?: (progress: IndexProgress) => void;
   changedPaths?: readonly string[];
+  signal?: AbortSignal;
 };
 
 export type TimingEntry = {

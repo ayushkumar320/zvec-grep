@@ -9,6 +9,7 @@ export type IndexCoordinatorOptions = {
   run: (
     changes: ChangeSetSnapshot,
     report: (progress: IndexProgress) => void,
+    signal: AbortSignal,
   ) => Promise<IndexReconciliationProof | void>;
   getIndexedFileCount?: () => number | undefined;
   fullReconcileRatio?: number;
@@ -54,7 +55,7 @@ export class IndexCoordinator {
       canonicalRoot: this.options.runtime.canonicalRoot,
       reason,
       followupIfRunning: true,
-      run: (report) =>
+      run: (report, signal) =>
         this.options.runtime.withWrite(async () => {
           if (!jobChanges) {
             jobChanges = this.pending.snapshot();
@@ -70,7 +71,7 @@ export class IndexCoordinator {
             this.options.runtime.markIndexed(jobRevision);
             return;
           }
-          const proof = await this.options.run(jobChanges, report);
+          const proof = await this.options.run(jobChanges, report, signal);
           if (jobChanges.forceFullReconcile) {
             if (proof?.reconciled === true) {
               this.options.runtime.markReconciled(

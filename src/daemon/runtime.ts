@@ -63,8 +63,8 @@ export async function runDaemonForeground(
       if (stopping) return;
       stopping = true;
       void (async () => {
-        await httpServer.close();
         await backend.close();
+        await httpServer.close();
         await instanceLock.release();
         logger.event("server.stopped", { pid: process.pid });
         await logger.flush();

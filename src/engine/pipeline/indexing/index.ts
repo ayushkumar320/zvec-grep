@@ -39,6 +39,7 @@ export type IndexContext = {
   embeddingModel: EmbeddingModel;
   embeddingConcurrency?: number;
   onProgress?: (progress: IndexProgress) => void;
+  signal?: AbortSignal;
 };
 
 type DiffResult = {
@@ -202,6 +203,7 @@ async function indexCollectionUnchecked(
   const report = ctx.onProgress ?? (() => undefined);
   const timings = new TimingCollector();
 
+  throwIfIndexCancelled(ctx);
   const firstPass = await runIndexPass(
     ctx,
     report,
@@ -221,6 +223,7 @@ async function indexCollectionUnchecked(
   }
 
   const finalPass = passes[passes.length - 1];
+  throwIfIndexCancelled(ctx);
   reportIndexFinalizing(ctx, report, finalPass);
   await timings.time("index_optimize", () => optimizeStorage(ctx));
 
@@ -267,6 +270,7 @@ async function indexCollectionPathsUnchecked(
   const report = ctx.onProgress ?? (() => undefined);
   const timings = new TimingCollector();
   const normalizedPaths = [...new Set(changedPaths.map(normalizePath))];
+  throwIfIndexCancelled(ctx);
   const firstPass = await runPathIndexPass(
     ctx,
     report,
@@ -278,6 +282,7 @@ async function indexCollectionPathsUnchecked(
     passes.push(await runPathIndexPass(ctx, report, normalizedPaths, timings));
   }
   const finalPass = passes[passes.length - 1];
+  throwIfIndexCancelled(ctx);
   reportIndexFinalizing(ctx, report, finalPass);
   await timings.time("index_optimize", () => optimizeStorage(ctx));
   const result = buildIndexResult(ctx, passes, Date.now() - start, timings);
@@ -304,18 +309,28 @@ async function runPathIndexPass(
   const scanned = await timings.time("index_scan_paths", async () => {
     const files: FileInfo[] = [];
     for (const path of changedPaths) {
+      throwIfIndexCancelled(ctx);
       const info = await lstat(path).catch(() => null);
       const scan = info?.isDirectory()
         ? await scanDirectoryPath(
             ctx.collection.id,
             ctx.collection.rootPaths,
             path,
+            { signal: ctx.signal },
           )
-        : await scanFilePath(ctx.collection.id, ctx.collection.rootPaths, path);
+        : await scanFilePath(
+            ctx.collection.id,
+            ctx.collection.rootPaths,
+            path,
+            {
+              signal: ctx.signal,
+            },
+          );
       files.push(...scan.files);
     }
     return [...new Map(files.map((file) => [file.id, file])).values()];
   });
+  throwIfIndexCancelled(ctx);
   const existing = [
     ...new Map(
       changedPaths
@@ -334,8 +349,11 @@ async function runIndexPass(
 ): Promise<IndexPassResult> {
   report({ phase: "scanning", detail: scanningDetail });
   const scan = await timings.time("index_scan", () =>
-    scanRootPaths(ctx.collection.id, ctx.collection.rootPaths),
+    scanRootPaths(ctx.collection.id, ctx.collection.rootPaths, {
+      signal: ctx.signal,
+    }),
   );
+  throwIfIndexCancelled(ctx);
   return runDiffPass(ctx, report, scan.files, ctx.storage.listFiles(), timings);
 }
 
@@ -349,6 +367,7 @@ async function runDiffPass(
   const diff = await timings.time("index_diff", () =>
     computeDiffFromFiles(scannedFiles, existingFiles),
   );
+  throwIfIndexCancelled(ctx);
   const pending = [...diff.added, ...diff.modified, ...diff.pending];
 
   report({
@@ -359,6 +378,7 @@ async function runDiffPass(
 
   timings.timeSync("index_delete_stale", () => {
     for (const file of diff.deleted) {
+      throwIfIndexCancelled(ctx);
       try {
         ctx.storage.deleteFile(file.id);
       } catch (error) {
@@ -398,6 +418,7 @@ async function runDiffPass(
   });
 
   const stats = await indexFiles(pending, ctx, reportIndexing, timings);
+  throwIfIndexCancelled(ctx);
 
   return {
     filesScanned: scannedFiles.length,
@@ -553,6 +574,7 @@ async function indexFiles(
   };
 
   const flushBatch = async (): Promise<void> => {
+    throwIfIndexCancelled(ctx);
     if (batchFiles.length === 0) {
       return;
     }
@@ -576,6 +598,7 @@ async function indexFiles(
   const scheduleEmbeddingTask = async (
     task: () => Promise<void>,
   ): Promise<void> => {
+    throwIfIndexCancelled(ctx);
     const promise = task().finally(() => {
       runningEmbeddings.delete(promise);
     });
@@ -587,59 +610,68 @@ async function indexFiles(
     }
   };
 
-  for (const file of files) {
-    onProgress(stats, `reading ${file.relativePath}`);
-    const prepared = await timings.time("index_prepare", () =>
-      prepareFile(file, ctx),
-    );
+  try {
+    for (const file of files) {
+      throwIfIndexCancelled(ctx);
+      onProgress(stats, `reading ${file.relativePath}`);
+      const prepared = await timings.time("index_prepare", () =>
+        prepareFile(file, ctx),
+      );
+      throwIfIndexCancelled(ctx);
 
-    if ("failedReason" in prepared) {
-      recordFileFailed(stats, file, prepared.failedReason);
-      onProgress(stats, `failed ${file.relativePath}`);
-      continue;
+      if ("failedReason" in prepared) {
+        recordFileFailed(stats, file, prepared.failedReason);
+        onProgress(stats, `failed ${file.relativePath}`);
+        continue;
+      }
+
+      if (prepared.fragments.length === 0) {
+        const committed = commitFile(prepared, [], ctx, stats);
+        onProgress(stats, finishedFileDetail(committed, file.relativePath));
+        continue;
+      }
+
+      if (prepared.fragments.length > ctx.embeddingModel.limits.maxBatchSize) {
+        await flushBatch();
+        await scheduleEmbeddingTask(async () => {
+          throwIfIndexCancelled(ctx);
+          reportEmbeddingProgress(stats, `embedding ${file.relativePath}`);
+          await embedAndCommitFile(
+            prepared,
+            ctx,
+            stats,
+            onProgress,
+            embeddingScheduler,
+            timings,
+            embeddingTiming,
+          );
+        });
+        continue;
+      }
+
+      if (
+        batchFragmentCount > 0 &&
+        batchFragmentCount + prepared.fragments.length >
+          ctx.embeddingModel.limits.maxBatchSize
+      ) {
+        await flushBatch();
+      }
+
+      batchFiles.push(prepared);
+      batchFragmentCount += prepared.fragments.length;
+
+      if (batchFragmentCount === ctx.embeddingModel.limits.maxBatchSize) {
+        await flushBatch();
+      }
     }
 
-    if (prepared.fragments.length === 0) {
-      const committed = commitFile(prepared, [], ctx, stats);
-      onProgress(stats, finishedFileDetail(committed, file.relativePath));
-      continue;
-    }
-
-    if (prepared.fragments.length > ctx.embeddingModel.limits.maxBatchSize) {
-      await flushBatch();
-      await scheduleEmbeddingTask(async () => {
-        reportEmbeddingProgress(stats, `embedding ${file.relativePath}`);
-        await embedAndCommitFile(
-          prepared,
-          ctx,
-          stats,
-          onProgress,
-          embeddingScheduler,
-          timings,
-          embeddingTiming,
-        );
-      });
-      continue;
-    }
-
-    if (
-      batchFragmentCount > 0 &&
-      batchFragmentCount + prepared.fragments.length >
-        ctx.embeddingModel.limits.maxBatchSize
-    ) {
-      await flushBatch();
-    }
-
-    batchFiles.push(prepared);
-    batchFragmentCount += prepared.fragments.length;
-
-    if (batchFragmentCount === ctx.embeddingModel.limits.maxBatchSize) {
-      await flushBatch();
-    }
+    await flushBatch();
+    await Promise.all(runningEmbeddings);
+  } catch (error) {
+    await Promise.allSettled(runningEmbeddings);
+    throw error;
   }
-
-  await flushBatch();
-  await Promise.all(runningEmbeddings);
+  throwIfIndexCancelled(ctx);
 
   return stats;
 }
@@ -649,14 +681,19 @@ async function prepareFile(
   ctx: IndexContext,
 ): Promise<PreparedFile | FailedPreparedFile> {
   try {
+    throwIfIndexCancelled(ctx);
     const source = await readSource(file);
     const extracted = await new ExtractorRegistry().extract(source);
+    throwIfIndexCancelled(ctx);
     const fragments = extracted.filter((fragment) =>
       ctx.embeddingModel.supportedContentKinds.includes(fragment.content.kind),
     );
 
     return { file, fragments };
   } catch (error) {
+    if (indexIsCancelled(ctx)) {
+      throw indexCancellationError(ctx);
+    }
     return {
       file,
       failedReason: markFileFailed(ctx, file, error, "prepare"),
@@ -676,6 +713,7 @@ async function embedAndCommitBatch(
   const fragments = files.flatMap((file) => file.fragments);
 
   try {
+    throwIfIndexCancelled(ctx);
     const contents = fragments.map(vectorContentForFragment);
     onProgress(
       stats,
@@ -685,9 +723,11 @@ async function embedAndCommitBatch(
     const vectors = await embeddingTiming.time(() =>
       embedContentsWithRetry(contents, ctx.embeddingModel, embeddingScheduler),
     );
+    throwIfIndexCancelled(ctx);
     let offset = 0;
 
     for (const file of files) {
+      throwIfIndexCancelled(ctx);
       const fileVectors = vectors.slice(offset, offset + file.fragments.length);
       offset += file.fragments.length;
       const committed = timings.timeSync("index_commit", () =>
@@ -696,6 +736,9 @@ async function embedAndCommitBatch(
       onProgress(stats, finishedFileDetail(committed, file.file.relativePath));
     }
   } catch (error) {
+    if (indexIsCancelled(ctx)) {
+      throw indexCancellationError(ctx);
+    }
     if (isRetryableEmbeddingError(error)) {
       for (const file of files) {
         const reason = markFileFailed(ctx, file.file, error, "embed");
@@ -734,14 +777,19 @@ async function embedAndCommitFile(
   embeddingTiming: ConcurrentTiming,
 ): Promise<void> {
   try {
+    throwIfIndexCancelled(ctx);
     const vectors = await embeddingTiming.time(() =>
       embedFragments(file.fragments, ctx.embeddingModel, embeddingScheduler),
     );
+    throwIfIndexCancelled(ctx);
     const committed = timings.timeSync("index_commit", () =>
       commitFile(file, vectors, ctx, stats),
     );
     onProgress(stats, finishedFileDetail(committed, file.file.relativePath));
   } catch (error) {
+    if (indexIsCancelled(ctx)) {
+      throw indexCancellationError(ctx);
+    }
     const reason = markFileFailed(ctx, file.file, error, "embed");
     recordFileFailed(stats, file.file, reason);
     onProgress(stats, finishedFileDetail(false, file.file.relativePath));
@@ -755,15 +803,39 @@ function commitFile(
   stats: IndexStats,
 ): boolean {
   try {
+    throwIfIndexCancelled(ctx);
     ctx.storage.upsertFile(file.file, file.fragments, vectors);
     stats.filesIndexed++;
     stats.entitiesCreated += countPublicEntities(file.fragments);
     return true;
   } catch (error) {
+    if (indexIsCancelled(ctx)) {
+      throw indexCancellationError(ctx);
+    }
     const reason = markFileFailed(ctx, file.file, error, "commit");
     recordFileFailed(stats, file.file, reason);
     return false;
   }
+}
+
+function throwIfIndexCancelled(ctx: IndexContext): void {
+  if (!indexIsCancelled(ctx)) {
+    return;
+  }
+  throw indexCancellationError(ctx);
+}
+
+function indexIsCancelled(ctx: IndexContext): boolean {
+  return ctx.signal?.aborted === true;
+}
+
+function indexCancellationError(ctx: IndexContext): Error {
+  return ctx.signal?.reason instanceof Error
+    ? ctx.signal.reason
+    : new EngineError("Indexing was cancelled.", {
+        code: "ZVEC_GREP.ENGINE.INDEXING.CANCELLED",
+        context: collectionContext(ctx.collection),
+      });
 }
 
 function recordFileFailed(

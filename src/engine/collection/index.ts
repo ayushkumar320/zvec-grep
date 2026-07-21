@@ -114,6 +114,7 @@ export class Collection {
       storage: this.storage,
       embeddingConcurrency: options.embeddingConcurrency,
       onProgress: options.onProgress,
+      signal: options.signal,
     };
     return options.changedPaths && options.changedPaths.length > 0
       ? indexCollectionPaths(context, options.changedPaths)

@@ -24,7 +24,10 @@ export type IndexJobSnapshot = {
 export type SubmitIndexJob = {
   canonicalRoot: string;
   reason: JobReason;
-  run: (report: (progress: IndexProgress) => void) => Promise<void>;
+  run: (
+    report: (progress: IndexProgress) => void,
+    signal: AbortSignal,
+  ) => Promise<void>;
   followupIfRunning?: boolean;
 };
 
@@ -42,6 +45,7 @@ export type JobSchedulerOptions = {
 
 type ScheduledJob = IndexJobSnapshot & {
   run: SubmitIndexJob["run"];
+  abortController: AbortController;
   completion: Promise<IndexJobSnapshot>;
   resolveCompletion: (snapshot: IndexJobSnapshot) => void;
   progressListeners: Set<(progress: IndexProgress) => void>;
@@ -153,6 +157,15 @@ export class JobScheduler {
     }
   }
 
+  cancelRoot(canonicalRoot: string): boolean {
+    const active = this.activeByRoot.get(canonicalRoot);
+    if (!active) {
+      return false;
+    }
+    this.cancelJob(active, "Indexing was cancelled.");
+    return true;
+  }
+
   snapshot(): { queued: number; running: number } {
     return {
       queued: [...this.jobs.values()].filter((job) => job.state === "queued")
@@ -167,13 +180,10 @@ export class JobScheduler {
     }
     this.closed = true;
     for (const job of this.jobs.values()) {
-      if (job.retryTimer) {
-        clearTimeout(job.retryTimer);
-        job.retryTimer = undefined;
-      }
-      if (job.state === "queued") {
-        this.finish(job, "cancelled");
-      }
+      this.cancelJob(
+        job,
+        "Indexing was cancelled because the daemon is shutting down.",
+      );
     }
     this.queue.length = 0;
     if (this.running === 0) {
@@ -221,9 +231,19 @@ export class JobScheduler {
             // Progress observers must never change the indexing outcome.
           }
         }
-      });
-      this.finish(job, "succeeded");
+      }, job.abortController.signal);
+      if (job.abortController.signal.aborted) {
+        job.error ??= errorInfo(job.abortController.signal.reason);
+        this.finish(job, "cancelled");
+      } else {
+        this.finish(job, "succeeded");
+      }
     } catch (error) {
+      if (job.abortController.signal.aborted) {
+        job.error = errorInfo(error);
+        this.finish(job, "cancelled");
+        return;
+      }
       if (
         !this.closed &&
         isRetryable(error) &&
@@ -307,6 +327,7 @@ export class JobScheduler {
       completion,
       resolveCompletion,
       progressListeners: new Set(),
+      abortController: new AbortController(),
     };
     this.jobs.set(job.id, job);
     return job;
@@ -318,6 +339,32 @@ export class JobScheduler {
     this.queue.push(job);
     this.sortQueue();
     this.pump();
+  }
+
+  private cancelJob(job: ScheduledJob, message: string): void {
+    if (
+      job.state === "succeeded" ||
+      job.state === "failed" ||
+      job.state === "cancelled"
+    ) {
+      return;
+    }
+    if (!job.abortController.signal.aborted) {
+      job.abortController.abort(new DaemonError("INDEX_CANCELLED", message));
+    }
+    if (job.retryTimer) {
+      clearTimeout(job.retryTimer);
+      job.retryTimer = undefined;
+    }
+    const followup = job.followup;
+    job.followup = undefined;
+    if (followup) {
+      this.cancelJob(followup, message);
+    }
+    if (job.state === "queued") {
+      job.error = { code: "INDEX_CANCELLED", message };
+      this.finish(job, "cancelled");
+    }
   }
 
   private sortQueue(): void {
@@ -355,9 +402,9 @@ function combineRuns(
   first: SubmitIndexJob["run"],
   second: SubmitIndexJob["run"],
 ): SubmitIndexJob["run"] {
-  return async (report) => {
-    await first(report);
-    await second(report);
+  return async (report, signal) => {
+    await first(report, signal);
+    await second(report, signal);
   };
 }
 

@@ -241,13 +241,14 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
         canonicalRoot: runtime.canonicalRoot,
         reason: "manual",
         followupIfRunning: input.rebuild === true || followsNarrowJob,
-        run: (report) =>
+        run: (report, signal) =>
           runtime.withWrite(async () => {
             const proof = await this.runIndex(
               runtime,
               input,
               report,
               options.authorization,
+              signal,
             );
             if (proof.reconciled) {
               runtime.markReconciled(targetRevision, proof.reconciliationEpoch);
@@ -303,6 +304,7 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
     this.droppingRoots.add(canonicalRoot);
     try {
       await this.closeWatcher(canonicalRoot);
+      this.scheduler.cancelRoot(canonicalRoot);
       await this.scheduler.waitForRootIdle(canonicalRoot);
       const runtime = this.runtimeManager.getByCanonicalRoot(canonicalRoot);
       const drop = async (): Promise<boolean> => {
@@ -577,6 +579,7 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
     input: DaemonIndexInput,
     report: (progress: IndexProgress) => void,
     authorization?: RemoteEmbeddingOperationPermit,
+    signal?: AbortSignal,
   ): Promise<IndexReconciliationProof> {
     const startedAt = Date.now();
     const includeStatus = !input.changedPaths;
@@ -623,6 +626,7 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
           follow: input.follow,
           embeddingConcurrency: input.embeddingConcurrency,
           changedPaths: input.changedPaths,
+          signal,
           onProgress: report,
           onWriterContext: (context) => runtime.setWriterContext(context),
         }),
@@ -694,13 +698,14 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
         canonicalRoot: runtime.canonicalRoot,
         reason,
         followupIfRunning: followsNarrowWatch,
-        run: (report) =>
+        run: (report, signal) =>
           runtime.withWrite(async () => {
             const proof = await this.runIndex(
               runtime,
               input,
               report,
               authorization,
+              signal,
             );
             if (proof.reconciled) {
               runtime.markReconciled(targetRevision, proof.reconciliationEpoch);
@@ -734,7 +739,7 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
       scheduler: this.scheduler,
       getIndexedFileCount: () =>
         this.statusCache.get(runtime.canonicalRoot)?.status?.filesStored,
-      run: async (changes, report) => {
+      run: async (changes, report, signal) => {
         const changedPaths = [
           ...changes.touchedFiles,
           ...changes.rescanDirectories,
@@ -759,6 +764,7 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
           },
           report,
           automaticAuthorization.authorization,
+          signal,
         );
       },
     });

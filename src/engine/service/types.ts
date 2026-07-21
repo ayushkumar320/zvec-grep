@@ -52,6 +52,7 @@ export type ZvecGrepIndexOptions = {
   embeddingConcurrency?: number;
   onProgress?: (progress: IndexProgress) => void;
   changedPaths?: readonly string[];
+  signal?: AbortSignal;
   onWriterContext?: (
     context: ZvecGrepWriterContext,
   ) => void | (() => void | Promise<void>);

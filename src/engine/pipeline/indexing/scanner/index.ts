@@ -113,15 +113,21 @@ export type ScanResult = {
   files: FileInfo[];
 };
 
+export type ScanOptions = {
+  signal?: AbortSignal;
+};
+
 export async function scanRootPaths(
   collectionId: string,
   rootPaths: readonly RootPath[],
+  options: ScanOptions = {},
 ): Promise<ScanResult> {
   const validatedRootPaths = validateRootPaths(rootPaths);
   const files: FileInfo[] = [];
 
   for (const rootPath of validatedRootPaths) {
-    await scanRootPath(collectionId, rootPath, files);
+    throwIfAborted(options.signal);
+    await scanRootPath(collectionId, rootPath, files, options.signal);
   }
 
   return { files };
@@ -131,9 +137,11 @@ export async function scanFilePath(
   collectionId: string,
   rootPaths: readonly RootPath[],
   absolutePath: string,
+  options: ScanOptions = {},
 ): Promise<ScanResult> {
   const files: FileInfo[] = [];
   for (const rootPath of matchingRootPaths(rootPaths, absolutePath)) {
+    throwIfAborted(options.signal);
     const root = normalizeRootPath(rootPath);
     const targetInfo = await lstat(absolutePath).catch(() => null);
     const followedInfo =
@@ -179,9 +187,11 @@ export async function scanDirectoryPath(
   collectionId: string,
   rootPaths: readonly RootPath[],
   absolutePath: string,
+  options: ScanOptions = {},
 ): Promise<ScanResult> {
   const files: FileInfo[] = [];
   for (const rootPath of matchingRootPaths(rootPaths, absolutePath)) {
+    throwIfAborted(options.signal);
     const root = normalizeRootPath(rootPath);
     if (!root.recursive && absolutePath !== root.absolutePath) {
       continue;
@@ -234,6 +244,7 @@ export async function scanDirectoryPath(
       fileTypes,
       new Set([rootRealPath, directoryRealPath]),
       depth,
+      options.signal,
     );
   }
   return { files: dedupeFiles(files) };
@@ -351,7 +362,9 @@ async function scanRootPath(
   collectionId: string,
   rootPath: RootPath,
   files: FileInfo[],
+  signal?: AbortSignal,
 ): Promise<void> {
+  throwIfAborted(signal);
   const root = normalizeRootPath(rootPath);
   const fileTypes = await resolveFileTypePatterns(
     root.fileTypes,
@@ -397,6 +410,7 @@ async function scanRootPath(
     fileTypes,
     new Set([rootRealPath]),
     0,
+    signal,
   );
 }
 
@@ -409,7 +423,9 @@ async function walk(
   fileTypes: FileTypePatterns,
   visitedDirectories: Set<string>,
   depth: number,
+  signal?: AbortSignal,
 ): Promise<void> {
+  throwIfAborted(signal);
   let entries;
   const ignoreRules = [
     ...parentIgnoreRules,
@@ -425,6 +441,7 @@ async function walk(
   }
 
   for (const entry of entries) {
+    throwIfAborted(signal);
     const absolutePath = join(currentPath, entry.name);
     const relativePath = toDisplayPath(
       relative(rootPath.absolutePath, absolutePath),
@@ -482,6 +499,7 @@ async function walk(
         fileTypes,
         visitedDirectories,
         depth + 1,
+        signal,
       );
       continue;
     }
@@ -519,10 +537,20 @@ async function walk(
     }
 
     const file = await readFileInfo(collectionId, rootPath, absolutePath);
+    throwIfAborted(signal);
     if (file) {
       files.push(file);
     }
   }
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) {
+    return;
+  }
+  throw signal.reason instanceof Error
+    ? signal.reason
+    : new Error("Indexing was cancelled.");
 }
 
 function isHiddenName(name: string): boolean {

@@ -306,6 +306,7 @@ class ZvecGrepService implements ZvecGrep {
                   embeddingConcurrency: options.embeddingConcurrency,
                   onProgress: options.onProgress,
                   changedPaths: options.changedPaths,
+                  signal: options.signal,
                 });
               } finally {
                 await releaseWriterContext?.();
