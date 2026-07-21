@@ -100,11 +100,19 @@ type ServerIndexInfo = {
       indexed: number;
       pending: number;
       failed: number;
+      added: number;
+      modified: number;
+      deleted: number;
+      unchanged: number;
       entities: number;
     };
     suggestion?: string;
   };
   runtime?: {
+    watcher_active?: boolean;
+    dirty_revision?: number;
+    indexed_revision?: number;
+    active_job_id?: string;
     job_state?: "queued" | "running" | "succeeded" | "failed" | "cancelled";
     progress?: {
       files_total?: number;
@@ -260,8 +268,8 @@ export function printAnonymousInfo(
     roots: info.collection?.rootPaths,
     files: status
       ? {
-          indexed: status.filesIndexed,
-          total: status.filesScanned,
+          indexed: status.filesUnchanged,
+          total: status.filesScanned + status.filesDeleted,
           entities: status.entitiesIndexed ?? 0,
           pending: status.filesPending,
           failed: status.filesFailed,
@@ -301,11 +309,18 @@ export function printServerIndexInfo(
     roots,
     files: files
       ? {
-          indexed: progress?.files_indexed ?? files.indexed,
-          total: progress?.files_total ?? files.stored,
+          indexed: progress?.files_indexed ?? files.unchanged,
+          total: progress?.files_total ?? files.stored + files.added,
           entities: files.entities,
           pending: files.pending,
           failed: progress?.files_failed ?? files.failed,
+        }
+      : undefined,
+    changes: files
+      ? {
+          added: files.added,
+          modified: files.modified,
+          deleted: files.deleted,
         }
       : undefined,
     suggestion: info.persistent.suggestion,
@@ -493,10 +508,28 @@ function serverIndexState(info: ServerIndexInfo): WorkspaceIndexState {
   ) {
     return "indexing";
   }
+  if (
+    info.runtime?.dirty_revision !== undefined &&
+    info.runtime.indexed_revision !== undefined &&
+    info.runtime.dirty_revision > info.runtime.indexed_revision
+  ) {
+    return "stale";
+  }
   if ((info.persistent.files?.failed ?? 0) > 0) return "failed";
-  if ((info.persistent.files?.pending ?? 0) > 0) return "stale";
+  if (
+    (info.persistent.files?.pending ?? 0) > 0 ||
+    serverChangedTotal(info.persistent.files) > 0
+  ) {
+    return "stale";
+  }
   if (info.indexed) return "ready";
   return info.index_policy === "undecided" ? "undecided" : "unindexed";
+}
+
+function serverChangedTotal(
+  files: ServerIndexInfo["persistent"]["files"],
+): number {
+  return (files?.added ?? 0) + (files?.modified ?? 0) + (files?.deleted ?? 0);
 }
 
 function mapServerRootPath(root: ServerRootPath): WorkspaceRootPath {

@@ -73,7 +73,17 @@ function createBackend() {
       persistent: {
         home: `${input.root}/.zvec-grep`,
         index_path: `${input.root}/.zvec-grep/index`,
-        files: { stored: 1, indexed: 1, pending: 0, failed: 0, entities: 1 },
+        files: {
+          stored: 1,
+          indexed: 1,
+          pending: 0,
+          failed: 0,
+          added: 1,
+          modified: 2,
+          deleted: 3,
+          unchanged: 0,
+          entities: 1,
+        },
       },
       runtime: {
         watcherActive: true,
@@ -902,6 +912,15 @@ test("all tools return output-schema-compatible structured content", async (t) =
   });
   assert.equal(status.structuredContent.persistent.home, `${root}/.zvec-grep`);
   assert.equal(status.structuredContent.persistent.files.indexed, 1);
+  assert.deepEqual(
+    {
+      added: status.structuredContent.persistent.files.added,
+      modified: status.structuredContent.persistent.files.modified,
+      deleted: status.structuredContent.persistent.files.deleted,
+      unchanged: status.structuredContent.persistent.files.unchanged,
+    },
+    { added: 1, modified: 2, deleted: 3, unchanged: 0 },
+  );
 
   const search = await client.callTool({
     name: "zvec_grep_search",

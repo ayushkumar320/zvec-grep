@@ -421,6 +421,10 @@ test("status formatters cover collections, anonymous states, failures, filters, 
             indexed: 3,
             pending: 1,
             failed: 0,
+            added: 1,
+            modified: 0,
+            deleted: 0,
+            unchanged: 2,
             entities: 7,
           },
           suggestion: "zg index",
@@ -549,6 +553,7 @@ test("workspace status uses a status-first grouped layout", async () => {
             filesAdded: 0,
             filesModified: 0,
             filesDeleted: 0,
+            filesUnchanged: 1132,
           }),
         },
         { color: "never" },
@@ -593,6 +598,10 @@ test("workspace status uses a status-first grouped layout", async () => {
               indexed: 1,
               pending: 1,
               failed: 1,
+              added: 0,
+              modified: 0,
+              deleted: 0,
+              unchanged: 1,
               entities: 3,
             },
           },
@@ -610,6 +619,91 @@ test("workspace status uses a status-first grouped layout", async () => {
     if (originalTerm === undefined) delete process.env.TERM;
     else process.env.TERM = originalTerm;
   }
+});
+
+test("server workspace status reports changed files as stale", async () => {
+  const output = await captureConsole(() =>
+    printServerIndexInfo(
+      {
+        root: "/repo",
+        indexed: true,
+        index_policy: "enabled",
+        source: "index",
+        persistent: {
+          home: "/repo/.zvec-grep",
+          index_path: "/repo/.zvec-grep/index",
+          collection: {
+            root_paths: [{ absolute_path: "/repo", recursive: true }],
+            embedding: {
+              provider: "qwen",
+              model: "text-embedding-v4",
+              dimension: 16,
+              metric: "cosine",
+            },
+          },
+          files: {
+            stored: 8,
+            indexed: 8,
+            pending: 0,
+            failed: 0,
+            added: 1,
+            modified: 2,
+            deleted: 3,
+            unchanged: 3,
+            entities: 7,
+          },
+        },
+      },
+      { color: "never" },
+    ),
+  );
+
+  assert.match(output.logs.join("\n"), /Workspace index needs an update/);
+  assert.match(
+    output.logs.join("\n"),
+    /Coverage\s+█{7}░{13}\s+33%\s+3 \/ 9 files/,
+  );
+  assert.match(
+    output.logs.join("\n"),
+    /Changes\s+1 added · 2 modified · 3 deleted/,
+  );
+});
+
+test("direct workspace status excludes changed files from coverage", async () => {
+  const output = await captureConsole(() =>
+    printAnonymousInfo(
+      {
+        root: "/repo",
+        indexed: true,
+        indexPolicy: "enabled",
+        source: "index",
+        home: "/repo/.zvec-grep",
+        indexPath: "/repo/.zvec-grep/index",
+        collection: collection({
+          rootPaths: [{ absolutePath: "/repo", recursive: true }],
+        }),
+        status: status({
+          filesScanned: 173,
+          filesStored: 173,
+          filesIndexed: 173,
+          filesPending: 0,
+          filesFailed: 0,
+          filesAdded: 0,
+          filesModified: 1,
+          filesDeleted: 0,
+          filesUnchanged: 172,
+        }),
+      },
+      { color: "never" },
+    ),
+  );
+
+  assert.match(output.logs.join("\n"), /Workspace index needs an update/);
+  assert.match(
+    output.logs.join("\n"),
+    /Coverage\s+█{20}\s+99%\s+172 \/ 173 files/,
+  );
+  assert.doesNotMatch(output.logs.join("\n"), /100%\s+173 \/ 173 files/);
 });
 
 test("Remote Embedding authorization status uses grouped colors and compact paths", async () => {

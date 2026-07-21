@@ -117,6 +117,10 @@ export type ZvecGrepIndexStatusResult = {
       indexed: number;
       pending: number;
       failed: number;
+      added: number;
+      modified: number;
+      deleted: number;
+      unchanged: number;
       entities: number;
     };
     suggestion?: string;

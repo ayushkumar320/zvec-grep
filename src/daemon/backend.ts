@@ -1075,6 +1075,10 @@ function persistentStatus(
           indexed: info.status.filesIndexed,
           pending: info.status.filesPending,
           failed: info.status.filesFailed,
+          added: info.status.filesAdded,
+          modified: info.status.filesModified,
+          deleted: info.status.filesDeleted,
+          unchanged: info.status.filesUnchanged,
           entities: info.status.entitiesIndexed,
         }
       : undefined,

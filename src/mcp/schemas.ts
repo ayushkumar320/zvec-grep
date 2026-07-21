@@ -512,6 +512,10 @@ export const zvecGrepIndexStatusOutputSchema = z.object({
         indexed: z.number().int().nonnegative(),
         pending: z.number().int().nonnegative(),
         failed: z.number().int().nonnegative(),
+        added: z.number().int().nonnegative(),
+        modified: z.number().int().nonnegative(),
+        deleted: z.number().int().nonnegative(),
+        unchanged: z.number().int().nonnegative(),
         entities: z.number().int().nonnegative(),
       })
       .optional(),
