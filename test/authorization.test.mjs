@@ -172,7 +172,6 @@ test("authorization planner follows merged Query and Index behavior", async (t) 
     routes: [],
     freshness: "eventual",
     autoUpdate: true,
-    maxContentChars: 1200,
   };
   const fts = {
     ...hybrid,

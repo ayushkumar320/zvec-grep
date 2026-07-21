@@ -15,19 +15,13 @@ export function toolResult(
   };
 }
 
-export function contextToolResult(
-  result: ZvecGrepContextResult,
-  maxContentChars: number,
-): ToolResult {
-  return toolResult(contextText(result, maxContentChars), {
-    result: simplifyContextResult(result, maxContentChars),
+export function contextToolResult(result: ZvecGrepContextResult): ToolResult {
+  return toolResult(contextText(result), {
+    result: simplifyContextResult(result),
   });
 }
 
-export function contextText(
-  result: ZvecGrepContextResult,
-  maxContentChars: number,
-): string {
+export function contextText(result: ZvecGrepContextResult): string {
   const lines = [
     `query: ${result.query}`,
     `root: ${result.root}`,
@@ -42,10 +36,10 @@ export function contextText(
       `${item.file.relativePath}:${rangeLabel(item.range)} rank=${item.rank} matchedBy=${item.matchedBy}`,
     );
     if (item.outline) {
-      lines.push(`outline: ${truncate(item.outline, maxContentChars)}`);
+      lines.push(`outline: ${item.outline}`);
     }
     lines.push("source:");
-    lines.push(truncate(item.content, maxContentChars));
+    lines.push(item.content);
   }
 
   return lines.join("\n");
@@ -53,7 +47,6 @@ export function contextText(
 
 export function simplifyContextResult(
   result: ZvecGrepContextResult,
-  maxContentChars: number,
 ): Record<string, unknown> {
   return {
     query: result.query,
@@ -68,10 +61,8 @@ export function simplifyContextResult(
       file: item.file,
       range: item.range,
       excerptRange: item.excerptRange,
-      outline: item.outline
-        ? truncate(item.outline, maxContentChars)
-        : undefined,
-      content: truncate(item.content, maxContentChars),
+      outline: item.outline,
+      content: item.content,
       contentRole: item.contentRole,
       status: item.status,
       score: item.score,
@@ -105,12 +96,4 @@ function rangeLabel(range: {
     return `${range.startOffset}-${range.endOffset}`;
   }
   return range.kind;
-}
-
-export function truncate(value: string, maxChars: number): string {
-  if (value.length <= maxChars) {
-    return value;
-  }
-
-  return `${value.slice(0, maxChars)}\n...[truncated ${value.length - maxChars} chars]`;
 }

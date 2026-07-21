@@ -246,7 +246,6 @@ test("wait_for_fresh reports a failed reconciliation instead of returning stale 
         queries: ["answer"],
         routes: [],
         freshness: "wait_for_fresh",
-        maxContentChars: 1_200,
       }),
       /reconciliation failed/,
     );
@@ -1283,7 +1282,6 @@ function searchInput(root, query, freshness) {
     routes: [],
     freshness,
     autoUpdate: true,
-    maxContentChars: 1_200,
   };
 }
 

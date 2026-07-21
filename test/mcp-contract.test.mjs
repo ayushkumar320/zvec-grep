@@ -12,6 +12,8 @@ import { withProgressHeartbeat } from "../dist/mcp/progress-heartbeat.js";
 import { indexProgressFromMessage } from "../dist/index-progress.js";
 
 const root = resolve("test/fixtures/repository");
+const longIndexedContent = "x".repeat(8_000);
+const longRgContent = "r".repeat(8_000);
 
 function createBackend() {
   return {
@@ -58,7 +60,7 @@ function createBackend() {
               startOffset: 0,
               endOffset: 80,
             },
-            content: "x".repeat(100),
+            content: longIndexedContent,
             status: "possibly_stale",
             matchedBy: "fts+vector",
           },
@@ -125,7 +127,7 @@ function createBackend() {
               startOffset: 0,
               endOffset: 8,
             },
-            content: "needle",
+            content: longRgContent,
             status: "fresh",
             matchedBy: "lexical",
           },
@@ -837,7 +839,6 @@ test("rg normalizes managed ripgrep input before calling the backend", async (t)
       ignoreCase: true,
       glob: ["src/**", "!dist/**"],
       context: 2,
-      maxContentChars: 20,
     },
   });
 
@@ -863,13 +864,6 @@ test("input upper bounds are enforced", async (t) => {
   });
   assert.equal(excessiveLimit.isError, true);
   assert.match(excessiveLimit.content[0].text, /less than or equal to 50/i);
-
-  const excessiveContent = await client.callTool({
-    name: "zvec_grep_search",
-    arguments: { root, query: "query", maxContentChars: 6001 },
-  });
-  assert.equal(excessiveContent.isError, true);
-  assert.match(excessiveContent.content[0].text, /less than or equal to 6000/i);
 
   const excessiveQuery = await client.callTool({
     name: "zvec_grep_search",
@@ -913,8 +907,8 @@ test("all tools return output-schema-compatible structured content", async (t) =
   const calls = [
     ["zvec_grep_index", { root }],
     ["zvec_grep_index_drop", { root }],
-    ["zvec_grep_search", { root, query: "query", maxContentChars: 20 }],
-    ["zvec_grep_rg", { root, pattern: "needle", maxContentChars: 20 }],
+    ["zvec_grep_search", { root, query: "query" }],
+    ["zvec_grep_rg", { root, pattern: "needle" }],
     ["zvec_grep_index_status", { root }],
     ["zvec_grep_server_status", {}],
   ];
@@ -942,12 +936,14 @@ test("all tools return output-schema-compatible structured content", async (t) =
 
   const search = await client.callTool({
     name: "zvec_grep_search",
-    arguments: { root, query: "query", maxContentChars: 20 },
+    arguments: { root, query: "query" },
   });
-  assert.match(
+  assert.equal(
     search.structuredContent.result.items[0].content,
-    /truncated 80 chars/,
+    longIndexedContent,
   );
+  assert.equal(search.content[0].text.includes(longIndexedContent), true);
+  assert.doesNotMatch(search.content[0].text, /\[truncated \d+ chars\]/);
   assert.deepEqual(search.structuredContent.indexing, {
     state: "running",
     completed: 12,
@@ -955,4 +951,12 @@ test("all tools return output-schema-compatible structured content", async (t) =
   });
   assert.equal(search.structuredContent.update_job_id, undefined);
   assert.match(search.content[0].text, /indexing: running \(12\/20\)/);
+
+  const rg = await client.callTool({
+    name: "zvec_grep_rg",
+    arguments: { root, pattern: "needle" },
+  });
+  assert.equal(rg.structuredContent.result.items[0].content, longRgContent);
+  assert.equal(rg.content[0].text.includes(longRgContent), true);
+  assert.doesNotMatch(rg.content[0].text, /\[truncated \d+ chars\]/);
 });

@@ -6,7 +6,6 @@ export const MCP_MAX_QUERY_CHARS = 4_000;
 export const MCP_MAX_PATH_FILTERS = 128;
 export const MCP_MAX_PATH_CHARS = 1_024;
 export const MCP_MAX_SEARCH_LIMIT = 50;
-export const MCP_MAX_CONTENT_CHARS = 6_000;
 
 const boundedString = (description: string) =>
   z.string().max(MCP_MAX_QUERY_CHARS).describe(description);
@@ -133,13 +132,6 @@ const searchFields = {
     .boolean()
     .optional()
     .describe("Include per-hit search trace in structured output."),
-  maxContentChars: z
-    .number()
-    .int()
-    .positive()
-    .max(MCP_MAX_CONTENT_CHARS)
-    .default(1_200)
-    .describe("Maximum source characters to include per hit."),
 };
 
 export const zvecGrepIndexInputSchema = z.object({
@@ -293,13 +285,6 @@ export const zvecGrepRgInputSchema = z.object({
     .max(200)
     .optional()
     .describe("Maximum returned matches."),
-  maxContentChars: z
-    .number()
-    .int()
-    .positive()
-    .max(MCP_MAX_CONTENT_CHARS)
-    .default(1_200)
-    .describe("Maximum source characters to include per hit."),
 });
 
 const jobStateSchema = z.enum([
@@ -629,13 +614,6 @@ export const legacySearchInputSchema = z.object({
     .boolean()
     .optional()
     .describe("Include per-hit search trace in structured output."),
-  maxContentChars: z
-    .number()
-    .int()
-    .positive()
-    .max(6_000)
-    .default(1_200)
-    .describe("Maximum source characters to include per hit."),
 });
 
 export const legacyRgInputSchema = z.object({
@@ -694,13 +672,6 @@ export const legacyRgInputSchema = z.object({
     .max(200)
     .optional()
     .describe("Maximum returned matches."),
-  maxContentChars: z
-    .number()
-    .int()
-    .positive()
-    .max(MCP_MAX_CONTENT_CHARS)
-    .default(1_200)
-    .describe("Maximum source characters to include per hit."),
 });
 
 export type ZvecGrepIndexInput = z.infer<typeof zvecGrepIndexInputSchema>;

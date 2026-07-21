@@ -348,10 +348,7 @@ export function registerZvecGrepTools(
         root: response.root,
         freshness: response.freshness,
         indexing: response.indexing,
-        result: simplifyContextResult(
-          response.result,
-          effectiveSearch.maxContentChars,
-        ),
+        result: simplifyContextResult(response.result),
       };
       const statusLines = [
         `freshness: ${response.freshness}`,
@@ -360,7 +357,7 @@ export function registerZvecGrepTools(
           : []),
       ];
       return toolResult(
-        `${statusLines.join("\n")}\n${contextText(response.result, effectiveSearch.maxContentChars)}`,
+        `${statusLines.join("\n")}\n${contextText(response.result)}`,
         structuredContent,
       );
     },
@@ -415,12 +412,9 @@ export function registerZvecGrepTools(
       const response = await backend.rg(input);
       const structuredContent = {
         root: response.root,
-        result: simplifyContextResult(response.result, input.maxContentChars),
+        result: simplifyContextResult(response.result),
       };
-      return toolResult(
-        contextText(response.result, input.maxContentChars),
-        structuredContent,
-      );
+      return toolResult(contextText(response.result), structuredContent);
     },
   );
 

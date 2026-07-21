@@ -39,7 +39,6 @@ export type NormalizedSearchInput = {
   modifiedAfter?: number;
   modifiedBefore?: number;
   trace?: boolean;
-  maxContentChars: number;
 };
 
 export function normalizeSearchInput(
@@ -51,7 +50,6 @@ export function normalizeSearchInput(
     ...common,
     freshness: input.freshness,
     autoUpdate: input.autoUpdate,
-    maxContentChars: input.maxContentChars,
   };
 }
 

@@ -1659,7 +1659,6 @@ function normalizedDirectSearchInput(
     routes: [...(options.routes ?? [])],
     freshness: options.fresh ? "wait_for_fresh" : "eventual",
     autoUpdate: !options.noAutoUpdate,
-    maxContentChars: 1_200,
   };
 }
 
