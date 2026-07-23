@@ -91,7 +91,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.agent, "opencode")
         self.assertEqual(args.model, "qwen3.7-max")
 
-    def test_opencode_default_package_fails_before_harbor(self) -> None:
+    def test_legacy_package_fails_before_harbor(self) -> None:
         with self.assertRaisesRegex(SystemExit, "does not support"):
             main(
                 [
@@ -103,6 +103,8 @@ class CliTests(unittest.TestCase):
                     "aliyun-glm-5.2",
                     "--profile",
                     "zvec-grep",
+                    "--zvec-grep-package",
+                    "0.1.5",
                     "--dry-run",
                 ]
             )

@@ -224,10 +224,12 @@ export DASHSCOPE_API_KEY="your-api-key"
 
 The adapter uploads the embedding credential to a protected zvec-grep config
 file in the isolated agent environment and does not add its value to the
-generated Harbor command. For Codex and OpenCode, it configures the agent's MCP
-integration and starts the zvec-grep server inside the task container. If the
-same credential also authenticates the agent's model, that agent's normal
-authentication path still applies.
+generated Harbor command. Before indexing, it creates a Workspace-scoped Remote
+Embedding grant with `zg auth grant`; the index command and later MCP queries
+reuse that grant without `--allow-remote`. For Codex and OpenCode, it configures
+the agent's MCP integration and starts the zvec-grep server inside the task
+container. If the same credential also authenticates the agent's model, that
+agent's normal authentication path still applies.
 
 ## Test run instructions
 
@@ -284,8 +286,9 @@ uv run zg-bench run swebench-verified \
   --profile zvec-grep --zvec-grep-package <compatible-version>
 ```
 
-Published zvec-grep `0.1.5` does not support the OpenCode installer. OpenCode
-runs must use a newer package or the current checkout until one is published.
+Published zvec-grep `0.1.5` does not support Workspace Remote Embedding
+authorization and also lacks the OpenCode installer. Use the benchmark default
+(`0.1.6-alpha.3` or newer) or the current checkout.
 
 Use the current repository checkout when running from `benchmarks/`:
 

@@ -47,10 +47,20 @@ class _InstallHarness(ZvecGrepMixin):
 
 
 class InstallZvecGrepTests(unittest.IsolatedAsyncioTestCase):
-    async def test_index_authorizes_remote_embedding_once(self) -> None:
+    def test_remote_index_uses_workspace_authorization(self) -> None:
         self.assertEqual(
-            ZvecGrepMixin._index_command("qwen/text-embedding-v4"),
-            "zg index --embedding qwen/text-embedding-v4 --allow-remote once",
+            ZvecGrepMixin._authorization_command("qwen/text-embedding-v4"),
+            "zg auth grant --capability embedding --scope workspace "
+            "--embedding qwen/text-embedding-v4",
+        )
+        index_command = ZvecGrepMixin._index_command("qwen/text-embedding-v4")
+        self.assertEqual(
+            index_command,
+            "zg index --embedding qwen/text-embedding-v4",
+        )
+        self.assertNotIn("--allow-remote", index_command)
+        self.assertIsNone(
+            ZvecGrepMixin._authorization_command("local/embeddinggemma-300m")
         )
 
     async def test_recognizes_current_and_legacy_ready_status(self) -> None:

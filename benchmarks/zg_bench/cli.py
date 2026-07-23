@@ -272,7 +272,7 @@ def main(argv: list[str] | None = None) -> int:
     if "zvec-grep" in profiles and ZVEC_GREP_EMBEDDING.startswith("qwen/"):
         print(
             f"Embedding: {ZVEC_GREP_EMBEDDING} "
-            "(remote; authorized for each index command)"
+            "(remote; Workspace authorization granted during setup)"
         )
     if suite.tasks is None:
         print("Tasks:   all dataset tasks")

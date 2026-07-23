@@ -16,7 +16,7 @@ OPENCODE_DASHSCOPE_BASE_URL = (
     "https://dashscope.aliyuncs.com/compatible-mode/v1"
 )
 OPENCODE_OPENAI_COMPATIBLE_PACKAGE = "@ai-sdk/openai-compatible"
-ZVEC_GREP_PACKAGE = "@zvec/zvec-grep@0.1.5"
+ZVEC_GREP_PACKAGE = "@zvec/zvec-grep@0.1.6-alpha.3"
 ZVEC_GREP_BINDING_PACKAGE = "@zvec/bindings-linux-x64@0.5.0"
 ZVEC_GREP_EMBEDDING = "qwen/text-embedding-v4"
 ZVEC_GREP_API_KEY_ENV_VARS = (

@@ -226,13 +226,18 @@ class RunValidationTests(unittest.TestCase):
             environment["OPENAI_BASE_URL"], runner.OPENCODE_DASHSCOPE_BASE_URL
         )
 
-    def test_opencode_rejects_published_package_without_installer(self) -> None:
-        with self.assertRaisesRegex(ValueError, "does not support"):
-            runner.validate_zvec_grep_package_compatibility(
-                ("zvec-grep",),
-                agent="opencode",
-                zvec_grep_package="0.1.5",
-            )
+    def test_remote_auth_rejects_published_package_without_workspace_grants(
+        self,
+    ) -> None:
+        for agent in ("codex", "opencode"):
+            with self.subTest(agent=agent), self.assertRaisesRegex(
+                ValueError, "Workspace Remote Embedding authorization"
+            ):
+                runner.validate_zvec_grep_package_compatibility(
+                    ("zvec-grep",),
+                    agent=agent,
+                    zvec_grep_package="0.1.5",
+                )
 
     def test_opencode_accepts_local_package_source(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

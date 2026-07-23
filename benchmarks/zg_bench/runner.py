@@ -367,9 +367,6 @@ def validate_zvec_grep_package_compatibility(
         )
     if _looks_like_package_path(normalized):
         raise ValueError(f"local zvec-grep package does not exist: {candidate}")
-    if agent != _OPENCODE_AGENT:
-        return
-
     match = re.fullmatch(
         r"@zvec/zvec-grep@v?(\d+)\.(\d+)\.(\d+)(?:[-+][0-9A-Za-z.-]+)?",
         normalized,
@@ -379,8 +376,9 @@ def validate_zvec_grep_package_compatibility(
     version = tuple(int(part) for part in match.groups())
     if version <= (0, 1, 5):
         raise ValueError(
-            f"{normalized} does not support 'zg install --target opencode'; "
-            "use a newer published package or pass --zvec-grep-package .. "
+            f"{normalized} does not support Workspace Remote Embedding "
+            "authorization; use @zvec/zvec-grep@0.1.6-alpha.3 or newer, "
+            "or pass --zvec-grep-package .. "
             "from the benchmarks directory"
         )
 

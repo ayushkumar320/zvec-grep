@@ -176,7 +176,7 @@ def _collect_run_checks(
                 "Remote Embedding",
                 True,
                 f"{ZVEC_GREP_EMBEDDING}; source content is sent remotely "
-                "with one-run authorization",
+                "with a Workspace grant created during setup",
             )
         )
 

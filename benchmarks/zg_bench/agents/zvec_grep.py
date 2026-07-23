@@ -125,6 +125,27 @@ class ZvecGrepMixin:
                 environment, workdir
             )
 
+            authorization_command = self._authorization_command(
+                self._embedding_model
+            )
+            if authorization_command is not None:
+                authorization_started = time.monotonic()
+                authorization_result = await self.exec_as_agent(
+                    environment,
+                    command=authorization_command,
+                    cwd=workdir,
+                )
+                metadata["authorization_duration_seconds"] = round(
+                    time.monotonic() - authorization_started, 3
+                )
+                metadata["authorization_scope"] = "workspace"
+                metadata["authorization_stdout"] = self._bounded_output(
+                    authorization_result.stdout
+                )
+                metadata["authorization_stderr"] = self._bounded_output(
+                    authorization_result.stderr
+                )
+
             index_started = time.monotonic()
             index_result = await self.exec_as_agent(
                 environment,
@@ -404,9 +425,15 @@ class ZvecGrepMixin:
 
     @staticmethod
     def _index_command(embedding_model: str) -> str:
+        return f"zg index --embedding {shlex.quote(embedding_model)}"
+
+    @staticmethod
+    def _authorization_command(embedding_model: str) -> str | None:
+        if embedding_model.startswith("local/"):
+            return None
         return (
-            "zg index --embedding "
-            f"{shlex.quote(embedding_model)} --allow-remote once"
+            "zg auth grant --capability embedding --scope workspace "
+            f"--embedding {shlex.quote(embedding_model)}"
         )
 
     async def _resolve_workdir(self, environment: BaseEnvironment) -> str:
