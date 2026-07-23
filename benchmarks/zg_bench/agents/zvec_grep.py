@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import posixpath
+import re
 import shlex
 import tempfile
 import time
@@ -10,6 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from harbor.agents.installed.node_install import nvm_node_install_snippet
 from harbor.environments.base import BaseEnvironment
 
 from ..settings import (
@@ -33,6 +35,8 @@ class ZvecGrepMixin:
         zvec_grep_package: str = ZVEC_GREP_PACKAGE,
         zvec_binding_package: str = ZVEC_GREP_BINDING_PACKAGE,
         embedding_model: str = ZVEC_GREP_EMBEDDING,
+        mcp_target: str | None = None,
+        zvec_grep_package_sha256: str | None = None,
         extra_env: dict[str, str] | None = None,
         **kwargs: Any,
     ) -> None:
@@ -42,6 +46,12 @@ class ZvecGrepMixin:
             raise ValueError("zvec_binding_package must not be empty")
         if not embedding_model.strip():
             raise ValueError("embedding_model must not be empty")
+        if mcp_target is not None and not mcp_target.strip():
+            raise ValueError("mcp_target must not be empty")
+        if zvec_grep_package_sha256 is not None and not re.fullmatch(
+            r"[0-9a-f]{64}", zvec_grep_package_sha256
+        ):
+            raise ValueError("zvec_grep_package_sha256 must be a SHA-256 digest")
 
         resolved_extra_env = dict(extra_env or {})
         api_key_source = self._resolve_api_key_source(resolved_extra_env)
@@ -68,6 +78,8 @@ class ZvecGrepMixin:
         self._zvec_grep_package = zvec_grep_package
         self._zvec_binding_package = zvec_binding_package
         self._embedding_model = embedding_model
+        self._mcp_target = mcp_target
+        self._zvec_grep_package_sha256 = zvec_grep_package_sha256
         self._api_key_source = api_key_source
         self._embedding_api_key = api_key
 
@@ -84,6 +96,10 @@ class ZvecGrepMixin:
             "embedding_model": self._embedding_model,
             "api_key_source": self._api_key_source,
         }
+        if self._zvec_grep_package_sha256 is not None:
+            metadata["package_sha256"] = self._zvec_grep_package_sha256
+        if self._mcp_target is not None:
+            metadata["mcp_target"] = self._mcp_target
 
         try:
             install_started = time.monotonic()
@@ -92,6 +108,13 @@ class ZvecGrepMixin:
             )
             metadata["zvec_grep_version"] = zvec_grep_version
             metadata["install_reused_cache"] = reused_install
+            supports_ready_check = self._supports_machine_ready_check(
+                zvec_grep_version,
+                package_sha256=self._zvec_grep_package_sha256,
+            )
+            metadata["ready_check"] = (
+                "machine" if supports_ready_check else "legacy-text"
+            )
             metadata["install_duration_seconds"] = round(
                 time.monotonic() - install_started, 3
             )
@@ -105,9 +128,7 @@ class ZvecGrepMixin:
             index_started = time.monotonic()
             index_result = await self.exec_as_agent(
                 environment,
-                command=(
-                    "zg index --embedding " f"{shlex.quote(self._embedding_model)}"
-                ),
+                command=self._index_command(self._embedding_model),
                 cwd=workdir,
             )
             metadata["index_duration_seconds"] = round(
@@ -118,17 +139,31 @@ class ZvecGrepMixin:
 
             status_result = await self.exec_as_agent(
                 environment,
-                command="zg status",
+                command=(
+                    "zg status --check-ready"
+                    if supports_ready_check
+                    else "zg status"
+                ),
                 cwd=workdir,
             )
             metadata["index_status"] = self._bounded_output(status_result.stdout)
             metadata["index_status_stderr"] = self._bounded_output(
                 status_result.stderr
             )
-            if not self._index_is_ready(metadata["index_status"]):
+            if not supports_ready_check and not self._index_is_ready(
+                metadata["index_status"]
+            ):
                 raise RuntimeError(
                     "zvec-grep index setup completed but zg status did not "
                     "report state ready"
+                )
+
+            if self._mcp_target is not None:
+                await self._setup_mcp(
+                    environment,
+                    workdir,
+                    metadata,
+                    supports_ready_check=supports_ready_check,
                 )
             metadata["status"] = "ready"
         except BaseException as error:
@@ -141,16 +176,80 @@ class ZvecGrepMixin:
             metadata["total_duration_seconds"] = round(time.monotonic() - started, 3)
             self._write_setup_metadata(metadata)
 
+    async def _setup_mcp(
+        self,
+        environment: BaseEnvironment,
+        workdir: str,
+        metadata: dict[str, Any],
+        *,
+        supports_ready_check: bool,
+    ) -> None:
+        assert self._mcp_target is not None
+        mcp_started = time.monotonic()
+        mcp_result = await self.exec_as_agent(
+            environment,
+            command=(
+                "zg install --target " f"{shlex.quote(self._mcp_target)} --yes"
+            ),
+            cwd=workdir,
+        )
+        metadata["mcp_setup_duration_seconds"] = round(
+            time.monotonic() - mcp_started, 3
+        )
+        metadata["mcp_setup_stdout"] = self._bounded_output(mcp_result.stdout)
+        metadata["mcp_setup_stderr"] = self._bounded_output(mcp_result.stderr)
+
+        server_status = await self.exec_as_agent(
+            environment,
+            command=(
+                "zg server status --check-ready"
+                if supports_ready_check
+                else "zg server status"
+            ),
+            cwd=workdir,
+        )
+        metadata["mcp_server_status"] = self._bounded_output(server_status.stdout)
+        metadata["mcp_server_status_stderr"] = self._bounded_output(
+            server_status.stderr
+        )
+        if not supports_ready_check and not self._mcp_server_is_ready(
+            metadata["mcp_server_status"]
+        ):
+            raise RuntimeError(
+                "zvec-grep MCP setup completed but the server did not report ready"
+            )
+
     async def _install_zvec_grep(
         self, environment: BaseEnvironment
     ) -> tuple[str, bool]:
         package = shlex.quote(self._zvec_grep_package)
         binding_package = shlex.quote(self._zvec_binding_package)
         expected_version = self._package_version(self._zvec_grep_package)
-        if expected_version is None:
+        node_install_command = nvm_node_install_snippet()
+        ensure_node_command = (
+            f"{_NVM_INIT} "
+            "if ! command -v node >/dev/null 2>&1 || "
+            "! command -v npm >/dev/null 2>&1; then "
+            f"{node_install_command}; "
+            "fi"
+        )
+        if self._zvec_grep_package_sha256 is not None:
+            expected_digest = shlex.quote(self._zvec_grep_package_sha256)
+            install_command = (
+                'package_marker="$HOME/.nvm/.zg-bench-zvec-grep-sha256"; '
+                "if command -v zg >/dev/null 2>&1 && "
+                f'[ "$(cat "$package_marker" 2>/dev/null)" = {expected_digest} ] && '
+                f"npm list -g --depth=0 {binding_package} >/dev/null 2>&1; "
+                "then reused=1; else "
+                f"npm install -g {package} {binding_package} "
+                "--omit=optional --no-audit --no-fund && "
+                f"printf '%s\\n' {expected_digest} > \"$package_marker\" && "
+                "reused=0; fi"
+            )
+        elif expected_version is None:
             install_command = (
                 f"npm install -g {package} {binding_package} "
-                "--omit=optional --no-audit --no-fund; reused=0"
+                "--omit=optional --no-audit --no-fund && reused=0"
             )
         else:
             expected = shlex.quote(expected_version)
@@ -160,12 +259,13 @@ class ZvecGrepMixin:
                 f"npm list -g --depth=0 {binding_package} >/dev/null 2>&1; "
                 "then reused=1; else "
                 f"npm install -g {package} {binding_package} "
-                "--omit=optional --no-audit --no-fund; reused=0; fi"
+                "--omit=optional --no-audit --no-fund && reused=0; fi"
             )
         install_result = await self.exec_as_agent(
             environment,
             command=(
-                f"{_NVM_INIT} "
+                "set -e; "
+                f"{ensure_node_command}; "
                 f"{install_command}; "
                 "printf '\\nZG_INSTALL_REUSED=%s\\nZG_NODE_PATH=%s\\n"
                 "ZG_BIN_PATH=%s\\n' \"$reused\" \"$(command -v node)\" "
@@ -208,7 +308,12 @@ class ZvecGrepMixin:
             environment,
             command='printf "%s\\n" "$HOME"',
         )
-        home = posixpath.normpath((home_result.stdout or "").strip())
+        home_lines = [
+            re.sub(r"\x1b\[[0-9;]*m", "", line).strip()
+            for line in (home_result.stdout or "").splitlines()
+            if re.sub(r"\x1b\[[0-9;]*m", "", line).strip().startswith("/")
+        ]
+        home = posixpath.normpath(home_lines[-1] if home_lines else "")
         if not home.startswith("/") or home == "/":
             raise RuntimeError(f"agent home directory is not absolute: {home!r}")
 
@@ -286,12 +391,35 @@ class ZvecGrepMixin:
             return None
         return version
 
+    @staticmethod
+    def _supports_machine_ready_check(
+        version: str, *, package_sha256: str | None
+    ) -> bool:
+        if package_sha256 is not None:
+            return True
+        match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)(?:[-+][0-9A-Za-z.-]+)?", version)
+        if match is None:
+            return False
+        return tuple(int(part) for part in match.groups()) >= (0, 1, 6)
+
+    @staticmethod
+    def _index_command(embedding_model: str) -> str:
+        return (
+            "zg index --embedding "
+            f"{shlex.quote(embedding_model)} --allow-remote once"
+        )
+
     async def _resolve_workdir(self, environment: BaseEnvironment) -> str:
         result = await environment.exec(command="pwd")
         if result.return_code != 0:
             raise RuntimeError("could not resolve the task working directory")
 
-        workdir = posixpath.normpath((result.stdout or "").strip())
+        workdir_lines = [
+            re.sub(r"\x1b\[[0-9;]*m", "", line).strip()
+            for line in (result.stdout or "").splitlines()
+            if re.sub(r"\x1b\[[0-9;]*m", "", line).strip().startswith("/")
+        ]
+        workdir = posixpath.normpath(workdir_lines[-1] if workdir_lines else "")
         if not workdir or not workdir.startswith("/"):
             raise RuntimeError(f"task working directory is not absolute: {workdir!r}")
         if workdir == "/":
@@ -338,10 +466,19 @@ class ZvecGrepMixin:
     @staticmethod
     def _index_is_ready(status_output: str) -> bool:
         for line in status_output.splitlines():
-            fields = line.split()
+            normalized = re.sub(r"\x1b\[[0-9;]*m", "", line).strip()
+            if normalized == "✓ Workspace index is ready":
+                return True
+            fields = normalized.split()
             if len(fields) >= 2 and fields[0] == "state":
                 return fields[1] == "ready"
         return False
+
+    @staticmethod
+    def _mcp_server_is_ready(status_output: str) -> bool:
+        return any(
+            line.strip() == "Server: ready" for line in status_output.splitlines()
+        )
 
     @staticmethod
     def _bounded_output(output: str | None) -> str:

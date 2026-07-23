@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,8 +17,12 @@ import yaml
 from .settings import (
     AGENT_SETUP_TIMEOUT_MULTIPLIER,
     CODEX_VERSION,
-    OPENCODE_ALIYUN_GLM_BASE_URL,
     OPENCODE_ALIYUN_GLM_MODEL,
+    OPENCODE_ALIYUN_GLM_MODEL_ID,
+    OPENCODE_ALIYUN_QWEN_MODEL,
+    OPENCODE_ALIYUN_QWEN_MODEL_ID,
+    OPENCODE_DASHSCOPE_BASE_URL,
+    OPENCODE_OPENAI_COMPATIBLE_PACKAGE,
     OPENCODE_VERSION,
     QWEN_CODE_DASHSCOPE_BASE_URL,
     QWEN_CODE_DASHSCOPE_MODEL,
@@ -35,7 +42,16 @@ ZVEC_QWEN_CODE_IMPORT_PATH = (
     "zg_bench.agents.zvec_qwen_code:ZvecQwenCode"
 )
 ZVEC_OPENCODE_IMPORT_PATH = "zg_bench.agents.zvec_opencode:ZvecOpenCode"
+OPENCODE_ACP_IMPORT_PATH = "zg_bench.agents.opencode_acp:OpenCodeACP"
+OPENCODE_ACP_REGISTRY_ENTRY_PATH = (
+    Path(__file__).resolve().parent
+    / "agents"
+    / f"opencode-{OPENCODE_VERSION}.json"
+)
 SETUP_CACHE_DIR = BENCHMARKS_DIR / ".cache" / "agent-setup"
+LOCAL_PACKAGE_DIR = SETUP_CACHE_DIR / "local-package"
+LOCAL_NPM_CACHE_DIR = SETUP_CACHE_DIR / "npm-cache"
+LOCAL_ZVEC_GREP_PACKAGE_TARGET = "/tmp/zg-bench-zvec-grep.tgz"
 _SETUP_CACHE_TARGET = "/root/.nvm"
 _CODEX_AGENT = "codex"
 _QWEN_CODE_AGENT = "qwen-coder"
@@ -58,8 +74,10 @@ _OPENCODE_ALIYUN_API_KEY_ENV_VARS = (
 
 Profile = Literal["baseline", "zvec-grep"]
 ProfileSelection = Literal["baseline", "zvec-grep", "all"]
+Tier = Literal["smoke", "ci", "full"]
 PROFILES: tuple[Profile, ...] = ("baseline", "zvec-grep")
 PROFILE_SELECTIONS: tuple[ProfileSelection, ...] = (*PROFILES, "all")
+TIERS: tuple[Tier, ...] = ("smoke", "ci", "full")
 
 
 class SuiteConfigError(ValueError):
@@ -67,10 +85,74 @@ class SuiteConfigError(ValueError):
 
 
 @dataclass(frozen=True)
-class SmokeSuite:
+class BenchmarkSuite:
     name: str
     dataset: str
-    task: str
+    tier: Tier
+    tasks: tuple[str, ...] | None
+
+
+@dataclass(frozen=True)
+class AgentModelSupport:
+    """An agent/model pair intentionally supported by this benchmark."""
+
+    agent: str
+    model: str
+    aliases: tuple[str, ...] = ()
+    configuration: str = "configured"
+
+    def matches(self, agent: str, model: str) -> bool:
+        return self.agent == agent and model in (self.model, *self.aliases)
+
+
+_CODEX_MODEL_SUPPORT = AgentModelSupport(
+    _CODEX_AGENT,
+    "*",
+    configuration="native passthrough",
+)
+_QWEN_CODE_MODEL_SUPPORT = AgentModelSupport(
+    _QWEN_CODE_AGENT,
+    QWEN_CODE_DASHSCOPE_MODEL,
+    aliases=(
+        f"dashscope/{QWEN_CODE_DASHSCOPE_MODEL}",
+        "qwen-3.7-max",
+        "dashscope/qwen-3.7-max",
+    ),
+)
+_OPENCODE_GLM_MODEL_SUPPORT = AgentModelSupport(
+    _OPENCODE_AGENT,
+    OPENCODE_ALIYUN_GLM_MODEL,
+    aliases=(
+        f"openai/{OPENCODE_ALIYUN_GLM_MODEL}",
+        f"dashscope/{OPENCODE_ALIYUN_GLM_MODEL}",
+    ),
+)
+_OPENCODE_QWEN_MODEL_SUPPORT = AgentModelSupport(
+    _OPENCODE_AGENT,
+    OPENCODE_ALIYUN_QWEN_MODEL,
+    aliases=(f"dashscope/{OPENCODE_ALIYUN_QWEN_MODEL}",),
+)
+AGENT_MODEL_SUPPORT: tuple[AgentModelSupport, ...] = (
+    # Codex owns its model catalog and receives the selected model unchanged.
+    _CODEX_MODEL_SUPPORT,
+    _QWEN_CODE_MODEL_SUPPORT,
+    _OPENCODE_GLM_MODEL_SUPPORT,
+    _OPENCODE_QWEN_MODEL_SUPPORT,
+)
+
+
+@dataclass(frozen=True)
+class PreparedSetupCache:
+    compose_path: Path
+    zvec_grep_package: str | None = None
+    zvec_grep_package_sha256: str | None = None
+
+
+@dataclass(frozen=True)
+class PreparedZvecGrepPackage:
+    install_spec: str
+    bind_source: Path | None = None
+    sha256: str | None = None
 
 
 def available_suites() -> list[str]:
@@ -89,7 +171,12 @@ def _require_nonempty_string(value: Any, label: str) -> str:
     return value
 
 
-def load_suite(name_or_path: str | Path) -> SmokeSuite:
+def load_suite(
+    name_or_path: str | Path,
+    *,
+    tier: Tier = "smoke",
+    task_overrides: Sequence[str] | None = None,
+) -> BenchmarkSuite:
     candidate = Path(name_or_path)
     if candidate.suffix in {".yaml", ".yml"}:
         path = candidate
@@ -113,16 +200,50 @@ def load_suite(name_or_path: str | Path) -> SmokeSuite:
         raise SuiteConfigError("dataset must use a pinned Harbor revision")
 
     tiers = _require_mapping(root.get("tiers"), "tiers")
-    smoke = _require_mapping(tiers.get("smoke"), "tiers.smoke")
-    tasks = smoke.get("tasks")
-    if not isinstance(tasks, list) or len(tasks) != 1:
+    if tier not in TIERS:
+        raise SuiteConfigError(f"unsupported tier: {tier}")
+    if tier not in tiers:
+        available = ", ".join(name for name in TIERS if name in tiers) or "none"
+        raise SuiteConfigError(
+            f"tier {tier!r} is not configured for {name!r}; available: {available}"
+        )
+    selected = _require_mapping(tiers.get(tier), f"tiers.{tier}")
+    run_all = selected.get("all", False)
+    raw_tasks = selected.get("tasks")
+    if not isinstance(run_all, bool):
+        raise SuiteConfigError(f"tiers.{tier}.all must be a boolean")
+    if run_all and raw_tasks is not None:
+        raise SuiteConfigError(
+            f"tiers.{tier} cannot define both all: true and tasks"
+        )
+    if run_all:
+        tasks: tuple[str, ...] | None = None
+    else:
+        if not isinstance(raw_tasks, list) or not raw_tasks:
+            raise SuiteConfigError(
+                f"tiers.{tier} must contain tasks or set all: true"
+            )
+        tasks = tuple(
+            _require_nonempty_string(task, f"tiers.{tier}.tasks[{index}]")
+            for index, task in enumerate(raw_tasks)
+        )
+        if len(set(tasks)) != len(tasks):
+            raise SuiteConfigError(f"tiers.{tier}.tasks must not contain duplicates")
+    if tier == "smoke" and tasks is not None and len(tasks) != 1:
         raise SuiteConfigError("the smoke tier must contain exactly one task")
-    task = _require_nonempty_string(tasks[0], "tiers.smoke.tasks[0]")
+
+    if task_overrides:
+        tasks = tuple(
+            _require_nonempty_string(task, f"task override {index}")
+            for index, task in enumerate(task_overrides)
+        )
+        if len(set(tasks)) != len(tasks):
+            raise SuiteConfigError("task overrides must not contain duplicates")
 
     if path.parent == SUITES_DIR and name != path.stem:
         raise SuiteConfigError(f"suite name {name!r} must match filename {path.stem!r}")
 
-    return SmokeSuite(name=name, dataset=dataset, task=task)
+    return BenchmarkSuite(name=name, dataset=dataset, tier=tier, tasks=tasks)
 
 
 def new_run_id() -> str:
@@ -137,20 +258,57 @@ def selected_profiles(selection: ProfileSelection) -> tuple[Profile, ...]:
     return (selection,)
 
 
+def available_agent_models() -> tuple[AgentModelSupport, ...]:
+    return AGENT_MODEL_SUPPORT
+
+
+def resolve_agent_model(agent: str, model: str) -> AgentModelSupport:
+    agent = agent.strip()
+    model = model.strip()
+    if not agent:
+        raise ValueError("agent must not be empty")
+    if not model:
+        raise ValueError("model must not be empty")
+    agent_support = tuple(
+        support for support in AGENT_MODEL_SUPPORT if support.agent == agent
+    )
+    if not agent_support:
+        supported = ", ".join(
+            dict.fromkeys(support.agent for support in AGENT_MODEL_SUPPORT)
+        )
+        raise ValueError(
+            f"unsupported agent {agent!r}; supported agents: {supported}"
+        )
+
+    for support in agent_support:
+        if support.model == "*" or support.matches(agent, model):
+            return support
+
+    supported = ", ".join(support.model for support in agent_support)
+    raise ValueError(
+        f"unsupported model {model!r} for agent {agent!r}; "
+        f"supported models: {supported}"
+    )
+
+
 def _is_qwen_code_dashscope_model(agent: str, model: str) -> bool:
-    return agent == _QWEN_CODE_AGENT and model in {
-        QWEN_CODE_DASHSCOPE_MODEL,
-        f"dashscope/{QWEN_CODE_DASHSCOPE_MODEL}",
-        "qwen-3.7-max",
-        "dashscope/qwen-3.7-max",
-    }
+    return _QWEN_CODE_MODEL_SUPPORT.matches(agent, model)
 
 
 def _is_opencode_aliyun_glm_model(agent: str, model: str) -> bool:
-    return agent == _OPENCODE_AGENT and model in {
-        OPENCODE_ALIYUN_GLM_MODEL,
-        f"openai/{OPENCODE_ALIYUN_GLM_MODEL}",
-    }
+    return _OPENCODE_GLM_MODEL_SUPPORT.matches(agent, model)
+
+
+def _is_opencode_aliyun_qwen_model(agent: str, model: str) -> bool:
+    return _OPENCODE_QWEN_MODEL_SUPPORT.matches(agent, model)
+
+
+def _opencode_dashscope_model_id(agent: str, model: str) -> str | None:
+    if _is_opencode_aliyun_glm_model(agent, model):
+        return OPENCODE_ALIYUN_GLM_MODEL_ID
+    if _is_opencode_aliyun_qwen_model(agent, model):
+        return OPENCODE_ALIYUN_QWEN_MODEL_ID
+    return None
 
 
 def _first_nonempty_env(names: Sequence[str]) -> tuple[str, str] | None:
@@ -164,6 +322,7 @@ def _first_nonempty_env(names: Sequence[str]) -> tuple[str, str] | None:
 def validate_profile_credentials(
     profiles: Sequence[Profile], *, agent: str, model: str
 ) -> None:
+    resolve_agent_model(agent, model)
     if _is_qwen_code_dashscope_model(agent, model):
         if _first_nonempty_env(_QWEN_CODE_API_KEY_ENV_VARS) is None:
             accepted = ", ".join(_QWEN_CODE_API_KEY_ENV_VARS)
@@ -172,11 +331,11 @@ def validate_profile_credentials(
                 f"export one of: {accepted}"
             )
 
-    if _is_opencode_aliyun_glm_model(agent, model):
+    if _opencode_dashscope_model_id(agent, model) is not None:
         if _first_nonempty_env(_OPENCODE_ALIYUN_API_KEY_ENV_VARS) is None:
             accepted = ", ".join(_OPENCODE_ALIYUN_API_KEY_ENV_VARS)
             raise ValueError(
-                f"{OPENCODE_ALIYUN_GLM_MODEL} requires a DashScope API key; "
+                f"{model} requires a DashScope API key; "
                 f"export one of: {accepted}"
             )
 
@@ -191,29 +350,80 @@ def validate_profile_credentials(
     )
 
 
+def validate_zvec_grep_package_compatibility(
+    profiles: Sequence[Profile], *, agent: str, zvec_grep_package: str
+) -> None:
+    if "zvec-grep" not in profiles:
+        return
+
+    normalized = normalize_zvec_grep_package(zvec_grep_package)
+    candidate = Path(normalized).expanduser()
+    if candidate.exists():
+        if candidate.is_dir() or (candidate.is_file() and candidate.suffix == ".tgz"):
+            return
+        raise ValueError(
+            "local zvec-grep package must be a directory or .tgz file: "
+            f"{candidate}"
+        )
+    if _looks_like_package_path(normalized):
+        raise ValueError(f"local zvec-grep package does not exist: {candidate}")
+    if agent != _OPENCODE_AGENT:
+        return
+
+    match = re.fullmatch(
+        r"@zvec/zvec-grep@v?(\d+)\.(\d+)\.(\d+)(?:[-+][0-9A-Za-z.-]+)?",
+        normalized,
+    )
+    if match is None:
+        return
+    version = tuple(int(part) for part in match.groups())
+    if version <= (0, 1, 5):
+        raise ValueError(
+            f"{normalized} does not support 'zg install --target opencode'; "
+            "use a newer published package or pass --zvec-grep-package .. "
+            "from the benchmarks directory"
+        )
+
+
+def validate_job_destinations(
+    jobs_dir: Path, run_specs: Sequence[tuple[Profile, str]]
+) -> None:
+    names = [job_name for _, job_name in run_specs]
+    if len(set(names)) != len(names):
+        raise ValueError("profile job names must be unique")
+    collisions = [jobs_dir / job_name for job_name in names if (jobs_dir / job_name).exists()]
+    if collisions:
+        paths = ", ".join(str(path.resolve()) for path in collisions)
+        raise ValueError(
+            f"job output already exists: {paths}; choose a new --job-name or "
+            "omit it to use a timestamped name"
+        )
+
+
 def execution_environment(*, agent: str, model: str) -> dict[str, str]:
     """Return Harbor's environment without placing credentials in its command."""
+    resolve_agent_model(agent, model)
     environment = os.environ.copy()
     if _is_qwen_code_dashscope_model(agent, model):
         credential = _first_nonempty_env(_QWEN_CODE_API_KEY_ENV_VARS)
         if credential is not None:
             _, api_key = credential
             environment["OPENAI_API_KEY"] = api_key
-    if _is_opencode_aliyun_glm_model(agent, model):
+    if _opencode_dashscope_model_id(agent, model) is not None:
         credential = _first_nonempty_env(_OPENCODE_ALIYUN_API_KEY_ENV_VARS)
         if credential is not None:
             _, api_key = credential
             environment["OPENAI_API_KEY"] = api_key
-        environment["OPENAI_BASE_URL"] = OPENCODE_ALIYUN_GLM_BASE_URL
+        environment["OPENAI_BASE_URL"] = OPENCODE_DASHSCOPE_BASE_URL
     return environment
 
 
-def default_job_name(suite: SmokeSuite, profile: Profile, *, run_id: str) -> str:
-    return f"{run_id}-{suite.name}-smoke-{profile}"
+def default_job_name(suite: BenchmarkSuite, profile: Profile, *, run_id: str) -> str:
+    return f"{run_id}-{suite.name}-{suite.tier}-{profile}"
 
 
 def profile_job_name(
-    suite: SmokeSuite,
+    suite: BenchmarkSuite,
     profile: Profile,
     *,
     run_id: str,
@@ -243,10 +453,21 @@ def uses_setup_cache(agent: str) -> bool:
     return agent in _CACHEABLE_AGENTS
 
 
-def setup_cache_volume_name(agent: str, profile: Profile) -> str:
+def setup_cache_volume_name(
+    agent: str,
+    profile: Profile,
+    *,
+    zvec_grep_package: str = ZVEC_GREP_PACKAGE,
+    zvec_grep_package_sha256: str | None = None,
+) -> str:
     identity = f"{agent}-{_agent_version(agent)}-{profile}-linux-x64"
     if profile == "zvec-grep":
-        identity += f"-{ZVEC_GREP_PACKAGE}-{ZVEC_GREP_BINDING_PACKAGE}"
+        package_identity = (
+            f"local-{zvec_grep_package_sha256[:16]}"
+            if zvec_grep_package_sha256 is not None
+            else zvec_grep_package
+        )
+        identity += f"-{package_identity}-{ZVEC_GREP_BINDING_PACKAGE}"
     return f"zg-bench-{_cache_slug(identity)}"
 
 
@@ -254,21 +475,137 @@ def setup_cache_compose_path(agent: str, profile: Profile) -> Path:
     return SETUP_CACHE_DIR / f"{_cache_slug(agent)}-{profile}.compose.json"
 
 
-def prepare_setup_cache(agent: str, profile: Profile) -> None:
+def _cache_local_package(package: Path) -> tuple[Path, str]:
+    with package.open("rb") as package_file:
+        digest = hashlib.file_digest(package_file, "sha256").hexdigest()
+    cached_package = LOCAL_PACKAGE_DIR / f"zvec-grep-{digest[:16]}.tgz"
+    if not cached_package.exists():
+        shutil.copy2(package, cached_package)
+    return cached_package.resolve(), digest
+
+
+def prepare_local_zvec_grep_package(source_root: Path) -> tuple[Path, str]:
+    """Pack a local zvec-grep checkout for installation in task containers."""
+    source_root = source_root.expanduser().resolve()
+    if not (source_root / "package.json").is_file():
+        raise RuntimeError(f"local zvec-grep package has no package.json: {source_root}")
+    if shutil.which("npm") is None:
+        raise RuntimeError("npm is required to pack the local zvec-grep checkout")
+    if not (source_root / "node_modules" / ".bin" / "tsc").is_file():
+        raise RuntimeError(
+            "local zvec-grep dependencies are missing; run 'npm ci' from "
+            f"{source_root}"
+        )
+    LOCAL_PACKAGE_DIR.mkdir(parents=True, exist_ok=True)
+    LOCAL_NPM_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix="npm-pack-", dir=LOCAL_PACKAGE_DIR
+    ) as temp_dir:
+        completed = subprocess.run(
+            ["npm", "pack", "--pack-destination", temp_dir],
+            cwd=source_root,
+            check=False,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "npm_config_cache": str(LOCAL_NPM_CACHE_DIR)},
+        )
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout or "unknown error").strip()
+            raise RuntimeError(f"could not pack the local zvec-grep checkout: {detail}")
+
+        packages = list(Path(temp_dir).glob("*.tgz"))
+        if len(packages) != 1:
+            raise RuntimeError(
+                "npm pack did not produce exactly one zvec-grep package: "
+                f"found {len(packages)}"
+            )
+        return _cache_local_package(packages[0])
+
+
+def _looks_like_package_path(value: str) -> bool:
+    return value.startswith((".", "/", "~")) or value.endswith(".tgz")
+
+
+def normalize_zvec_grep_package(value: str) -> str:
+    value = value.strip()
+    if not value:
+        raise ValueError("zvec-grep package must not be empty")
+    if re.fullmatch(r"v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?", value):
+        return f"@zvec/zvec-grep@{value.removeprefix('v')}"
+    return value
+
+
+def zvec_grep_package_install_spec(value: str) -> str:
+    """Return the package spec visible inside a task container."""
+    candidate = Path(value).expanduser()
+    if candidate.exists() or _looks_like_package_path(value):
+        return LOCAL_ZVEC_GREP_PACKAGE_TARGET
+    return normalize_zvec_grep_package(value)
+
+
+def prepare_zvec_grep_package(value: str) -> PreparedZvecGrepPackage:
+    normalized = normalize_zvec_grep_package(value)
+    candidate = Path(normalized).expanduser()
+    if candidate.exists():
+        if candidate.is_dir():
+            package, digest = prepare_local_zvec_grep_package(candidate)
+        elif candidate.is_file() and candidate.suffix == ".tgz":
+            LOCAL_PACKAGE_DIR.mkdir(parents=True, exist_ok=True)
+            package, digest = _cache_local_package(candidate.resolve())
+        else:
+            raise ValueError(
+                "local zvec-grep package must be a directory or .tgz file: "
+                f"{candidate}"
+            )
+        return PreparedZvecGrepPackage(
+            install_spec=LOCAL_ZVEC_GREP_PACKAGE_TARGET,
+            bind_source=package,
+            sha256=digest,
+        )
+    if _looks_like_package_path(normalized):
+        raise ValueError(f"local zvec-grep package does not exist: {candidate}")
+    return PreparedZvecGrepPackage(install_spec=normalized)
+
+
+def prepare_setup_cache(
+    agent: str,
+    profile: Profile,
+    *,
+    zvec_grep_package: str = ZVEC_GREP_PACKAGE,
+) -> PreparedSetupCache:
     """Create the profile-isolated Docker volume and its Compose overlay."""
-    volume_name = setup_cache_volume_name(agent, profile)
+    prepared_package = PreparedZvecGrepPackage(install_spec=zvec_grep_package)
+    if profile == "zvec-grep":
+        prepared_package = prepare_zvec_grep_package(zvec_grep_package)
+
+    volume_name = setup_cache_volume_name(
+        agent,
+        profile,
+        zvec_grep_package=prepared_package.install_spec,
+        zvec_grep_package_sha256=prepared_package.sha256,
+    )
     SETUP_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    service_volumes: list[dict[str, Any]] = [
+        {
+            "type": "volume",
+            "source": "agent-setup-cache",
+            "target": _SETUP_CACHE_TARGET,
+        }
+    ]
+    if prepared_package.bind_source is not None:
+        service_volumes.append(
+            {
+                "type": "bind",
+                "source": str(prepared_package.bind_source),
+                "target": LOCAL_ZVEC_GREP_PACKAGE_TARGET,
+                "read_only": True,
+            }
+        )
     overlay = {
         "services": {
             "main": {
                 "platform": "linux/amd64",
-                "volumes": [
-                    {
-                        "type": "volume",
-                        "source": "agent-setup-cache",
-                        "target": _SETUP_CACHE_TARGET,
-                    }
-                ]
+                "volumes": service_volumes,
             }
         },
         "volumes": {
@@ -278,24 +615,40 @@ def prepare_setup_cache(agent: str, profile: Profile) -> None:
             }
         },
     }
-    setup_cache_compose_path(agent, profile).write_text(
+    compose_path = setup_cache_compose_path(agent, profile)
+    compose_path.write_text(
         json.dumps(overlay, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
 
-    completed = subprocess.run(
-        ["docker", "volume", "create", volume_name],
+    inspected = subprocess.run(
+        ["docker", "volume", "inspect", volume_name],
         check=False,
         capture_output=True,
         text=True,
     )
-    if completed.returncode != 0:
-        detail = (completed.stderr or completed.stdout or "unknown error").strip()
-        raise RuntimeError(f"could not prepare agent setup cache: {detail}")
+    if inspected.returncode != 0:
+        completed = subprocess.run(
+            ["docker", "volume", "create", volume_name],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout or "unknown error").strip()
+            raise RuntimeError(f"could not prepare agent setup cache: {detail}")
+
+    return PreparedSetupCache(
+        compose_path=compose_path,
+        zvec_grep_package=(
+            prepared_package.install_spec if profile == "zvec-grep" else None
+        ),
+        zvec_grep_package_sha256=prepared_package.sha256,
+    )
 
 
 def build_harbor_command(
-    suite: SmokeSuite,
+    suite: BenchmarkSuite,
     *,
     profile: Profile,
     agent: str,
@@ -303,13 +656,12 @@ def build_harbor_command(
     jobs_dir: Path = DEFAULT_RUNS_DIR,
     job_name: str,
     harbor_executable: str = "harbor",
+    zvec_grep_package: str = ZVEC_GREP_PACKAGE,
+    zvec_grep_package_sha256: str | None = None,
 ) -> list[str]:
     if profile not in PROFILES:
         raise ValueError(f"unsupported profile: {profile}")
-    if not agent.strip():
-        raise ValueError("agent must not be empty")
-    if not model.strip():
-        raise ValueError("model must not be empty")
+    resolve_agent_model(agent, model)
 
     harbor_agent = agent
     harbor_model = model
@@ -324,9 +676,37 @@ def build_harbor_command(
             harbor_model = QWEN_CODE_DASHSCOPE_MODEL
             agent_kwargs.append(f"base_url={QWEN_CODE_DASHSCOPE_BASE_URL}")
     elif agent == _OPENCODE_AGENT:
-        agent_kwargs.append(f"version={OPENCODE_VERSION}")
-        if _is_opencode_aliyun_glm_model(agent, model):
-            harbor_model = f"openai/{OPENCODE_ALIYUN_GLM_MODEL}"
+        opencode_model_id = _opencode_dashscope_model_id(agent, model)
+        if opencode_model_id is not None:
+            harbor_agent = OPENCODE_ACP_IMPORT_PATH
+            harbor_model = f"dashscope/{opencode_model_id}"
+            agent_kwargs.append(
+                "registry_entry_path="
+                + str(OPENCODE_ACP_REGISTRY_ENTRY_PATH.resolve())
+            )
+            opencode_config = {
+                "provider": {
+                    "dashscope": {
+                        "npm": OPENCODE_OPENAI_COMPATIBLE_PACKAGE,
+                        "name": "DashScope OpenAI Compatible",
+                        "models": {
+                            opencode_model_id: {
+                                "options": {"enable_thinking": False}
+                            }
+                        },
+                        "options": {
+                            "apiKey": "{env:OPENAI_API_KEY}",
+                            "baseURL": OPENCODE_DASHSCOPE_BASE_URL,
+                        },
+                    }
+                }
+            }
+            agent_kwargs.append(
+                "opencode_config="
+                + json.dumps(opencode_config, separators=(",", ":"))
+            )
+        else:
+            agent_kwargs.append(f"version={OPENCODE_VERSION}")
 
     if profile == "zvec-grep":
         if agent not in _ZVEC_AGENT_IMPORT_PATHS:
@@ -335,25 +715,32 @@ def build_harbor_command(
                 "the zvec-grep profile currently supports --agent "
                 f"{supported}"
             )
-        if not ZVEC_GREP_SKILL_DIR.is_dir():
-            raise ValueError(f"zvec-grep skill not found: {ZVEC_GREP_SKILL_DIR}")
         harbor_agent = _ZVEC_AGENT_IMPORT_PATHS[agent]
         agent_kwargs.extend(
             [
-                f"zvec_grep_package={ZVEC_GREP_PACKAGE}",
+                f"zvec_grep_package={zvec_grep_package}",
                 f"zvec_binding_package={ZVEC_GREP_BINDING_PACKAGE}",
                 f"embedding_model={ZVEC_GREP_EMBEDDING}",
             ]
         )
-        skills.append(str(ZVEC_GREP_SKILL_DIR.resolve()))
+        if zvec_grep_package_sha256 is not None:
+            agent_kwargs.append(
+                f"zvec_grep_package_sha256={zvec_grep_package_sha256}"
+            )
+        if agent in {_CODEX_AGENT, _OPENCODE_AGENT}:
+            agent_kwargs.append(f"mcp_target={agent}")
+        else:
+            if not ZVEC_GREP_SKILL_DIR.is_dir():
+                raise ValueError(
+                    f"zvec-grep skill not found: {ZVEC_GREP_SKILL_DIR}"
+                )
+            skills.append(str(ZVEC_GREP_SKILL_DIR.resolve()))
 
     command = [
         harbor_executable,
         "run",
         "--dataset",
         suite.dataset,
-        "--include-task-name",
-        suite.task,
         "--agent",
         harbor_agent,
         "--model",
@@ -372,6 +759,10 @@ def build_harbor_command(
         job_name,
     ]
 
+    if suite.tasks is not None:
+        for task in suite.tasks:
+            command.extend(["--include-task-name", task])
+
     if uses_setup_cache(agent):
         command.extend(
             [
@@ -383,6 +774,10 @@ def build_harbor_command(
 
     for agent_kwarg in agent_kwargs:
         command.extend(["--agent-kwarg", agent_kwarg])
+    if _opencode_dashscope_model_id(agent, model) is not None:
+        command.extend(
+            ["--agent-env", "OPENAI_API_KEY=${OPENAI_API_KEY}"]
+        )
     for skill in skills:
         command.extend(["--skill", skill])
 

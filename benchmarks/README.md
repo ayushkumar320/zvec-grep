@@ -8,8 +8,8 @@ the same. The only difference is the tool profile:
 
 - **Baseline:** the agent's standard tools, including shell utilities such as
   `rg` and `find` when available.
-- **zvec-grep:** the same tools, plus a prepared `zvec-grep` index and a
-  query-only skill.
+- **zvec-grep:** the same agent with a prepared `zvec-grep` index. Codex and
+  OpenCode access it through MCP; Qwen Code retains its query-only skill.
 
 ## Benchmark suites
 
@@ -27,7 +27,8 @@ the same. The only difference is the tool profile:
 Each benchmark suite can be run at different tiers:
 
 - **Smoke:** one task that quickly verifies the complete benchmark workflow.
-- **CI:** a fixed, representative subset used to detect regressions over time.
+- **CI:** a fixed, representative subset used to detect regressions over time,
+  when that suite defines one.
 - **Full:** the complete suite, used for release results and reports.
 
 Smoke and CI results help us develop and maintain the benchmark. Only full runs
@@ -57,14 +58,90 @@ benchmark reports should use a consistent Linux x86-64 environment.
 ### Install dependencies
 
 You need [uv](https://docs.astral.sh/uv/),
-[Docker Engine or Docker Desktop](https://docs.docker.com/), and the credentials
-required by your chosen Harbor agent and model. From this directory, install the
-pinned environment and check the local setup:
+[Docker Engine or Docker Desktop](https://docs.docker.com/), Docker Compose v2,
+and the credentials required by your chosen Harbor agent and model. Verify that
+Compose is available as a Docker CLI plugin, not the legacy `docker-compose`
+command:
+
+```sh
+docker compose version
+```
+
+On Ubuntu, an `Unable to locate package docker-compose-plugin` error normally
+means the Docker apt repository has not been configured. Follow Docker's Ubuntu
+installation instructions to add its official repository, then install the
+Compose plugin.
+
+From this directory, install the pinned Python environment and check the base
+setup:
 
 ```sh
 uv sync
 uv run zg-bench doctor
 ```
+
+Using a local zvec-grep checkout additionally requires
+[Node.js 22 or newer and npm](https://nodejs.org/) and its installed dependencies:
+
+```sh
+npm --prefix .. ci
+```
+
+If doctor reports `registry.anpm.alibaba-inc.com`, either update the user-level
+registry or override it for setup and benchmark commands:
+
+```sh
+npm config set registry https://registry.npmjs.org/ --location=user
+# Or, for one command:
+npm_config_registry=https://registry.npmjs.org/ npm ci
+```
+
+The repository intentionally does not commit an `.npmrc` that rewrites registry
+hosts; public download URLs are kept correct in `package-lock.json` instead.
+
+Run a profile-aware check before starting Docker. It verifies credentials,
+package compatibility, Node/npm, local build dependencies, and registry state:
+
+```sh
+uv run zg-bench doctor \
+  --agent opencode \
+  --model aliyun-glm-5.2 \
+  --profile zvec-grep \
+  --zvec-grep-package ..
+```
+
+`zg-bench run` performs the same preflight automatically. The explicit doctor
+command is useful while preparing a machine because it stops before packaging
+or creating any Docker resources.
+
+### Ubuntu 24.04 OpenCode + GLM-5.2 quickstart
+
+From the repository root:
+
+```sh
+# Node.js 22 or newer must already be active.
+npm ci
+
+cd benchmarks
+uv sync
+export DASHSCOPE_API_KEY="your-api-key"
+
+uv run zg-bench doctor \
+  --agent opencode \
+  --model aliyun-glm-5.2 \
+  --profile all \
+  --zvec-grep-package ..
+
+uv run zg-bench run swebench-verified \
+  --tier smoke \
+  --agent opencode \
+  --model aliyun-glm-5.2 \
+  --profile all \
+  --zvec-grep-package ..
+```
+
+Omit `--job-name` unless a stable name is required. Timestamped defaults avoid
+collisions with existing Harbor output directories.
 
 ### Codex authentication
 
@@ -111,16 +188,30 @@ are selected.
 
 ### OpenCode authentication
 
-To run Aliyun GLM-5.2 through OpenCode, export a DashScope API key:
+To run Aliyun GLM-5.2 or Qwen 3.7 Max through OpenCode, export a DashScope API
+key:
 
 ```sh
 export DASHSCOPE_API_KEY="your-api-key"
 ```
 
-Use `--agent opencode --model aliyun-glm-5.2` in the test commands below. The
-runner pins the OpenCode version, maps the model to OpenCode's OpenAI-compatible
-provider, and configures the Aliyun endpoint. The credential is passed through
-the environment and is not included in the generated Harbor command.
+Use either supported combination in the test commands below:
+
+```sh
+--agent opencode --model aliyun-glm-5.2
+--agent opencode --model qwen3.7-max
+```
+
+The runner pins the OpenCode version, maps the selected model to the custom
+DashScope provider, configures the public Beijing endpoint, and selects
+OpenCode's Chat Completions-compatible AI SDK package. OpenCode runs through
+its official ACP server so Harbor owns the session lifecycle through a
+structured protocol. Its ACP release manifest and SHA-256 checksum are pinned
+with the benchmark instead of being resolved from the mutable registry at run
+time. The credential is passed through Harbor's host-environment template and
+is neither included in the generated command nor persisted in benchmark
+output. Thinking is disabled so a single long response cannot consume the
+task's 50-minute agent timeout.
 
 ### zvec-grep authentication
 
@@ -133,27 +224,48 @@ export DASHSCOPE_API_KEY="your-api-key"
 
 The adapter uploads the embedding credential to a protected zvec-grep config
 file in the isolated agent environment and does not add its value to the
-generated Harbor command. If the same credential also authenticates the agent's
-model, that agent's normal authentication path still applies.
+generated Harbor command. For Codex and OpenCode, it configures the agent's MCP
+integration and starts the zvec-grep server inside the task container. If the
+same credential also authenticates the agent's model, that agent's normal
+authentication path still applies.
 
 ## Test run instructions
 
 Add `--dry-run` to inspect the generated Harbor command without starting a
 container. Harbor writes trajectories and evaluator output to `runs/`.
 
+Inspect the supported agent/model combinations, available suites, and exact
+tasks selected by a tier:
+
+```sh
+uv run zg-bench list agent-models
+uv run zg-bench list suites
+uv run zg-bench list tasks swebench-verified --tier smoke
+```
+
+`run` and run-specific `doctor` commands reject unknown agents and unsupported
+models while parsing their arguments. Qwen Code and OpenCode accept only the
+combinations shown by `list agent-models`; Codex model identifiers are passed
+through to Codex's native model catalog.
+
 The first run may take several minutes while Docker downloads and builds the
-task image and prepares the agent environment. This is expected. Later runs of
-the same task reuse both the large task image and, for Codex, Qwen Code, and
-OpenCode, a Docker volume containing the installed agent runtime. Setup caches
+task image and prepares the agent environment. This is expected. By default,
+the zvec-grep profile installs the pinned npm package. Pass
+`--zvec-grep-package <version-or-npm-spec>` to select another published package,
+or `--zvec-grep-package <directory-or-tgz>` to test local code. Local directories
+are packaged with `npm pack`, and only the resulting tarball is mounted into the
+task container. Its SHA-256 is recorded in setup metadata and included in the
+setup-cache identity. Later runs of the same package reuse both the large task
+image and a Docker volume containing the installed agent runtime. Setup caches
 are isolated by agent and profile, so baseline containers never receive
-zvec-grep. They contain neither credentials nor the repository index. The
-zvec-grep profile also skips the unused local embedding runtime when Qwen
-embeddings are selected.
+zvec-grep. They contain neither credentials, the repository index, nor the MCP
+configuration. The zvec-grep profile also skips the unused local embedding
+runtime when Qwen embeddings are selected.
 
 Each command runs both profiles by default. Use `--profile baseline` or
-`--profile zvec-grep` to run one profile. The zvec-grep profile currently
-supports Codex, Qwen Code, and OpenCode and builds its index before agent
-execution.
+`--profile zvec-grep` to run one profile. The zvec-grep profile supports Codex,
+Qwen Code, and OpenCode and builds its index before agent execution. Codex and
+OpenCode use MCP; Qwen Code keeps the benchmark skill integration.
 
 ### Run the smoke test
 
@@ -161,22 +273,68 @@ execution.
 
 ```sh
 uv run zg-bench run swebench-verified \
-  --agent <agent> --model <provider/model>
+  --tier smoke --agent <agent> --model <provider/model>
+```
+
+Use a published version or npm spec:
+
+```sh
+uv run zg-bench run swebench-verified \
+  --agent <agent> --model <provider/model> \
+  --profile zvec-grep --zvec-grep-package <compatible-version>
+```
+
+Published zvec-grep `0.1.5` does not support the OpenCode installer. OpenCode
+runs must use a newer package or the current checkout until one is published.
+
+Use the current repository checkout when running from `benchmarks/`:
+
+```sh
+uv run zg-bench run swebench-verified \
+  --agent <agent> --model <provider/model> \
+  --profile zvec-grep --zvec-grep-package ..
 ```
 
 #### Terminal-Bench 2.1
 
 ```sh
 uv run zg-bench run terminal-bench-2.1 \
+  --tier smoke --agent <agent> --model <provider/model>
+```
+
+Override a tier with one or more exact Harbor task names when debugging:
+
+```sh
+uv run zg-bench run swebench-verified \
+  --tier smoke --task swe-bench/pallets__flask-5014 \
   --agent <agent> --model <provider/model>
 ```
 
 ### Run the CI test
 
-The CI tier is not implemented yet. It will run a fixed, representative task
-set for each benchmark suite.
+The CLI supports CI tiers, but a suite must define its curated task list first.
+The current built-in suites do not yet define one; attempting to run it reports
+the configured tiers instead of silently substituting smoke tasks.
 
 ### Run the full benchmark
 
-The Full tier is not implemented yet. It will run the complete task set for a
-benchmark suite and produce the results used in external reports.
+Run every task in the pinned dataset revision explicitly with:
+
+```sh
+uv run zg-bench run swebench-verified \
+  --tier full --agent <agent> --model <provider/model>
+```
+
+This can be expensive. Use `--dry-run` first and keep the agent, model, package,
+and platform fixed across compared profiles.
+
+### Diagnose a failed run
+
+When a trial records an exception, even if Harbor itself exits successfully,
+`zg-bench` prints the structured exception and zvec-grep setup error
+automatically and exits non-zero. The same report can be requested later:
+
+```sh
+uv run zg-bench diagnose --latest
+uv run zg-bench diagnose <job-name>
+```

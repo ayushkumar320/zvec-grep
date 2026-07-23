@@ -3,13 +3,18 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import test from "node:test";
-import { createTemporaryDirectory, runCli } from "../helpers/fixtures.mjs";
+import {
+  createTemporaryDirectory,
+  removeTemporaryDirectory,
+  runCli,
+} from "../helpers/fixtures.mjs";
 import { createFakeEmbeddingServer } from "../helpers/fake-embedding.mjs";
 
 test("server-mode index reports Workspace progress", async (t) => {
   const temporaryDirectory = await createTemporaryDirectory(
     t,
     "zvec-grep-server-progress-",
+    { cleanup: false },
   );
   const root = join(temporaryDirectory, "repo");
   const home = join(temporaryDirectory, "home");
@@ -29,16 +34,17 @@ test("server-mode index reports Workspace progress", async (t) => {
     ZVEC_GREP_HOME: home,
     ZVEC_GREP_SERVER_URL: `http://127.0.0.1:${port}/mcp`,
   };
-  await runCli(
-    ["server", "on", "--listen", `127.0.0.1:${port}`, "--home", home],
-    { cwd: root, env },
-  );
   t.after(async () => {
     await runCli(["server", "off", "--home", home], {
       cwd: root,
       env,
     }).catch(() => undefined);
+    await removeTemporaryDirectory(temporaryDirectory);
   });
+  await runCli(
+    ["server", "on", "--listen", `127.0.0.1:${port}`, "--home", home],
+    { cwd: root, env },
+  );
 
   const indexed = await runCli(
     [
@@ -142,6 +148,14 @@ test("CLI completes index, search, explicit refresh, status, and rg workflows", 
   assert.doesNotMatch(stale.stdout, /RefreshedWorkflowSymbol/);
   assert.match(stale.stderr, /status: possibly_stale/);
   assert.match(stale.stderr, /indexing: idle \(0\/1\)/);
+  await assert.rejects(
+    runCli(["status", "--check-ready", root], { cwd: root, env }),
+    (error) => {
+      assert.match(error.stdout, /Workspace index needs an update/i);
+      assert.match(error.stderr, /state: stale/i);
+      return true;
+    },
+  );
 
   const background = await runCli(
     [
@@ -184,6 +198,11 @@ test("CLI completes index, search, explicit refresh, status, and rg workflows", 
   assert.match(status.stdout, /Coverage\s+.*100%\s+1 \/ 1 files/i);
   assert.match(status.stdout, /glob=src\/\*\*/);
   assert.match(status.stdout, /type=ts/);
+  const checkedStatus = await runCli(["status", "--check-ready", root], {
+    cwd: root,
+    env,
+  });
+  assert.match(checkedStatus.stdout, /Workspace index is ready/i);
 
   await writeFile(
     join(root, "outside.ts"),
