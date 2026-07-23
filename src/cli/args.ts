@@ -196,11 +196,13 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
     } else if (arg === "--yes") {
       options.yes = true;
     } else if (isLongOptionWithValue(arg, "--allow-remote")) {
-      options.allowRemote = parseAllowRemote(valueFromLongOption(arg));
+      throw allowRemoteValueError();
     } else if (arg === "--allow-remote") {
-      options.allowRemote = parseAllowRemote(
-        readOptionValue(args, ++index, arg),
-      );
+      const legacyScope = args[index + 1];
+      if (legacyScope === "once" || legacyScope === "workspace") {
+        throw allowRemoteValueError();
+      }
+      options.allowRemote = true;
     } else if (isLongOptionWithValue(arg, "--capability")) {
       options.authorizationCapability = parseAuthorizationCapability(
         valueFromLongOption(arg),
@@ -953,9 +955,15 @@ function parseQueryRefreshMode(value: string): QueryRefreshMode {
   throw new Error("--refresh must be background, wait, or off");
 }
 
-function parseAllowRemote(value: string): "once" | "workspace" {
-  if (value === "once" || value === "workspace") return value;
-  throw new Error("--allow-remote must be once or workspace");
+function allowRemoteValueError(): Error {
+  return new Error(
+    [
+      "--allow-remote does not accept a value.",
+      "It authorizes Remote Embedding for the current command only.",
+      "For persistent authorization, use:",
+      "  zg auth grant --capability embedding --scope workspace",
+    ].join("\n"),
+  );
 }
 
 function parseAuthorizationCapability(value: string): "embedding" {

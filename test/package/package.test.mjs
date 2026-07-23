@@ -151,7 +151,6 @@ test("npm package contains and exposes the supported public surface", async (t) 
       "--endpoint",
       endpoint,
       "--allow-remote",
-      "workspace",
       "-g",
       "*.ts",
       "-t",

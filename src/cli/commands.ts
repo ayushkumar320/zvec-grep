@@ -1537,14 +1537,14 @@ async function authorizeCliPlan(
   if (existing) return { authorization: existing };
   if (options.allowRemote) {
     return {
-      authorization: await manager.grant(plan, options.allowRemote),
+      authorization: await manager.grant(plan, "once"),
     };
   }
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     throw new Error(
       [
         "Remote Embedding authorization is required.",
-        "Re-run with --allow-remote once, or grant Workspace authorization:",
+        "Re-run with --allow-remote, or grant Workspace authorization:",
         "  zg auth grant --capability embedding --scope workspace",
       ].join("\n"),
     );

@@ -17,7 +17,7 @@ export class DaemonClient {
       serverUrl: string;
       home?: string;
       tokenFile?: string;
-      allowRemote?: "once" | "workspace";
+      allowRemote?: boolean;
     },
   ) {}
 
@@ -46,12 +46,7 @@ export class DaemonClient {
       if (this.options.allowRemote) {
         return {
           action: "accept" as const,
-          content: {
-            decision:
-              this.options.allowRemote === "workspace"
-                ? "allow_workspace"
-                : "allow_once",
-          },
+          content: { decision: "allow_once" },
         };
       }
       if (!process.stdin.isTTY || !process.stdout.isTTY) {

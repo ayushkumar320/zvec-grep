@@ -12,7 +12,7 @@ export type CliOptions = {
   authAction?: "grant" | "status" | "revoke";
   authorizationCapability?: "embedding";
   authorizationScope?: "workspace";
-  allowRemote?: "once" | "workspace";
+  allowRemote?: boolean;
   serverAction?: "on" | "off" | "status" | "run";
   listen?: string;
   serverTokenFile?: string;

@@ -13,7 +13,6 @@ import test from "node:test";
 import {
   RemoteEmbeddingAuthorizationManager,
   RemoteEmbeddingAuthorizationStore,
-  createRemoteEmbeddingOperationPermit,
   createRemoteEmbeddingTarget,
   planRemoteIndexAuthorization,
   planRemoteSearchAuthorization,
@@ -110,7 +109,8 @@ test("remote provider guard fails closed and re-checks Workspace revocation", as
   );
   assert.equal(fetches, 0);
 
-  const once = createRemoteEmbeddingOperationPermit(target, "once");
+  const once = await manager.grant(plan, "once");
+  assert.equal(await store.hasGrant(target), false);
   await withRemoteEmbeddingOperationPermit(once, () =>
     model.embed([{ kind: "text", text: "once" }], { purpose: "query" }),
   );

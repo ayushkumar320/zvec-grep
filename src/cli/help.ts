@@ -69,6 +69,7 @@ Result options:
   --trace                           Include per-hit indexed search trace
   --refresh <background|wait|off>   Refresh policy (Server: background; Direct: off)
   --mode <direct|server|auto>       Select indexed query transport
+  --allow-remote                    Allow Remote Embedding for this command only
 
 Direct mode warns and uses off when background is requested.
 
@@ -116,6 +117,7 @@ Options:
   --no-gpu                          Force CPU local embeddings
   --llama-gpu <mode>                auto, metal, vulkan, cuda, off
   --embedding-parallelism <n>       Local embedding context parallelism
+  --allow-remote                    Allow Remote Embedding for this command only
 
 New indexes require --embedding, ZVEC_GREP_EMBEDDING, or a configured default.
 Existing indexes reuse their stored embedding schema.`;
@@ -156,8 +158,9 @@ Scopes used during operations:
   once                              Current CLI command or Agent tool call only
   workspace                         Persisted in this Workspace
 
-Use --allow-remote once|workspace on zg query or zg index for non-interactive
-execution. API credentials configure a provider but do not grant permission.`;
+Use --allow-remote on zg query or zg index to authorize Remote Embedding for
+that command only. This authorization is not persisted. API credentials
+configure a provider but do not grant permission.`;
     case "server":
       return `Usage:
   zg server on [--listen 127.0.0.1:7999] [--token-file <path>]
