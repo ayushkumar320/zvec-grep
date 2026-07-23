@@ -5,6 +5,7 @@ import type {
   ServerRequest,
 } from "@modelcontextprotocol/sdk/types.js";
 import type { IndexProgress, ZvecGrepContextResult } from "../index.js";
+import { formatAgentContextResult } from "../cli/format/context.js";
 import {
   formatRemoteEmbeddingAuthorizationPrompt,
   remoteEmbeddingDisclosureData,
@@ -21,7 +22,6 @@ import {
   zvecGrepIndexStatusInputSchema,
   zvecGrepIndexStatusOutputSchema,
   zvecGrepRgInputSchema,
-  zvecGrepRgOutputSchema,
   zvecGrepSearchInputSchema,
   zvecGrepSearchOutputSchema,
   zvecGrepServerStatusInputSchema,
@@ -35,6 +35,7 @@ import {
 import {
   contextText,
   simplifyContextResult,
+  textToolResult,
   toolResult,
 } from "./result-format.js";
 import type {
@@ -402,7 +403,6 @@ export function registerZvecGrepTools(
       description:
         "Run exhaustive managed ripgrep locally without requiring an index. Use it for literal or regex search, an unindexed repository that can be answered lexically, or an explicit rg-mode request; do not switch to rg merely because semantic search is unavailable.",
       inputSchema: zvecGrepRgInputSchema.shape,
-      outputSchema: zvecGrepRgOutputSchema.shape,
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
@@ -412,11 +412,7 @@ export function registerZvecGrepTools(
     },
     async (input) => {
       const response = await backend.rg(input);
-      const structuredContent = {
-        root: response.root,
-        result: simplifyContextResult(response.result),
-      };
-      return toolResult(contextText(response.result), structuredContent);
+      return textToolResult(formatAgentContextResult(response.result, {}));
     },
   );
 

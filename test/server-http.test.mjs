@@ -276,11 +276,9 @@ test("Streamable HTTP serves health, MCP contracts and a real cached index searc
     arguments: { root: unindexedRoot, pattern: "newlyIndexed" },
   });
   assert.equal(rgSearch.isError, undefined);
-  assert.equal(rgSearch.structuredContent.result.source, "rg");
-  assert.equal(
-    rgSearch.structuredContent.result.items[0].file.relativePath,
-    "new.ts",
-  );
+  assert.equal(rgSearch.structuredContent, undefined);
+  assert.match(rgSearch.content[0].text, /^new\.ts:1\n1:\t/);
+  assert.match(rgSearch.content[0].text, /newlyIndexed/);
 
   blockEmbedding = true;
   const indexed = await clients[0].callTool({

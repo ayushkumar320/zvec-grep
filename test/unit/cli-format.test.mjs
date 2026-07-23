@@ -4,6 +4,7 @@ import test from "node:test";
 import { printError } from "../../dist/cli/errors.js";
 import {
   contextWarningLines,
+  formatAgentContextResult,
   printAgentContextResult,
   printHumanContextResult,
 } from "../../dist/cli/format/context.js";
@@ -260,6 +261,11 @@ function contextResult(overrides = {}) {
 
 test("context formatters render indexed, lexical, metadata, preview, trace, and empty results", async () => {
   const result = contextResult();
+  const agentText = formatAgentContextResult(result, {
+    preview: "short",
+    trace: true,
+    color: "never",
+  });
   const output = await captureConsole(() => {
     printAgentContextResult(result, {
       preview: "short",
@@ -273,6 +279,10 @@ test("context formatters render indexed, lexical, metadata, preview, trace, and 
       color: "always",
     });
   });
+  assert.equal(
+    output.logs.slice(0, agentText.split("\n").length).join("\n"),
+    agentText,
+  );
   assert.match(output.logs.join("\n"), /README\.md:1-8/);
   assert.match(output.logs.join("\n"), /computeQuery/);
   assert.match(output.logs.join("\n"), /query "query"/);
