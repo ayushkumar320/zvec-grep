@@ -2,8 +2,14 @@ import type { ZvecGrepContextResult } from "../index.js";
 
 export type ToolResult = {
   content: Array<{ type: "text"; text: string }>;
-  structuredContent: Record<string, unknown>;
+  structuredContent?: Record<string, unknown>;
 };
+
+export function textToolResult(text: string): ToolResult {
+  return {
+    content: [{ type: "text", text }],
+  };
+}
 
 export function toolResult(
   text: string,

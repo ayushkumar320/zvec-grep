@@ -548,11 +548,6 @@ export const zvecGrepServerStatusOutputSchema = z.object({
   }),
 });
 
-export const zvecGrepRgOutputSchema = z.object({
-  root: z.string(),
-  result: searchResultSchema,
-});
-
 export const legacySearchInputSchema = z.object({
   query: z
     .string()

@@ -10,6 +10,7 @@ import {
 import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { withProgressHeartbeat } from "../dist/mcp/progress-heartbeat.js";
 import { indexProgressFromMessage } from "../dist/index-progress.js";
+import { formatAgentContextResult } from "../dist/cli/format/context.js";
 
 const root = resolve("test/fixtures/repository");
 const longIndexedContent = "x".repeat(8_000);
@@ -242,6 +243,7 @@ test("server contract exposes final tools with stable annotations", async (t) =>
   const rg = tools.find((tool) => tool.name === "zvec_grep_rg");
   assert.match(rg.description, /explicit rg-mode request/);
   assert.match(rg.description, /do not switch to rg merely/);
+  assert.equal(rg.outputSchema, undefined);
   assert.match(
     search.outputSchema.properties.indexing.description,
     /possibly stale results/,
@@ -251,7 +253,7 @@ test("server contract exposes final tools with stable annotations", async (t) =>
       "cancelled",
     ),
   );
-  for (const tool of tools) {
+  for (const tool of tools.filter((tool) => tool.name !== "zvec_grep_rg")) {
     assert.ok(tool.outputSchema, `${tool.name} must declare structured output`);
   }
 });
@@ -847,8 +849,14 @@ test("rg normalizes managed ripgrep input before calling the backend", async (t)
   assert.equal(received.ignoreCase, true);
   assert.deepEqual(received.glob, ["src/**", "!dist/**"]);
   assert.equal(received.context, 2);
-  assert.equal(result.structuredContent.result.source, "rg");
-  assert.equal(result.structuredContent.result.coverage, "rg_exhaustive");
+  assert.equal(result.structuredContent, undefined);
+  const expected = formatAgentContextResult(
+    (await createBackend().rg({ root, pattern: "needle" })).result,
+    {},
+  );
+  assert.equal(result.content[0].text, expected);
+  assert.match(result.content[0].text, /^src\/index\.ts:1\n1:\t/);
+  assert.doesNotMatch(result.content[0].text, /rank=|matchedBy=|source:/);
 });
 
 test("input upper bounds are enforced", async (t) => {
@@ -897,7 +905,7 @@ test("input upper bounds are enforced", async (t) => {
   assert.equal(excessivePathFilters.isError, true);
 });
 
-test("all tools return output-schema-compatible structured content", async (t) => {
+test("structured tools return schema-compatible content and rg returns only compact text", async (t) => {
   const { client, server } = await connect();
   t.after(async () => {
     await client.close();
@@ -908,7 +916,6 @@ test("all tools return output-schema-compatible structured content", async (t) =
     ["zvec_grep_index", { root }],
     ["zvec_grep_index_drop", { root }],
     ["zvec_grep_search", { root, query: "query" }],
-    ["zvec_grep_rg", { root, pattern: "needle" }],
     ["zvec_grep_index_status", { root }],
     ["zvec_grep_server_status", {}],
   ];
@@ -956,7 +963,13 @@ test("all tools return output-schema-compatible structured content", async (t) =
     name: "zvec_grep_rg",
     arguments: { root, pattern: "needle" },
   });
-  assert.equal(rg.structuredContent.result.items[0].content, longRgContent);
+  assert.equal(rg.structuredContent, undefined);
   assert.equal(rg.content[0].text.includes(longRgContent), true);
-  assert.doesNotMatch(rg.content[0].text, /\[truncated \d+ chars\]/);
+  assert.equal(
+    rg.content[0].text,
+    formatAgentContextResult(
+      (await createBackend().rg({ root, pattern: "needle" })).result,
+      {},
+    ),
+  );
 });

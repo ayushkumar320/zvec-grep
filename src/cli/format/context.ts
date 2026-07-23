@@ -25,60 +25,68 @@ export function printAgentContextResult(
   result: ZvecGrepContextResult,
   options: CliOptions,
 ): void {
+  for (const line of agentContextLines(result, options)) {
+    console.log(line);
+  }
+}
+
+export function formatAgentContextResult(
+  result: ZvecGrepContextResult,
+  options: CliOptions,
+): string {
+  return agentContextLines(result, options).join("\n");
+}
+
+function agentContextLines(
+  result: ZvecGrepContextResult,
+  options: CliOptions,
+): string[] {
   const highlighter = plainText;
   const groups = groupContextItems(result.items);
   const preview = previewMode(result, options);
+  const lines: string[] = [];
 
   if (groups.length === 0) {
-    console.log(emptyContextLabel(result));
-    for (const line of emptyContextDetailLines(result)) {
-      console.log(line);
-    }
-    return;
+    return [emptyContextLabel(result), ...emptyContextDetailLines(result)];
   }
 
   let first = true;
   for (const group of groups) {
     for (const item of group.items.sort(compareContextItems)) {
       if (!first) {
-        console.log("");
+        lines.push("");
       }
       first = false;
 
-      console.log(`${item.file.relativePath}:${rangeLabel(headerRange(item))}`);
+      lines.push(`${item.file.relativePath}:${rangeLabel(headerRange(item))}`);
       const matched = matchedRangeLine(item);
       const outlineLines = agentOutlineLines(item, preview);
       const sourceLines = sourceLinesForPreview(item, preview, highlighter, {
         maxLineLength: AGENT_PREVIEW_MAX_LINE_LENGTH,
       });
-      for (const line of agentMetadataLines(item, [
+      lines.push(
+        ...agentMetadataLines(item, [...outlineLines, ...sourceLines]),
         ...outlineLines,
-        ...sourceLines,
-      ])) {
-        console.log(line);
-      }
-      for (const line of outlineLines) {
-        console.log(line);
-      }
+      );
       if (matched && preview !== "none") {
-        console.log(matched);
+        lines.push(matched);
       }
       if (sourceLines.length > 0) {
         if (item.kind !== "lexical_match" && preview !== "none") {
-          console.log("source:");
+          lines.push("source:");
         }
-        for (const line of sourceLines) {
-          console.log(line);
-        }
+        lines.push(...sourceLines);
       }
       if (options.trace) {
         const trace = traceDetailLine(item);
         if (trace) {
-          console.log(`trace: ${trace}`);
+          lines.push(`trace: ${trace}`);
         }
       }
     }
   }
+
+  return lines;
 }
 
 function plainText(value: string): string {
