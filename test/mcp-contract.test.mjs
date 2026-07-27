@@ -253,6 +253,7 @@ test("full server contract exposes all tools with stable annotations", async (t)
   );
   const instructions = client.getInstructions();
   assert.equal(instructions, ZVEC_GREP_FULL_MCP_INSTRUCTIONS);
+  assert.equal(instructions, ZVEC_GREP_MCP_INSTRUCTIONS);
   const toolContracts = JSON.stringify(
     tools.map((tool) => ({
       title: tool.title,
@@ -263,20 +264,22 @@ test("full server contract exposes all tools with stable annotations", async (t)
   );
   assert.doesNotMatch(toolContracts, /\bCLI\b/i);
   assert.doesNotMatch(toolContracts, /`?zg(?:\s|`)/i);
-  assert.match(instructions, /mandatory repository search layer/);
-  assert.match(instructions, /replaces ad-hoc grep\/rg exploration/);
-  assert.match(instructions, /call a zvec_grep_\* tool first/);
+  assert.match(instructions, /local workspace search/);
   assert.match(
     instructions,
-    /forbidden substitutes for zvec_grep_\* operations/,
+    /instead of raw grep, rg, or equivalent local text-search tools/,
   );
+  assert.match(instructions, /superset replacement for rg/);
+  assert.match(instructions, /exact keyword, text, or symbol is unknown/);
+  assert.match(instructions, /start with zvec_grep_search/);
+  assert.match(instructions, /exact keyword, text, or symbol is known/);
+  assert.match(instructions, /use zvec_grep_rg/);
+  assert.match(instructions, /Scope searches with paths or globs/);
+  assert.match(instructions, /refine broad or noisy searches/);
+  assert.match(instructions, /Trust zvec-grep results/);
   assert.match(
     instructions,
-    /Exact text and regex searches are not exceptions/,
-  );
-  assert.match(
-    instructions,
-    /Do not re-verify zvec_grep results by running grep or rg/,
+    /try zvec-grep again instead of switching to another local text-search tool/,
   );
   assert.doesNotMatch(instructions, /\bCLI\b/i);
   assert.doesNotMatch(instructions, /`?zg(?:\s|`)/i);
