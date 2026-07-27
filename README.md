@@ -143,8 +143,8 @@ Use the MCP tools `zvec_grep_search`, `zvec_grep_rg`, `zvec_grep_index`, `zvec_g
 
 Local models run through `node-llama-cpp`, Transformers.js, or the native
 Model2Vec Safetensors adapter and keep code search private to your machine. See the
-[local embedding model guide](docs/embedding.md) for a scenario-based
-selection table, model sizes, context limits, and compatibility notes.
+[embedding model selection guide](docs/embedding.md) for scenario-based
+recommendations, measured retrieval quality, resource usage, and context limits.
 
 ```bash
 zg index --embedding local/embeddinggemma-300m
