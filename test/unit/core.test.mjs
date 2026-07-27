@@ -47,6 +47,7 @@ import {
   ConcurrentTiming,
   TimingCollector,
 } from "../../dist/engine/utils/timing.js";
+import { contextOptionsFromRgInput } from "../../dist/mcp/input-normalization.js";
 
 test("CLI argument parser handles command, provider, path, and rg options", () => {
   const parsed = parseArgs([
@@ -110,6 +111,10 @@ test("CLI parsers reject invalid values and normalize supported values", () => {
     "test/**",
     "docs/**",
   ]);
+  assert.deepEqual(
+    splitPathFilters(String.raw`src/\,name.ts, test/[a,b].ts, *.{py,{cc,h}}`),
+    [String.raw`src/\,name.ts`, "test/[a,b].ts", "*.{py,{cc,h}}"],
+  );
   assert.equal(
     parseModifiedTime("1700000000000", "--modified-after"),
     1700000000000,
@@ -129,6 +134,22 @@ test("CLI parsers reject invalid values and normalize supported values", () => {
   );
   assert.throws(() => parseArgs(["query", "--json", "query"]), /removed/);
   assert.throws(() => parseArgs(["--unknown"]), /Unknown command/);
+});
+
+test("MCP rg normalization preserves brace glob entries", () => {
+  const braceGlob = "*.{py,cc,cpp,h,hpp}";
+  const scalar = contextOptionsFromRgInput({
+    pattern: "valid",
+    glob: braceGlob,
+  });
+  assert.deepEqual(scalar.includePaths, [braceGlob]);
+
+  const array = contextOptionsFromRgInput({
+    pattern: "valid",
+    glob: [braceGlob, "!test/**"],
+  });
+  assert.deepEqual(array.includePaths, [braceGlob]);
+  assert.deepEqual(array.excludePaths, ["test/**"]);
 });
 
 test("CLI parser covers utility commands, provider controls, routes, and equals syntax", () => {
