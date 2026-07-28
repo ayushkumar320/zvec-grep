@@ -70,8 +70,6 @@ const searchFields = {
     .max(MCP_MAX_SEARCH_LIMIT)
     .optional()
     .describe("Maximum returned items per query/group."),
-  include: pathFilterInputSchema.describe("Glob filters for paths to include."),
-  exclude: pathFilterInputSchema.describe("Glob filters for paths to exclude."),
   globs: pathFilterInputSchema.describe(
     "Ordered case-sensitive rg-style glob rules. Later rules override earlier rules.",
   ),

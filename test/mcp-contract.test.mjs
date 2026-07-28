@@ -833,8 +833,6 @@ test("search normalizes query, path and time inputs before calling the backend",
       root,
       query: "  service lifecycle  ",
       fts: ["  ModelLease  "],
-      include: "src/**, test/**",
-      exclude: ["dist/**", " coverage/** "],
       globs: ["!*.ts", "keep.ts"],
       insensitiveGlobs: ["README*"],
       fileTypes: ["ts"],
@@ -853,8 +851,6 @@ test("search normalizes query, path and time inputs before calling the backend",
 
   assert.deepEqual(received.queries, ["service lifecycle"]);
   assert.deepEqual(received.routes, [{ mode: "fts", query: "ModelLease" }]);
-  assert.deepEqual(received.includePaths, ["src/**", "test/**"]);
-  assert.deepEqual(received.excludePaths, ["dist/**", "coverage/**"]);
   assert.deepEqual(received.globs, ["!*.ts", "keep.ts"]);
   assert.deepEqual(received.insensitiveGlobs, ["README*"]);
   assert.deepEqual(received.fileTypes, ["ts"]);
@@ -994,7 +990,7 @@ test("input upper bounds are enforced", async (t) => {
 
   const excessivePath = await client.callTool({
     name: "zvec_grep_search",
-    arguments: { root, query: "query", include: "p".repeat(1_025) },
+    arguments: { root, query: "query", globs: "p".repeat(1_025) },
   });
   assert.equal(excessivePath.isError, true);
 
@@ -1003,7 +999,7 @@ test("input upper bounds are enforced", async (t) => {
     arguments: {
       root,
       query: "query",
-      exclude: Array.from({ length: 129 }, (_, index) => `path-${index}/**`),
+      globs: Array.from({ length: 129 }, (_, index) => `path-${index}/**`),
     },
   });
   assert.equal(excessivePathFilters.isError, true);

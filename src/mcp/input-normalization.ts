@@ -21,8 +21,6 @@ export type NormalizedSearchInput = {
   autoUpdate: boolean;
   preferSymbol?: boolean;
   symbolTypes?: CodeSymbolType[];
-  includePaths?: string[];
-  excludePaths?: string[];
   globs?: string[];
   insensitiveGlobs?: string[];
   fileTypes?: string[];
@@ -90,8 +88,6 @@ function normalizeSearchFields(
     | "queries"
     | "fts"
     | "vector"
-    | "include"
-    | "exclude"
     | "globs"
     | "insensitiveGlobs"
     | "fileTypes"
@@ -124,8 +120,6 @@ function normalizeSearchFields(
     );
   }
 
-  const includePaths = normalizePathFilters(input.include);
-  const excludePaths = normalizePathFilters(input.exclude);
   return {
     queries: queries.length > 0 ? queries : undefined,
     routes: [
@@ -137,8 +131,6 @@ function normalizeSearchFields(
     trace: input.trace,
     preferSymbol: input.preferSymbol,
     symbolTypes: input.symbolTypes.length > 0 ? input.symbolTypes : undefined,
-    includePaths: includePaths.length > 0 ? includePaths : undefined,
-    excludePaths: excludePaths.length > 0 ? excludePaths : undefined,
     globs: normalizePlainStringList(input.globs),
     insensitiveGlobs: normalizePlainStringList(input.insensitiveGlobs),
     fileTypes: normalizePlainStringList(input.fileTypes),
