@@ -139,12 +139,14 @@ test("CLI parsers reject invalid values and normalize supported values", () => {
 test("MCP rg normalization preserves brace glob entries", () => {
   const braceGlob = "*.{py,cc,cpp,h,hpp}";
   const scalar = contextOptionsFromRgInput({
+    root: "/repo",
     pattern: "valid",
     glob: braceGlob,
   });
   assert.deepEqual(scalar.includePaths, [braceGlob]);
 
   const array = contextOptionsFromRgInput({
+    root: "/repo",
     pattern: "valid",
     glob: [braceGlob, "!test/**"],
   });

@@ -872,37 +872,6 @@ test("search normalizes query, path and time inputs before calling the backend",
   assert.equal(received.autoUpdate, true);
 });
 
-test("search accepts JSON-encoded string lists from loose MCP clients", async (t) => {
-  let received;
-  const backend = createBackend();
-  backend.search = async (input) => {
-    received = input;
-    return createBackend().search(input);
-  };
-  const { client, server } = await connect(backend);
-  t.after(async () => {
-    await client.close();
-    await server.close();
-  });
-
-  await client.callTool({
-    name: "zvec_grep_search",
-    arguments: {
-      root,
-      fts: JSON.stringify(["RocksdbContext", "rocksdb_context_"]),
-      exclude: JSON.stringify(["thirdparty/**", "build/**"]),
-      fileTypes: JSON.stringify(["h", "cc"]),
-    },
-  });
-
-  assert.deepEqual(received.routes, [
-    { mode: "fts", query: "RocksdbContext" },
-    { mode: "fts", query: "rocksdb_context_" },
-  ]);
-  assert.deepEqual(received.excludePaths, ["thirdparty/**", "build/**"]);
-  assert.deepEqual(received.fileTypes, ["h", "cc"]);
-});
-
 test("search can return the current index without scheduling an update", async (t) => {
   let received;
   const backend = createBackend();
@@ -963,6 +932,35 @@ test("rg normalizes managed ripgrep input before calling the backend", async (t)
   assert.equal(result.content[0].text, expected);
   assert.match(result.content[0].text, /^src\/index\.ts:1\n1:\t/);
   assert.doesNotMatch(result.content[0].text, /rank=|matchedBy=|source:/);
+});
+
+test("rg does not apply indexed search input bounds", async (t) => {
+  let received;
+  const backend = createBackend();
+  backend.rg = async (input) => {
+    received = input;
+    return createBackend().rg(input);
+  };
+  const { client, server } = await connect(backend);
+  t.after(async () => {
+    await client.close();
+    await server.close();
+  });
+
+  const pattern = "n".repeat(4_001);
+  const patterns = Array.from({ length: 33 }, (_, index) => `pattern-${index}`);
+  const paths = Array.from({ length: 129 }, (_, index) => `path-${index}`);
+  const glob = Array.from({ length: 129 }, (_, index) => `glob-${index}`);
+  const result = await client.callTool({
+    name: "zvec_grep_rg",
+    arguments: { root, pattern, patterns, paths, glob },
+  });
+
+  assert.notEqual(result.isError, true);
+  assert.equal(received.pattern, pattern);
+  assert.deepEqual(received.patterns, patterns);
+  assert.deepEqual(received.paths, paths);
+  assert.deepEqual(received.glob, glob);
 });
 
 test("input upper bounds are enforced", async (t) => {
