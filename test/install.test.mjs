@@ -400,7 +400,6 @@ test("Codex installer refreshes legacy managed guidance", async (t) => {
 
   const agents = await readFile(agentsPath, "utf8");
   assert.match(agents, /# Existing instructions/);
-  assert.match(agents, /ZVEC_GREP_START|Remote data authorization/);
   assert.match(
     agents,
     /Use `zvec_grep_rg` first when an exact keyword, text, symbol, filename/,
@@ -414,6 +413,9 @@ test("Codex installer refreshes legacy managed guidance", async (t) => {
     /named class, function, or symbol remains an exact anchor even when its file or definition location is unknown/,
   );
   assert.doesNotMatch(agents, /indexed search first/);
+  assert.doesNotMatch(agents, /Indexing and status/);
+  assert.doesNotMatch(agents, /Remote data authorization/);
+  assert.doesNotMatch(agents, /zg status/);
   assert.doesNotMatch(agents, /legacy guidance/);
 });
 
@@ -462,7 +464,11 @@ test("Claude Code installer configures MCP trust and guidance", async (t) => {
     alwaysLoad: true,
   });
   assert.ok(settings.permissions.allow.includes("mcp__zvec_grep__*"));
-  assert.match(guidance, /Remote data authorization/);
+  assert.match(guidance, /zvec_grep_search/);
+  assert.match(guidance, /zvec_grep_rg/);
+  assert.doesNotMatch(guidance, /Indexing and status/);
+  assert.doesNotMatch(guidance, /Remote data authorization/);
+  assert.doesNotMatch(guidance, /zg status/);
   assert.match(stdout, /zvec-grep setup/);
   assert.match(stdout, /Installing integrations/);
   assert.match(stdout, /Claude Code/);

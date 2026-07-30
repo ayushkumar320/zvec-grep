@@ -2415,9 +2415,7 @@ function agentGuidanceBlock(toolNames?: {
 Route repository search through zvec-grep instead of raw grep, rg, or broad file reads. Choose the tool by intent; indexed search does not need to run before exact search.
 
 - **MCP tools**: Use \`${rgTool}\` first when an exact keyword, text, symbol, filename, path, configuration key, error message, source fragment, literal, or regex anchor is known. A named class, function, or symbol remains an exact anchor even when its file or definition location is unknown. Use \`${searchTool}\` only when the exact anchor is unknown and conceptual discovery is needed.
-- **Indexing and status**: Every repository MCP call uses an absolute root visible to the local daemon. Start it with \`zg server on\`. Manage persistent indexes with \`zg index\`, inspect them with \`zg status\`, and inspect the daemon with \`zg server status\`.
-- **Remote data authorization**: MCP tool trust does not authorize Remote Embedding. zvec-grep requests its own once or workspace authorization before sending query text or workspace content to a remote provider.
-- **Shell fallback**: If the MCP server is unavailable, use \`zg status\`, \`zg query "<query>"\`, and \`zg query --rg "<pattern>"\`.
+- **Shell fallback**: If the MCP server is unavailable, use \`zg query "<query>"\` and \`zg query --rg "<pattern>"\`.
 
 Prefer focused -g/--glob and -t/--type filters, and exclude dependencies, generated output, caches, build artifacts, and logs unless the task is about those files.
 ${ZVEC_GREP_AGENTS_END}`;

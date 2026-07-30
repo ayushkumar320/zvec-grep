@@ -195,18 +195,37 @@ export interface ZvecGrepDaemonBackend {
   serverStatus(): Promise<ZvecGrepServerStatusResult>;
 }
 
-export const ZVEC_GREP_MCP_INSTRUCTIONS = [
+const ZVEC_GREP_SEARCH_MCP_INSTRUCTIONS = [
   "Use zvec-grep for local workspace search instead of raw grep, rg, or equivalent local text-search tools.",
   "zvec-grep is a more capable superset replacement for rg.",
   "When the exact keyword, text, or symbol is unknown, start with zvec_grep_search to quickly identify relevant concepts, files, and locations.",
   "When the exact keyword, text, or symbol is known, use zvec_grep_rg.",
   "Scope searches with the path parameter or glob filters when you already know likely locations or file types, and refine broad or noisy searches by narrowing the query and search scope.",
   "Trust zvec-grep results; if results are too broad, sparse, or low-quality, refine the query, scope, or search options and try zvec-grep again instead of switching to another local text-search tool.",
+];
+
+export const ZVEC_GREP_AGENT_MCP_INSTRUCTIONS = [
+  ...ZVEC_GREP_SEARCH_MCP_INSTRUCTIONS,
+  "Every repository operation requires an absolute root path visible to the daemon.",
+  "Read freshness and indexing directly from zvec_grep_search responses without a status preflight.",
+  "Use possibly_stale search results immediately when they are sufficient; do not perform extra diagnostics merely because a background update is active.",
+  "Use zvec_grep_rg when an index is missing and literal or regex search can answer the task.",
 ].join(" ");
 
-export const ZVEC_GREP_AGENT_MCP_INSTRUCTIONS = ZVEC_GREP_MCP_INSTRUCTIONS;
+export const ZVEC_GREP_FULL_MCP_INSTRUCTIONS = [
+  ...ZVEC_GREP_SEARCH_MCP_INSTRUCTIONS,
+  "Every repository operation requires an absolute root path visible to the daemon.",
+  "Use the zvec_grep_* tools directly for repository search, status, indexing, deletion, and exhaustive lexical search.",
+  "Use freshness and indexing from zvec_grep_search without a status preflight; call zvec_grep_index_status only for a missing index, failed or cancelled indexing, diagnostics, or explicit progress monitoring.",
+  "Use possibly_stale search results immediately when they are sufficient; do not call status merely because a background update is active.",
+  "Call zvec_grep_index only when persistent indexing or index deletion is explicitly requested. Never silently create, rebuild, or drop an index.",
+  "For a new index, use a user-selected embedding or omit it only when a server default model is known; never guess a model.",
+  "zvec_grep_index wait defaults to false; poll zvec_grep_index_status for background progress and set wait to true only when completion is required before continuing.",
+  "Use zvec_grep_index with drop: true, or zvec_grep_index_drop, only when index deletion is explicitly requested.",
+  "Call zvec_grep_server_status only for daemon diagnostics, not before ordinary searches.",
+].join(" ");
 
-export const ZVEC_GREP_FULL_MCP_INSTRUCTIONS = ZVEC_GREP_MCP_INSTRUCTIONS;
+export const ZVEC_GREP_MCP_INSTRUCTIONS = ZVEC_GREP_AGENT_MCP_INSTRUCTIONS;
 
 export type ZvecGrepMcpServerOptions = {
   authorizationHeartbeatMs?: number;

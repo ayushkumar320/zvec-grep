@@ -264,7 +264,7 @@ test("full server contract exposes all tools with stable annotations", async (t)
   );
   const instructions = client.getInstructions();
   assert.equal(instructions, ZVEC_GREP_FULL_MCP_INSTRUCTIONS);
-  assert.equal(instructions, ZVEC_GREP_MCP_INSTRUCTIONS);
+  assert.notEqual(instructions, ZVEC_GREP_AGENT_MCP_INSTRUCTIONS);
   const toolContracts = JSON.stringify(
     tools.map((tool) => ({
       title: tool.title,
@@ -292,6 +292,9 @@ test("full server contract exposes all tools with stable annotations", async (t)
     instructions,
     /try zvec-grep again instead of switching to another local text-search tool/,
   );
+  assert.match(instructions, /repository search, status, indexing, deletion/);
+  assert.match(instructions, /zvec_grep_index_status/);
+  assert.match(instructions, /zvec_grep_server_status/);
   assert.doesNotMatch(instructions, /\bCLI\b/i);
   assert.doesNotMatch(instructions, /`?zg(?:\s|`)/i);
 
