@@ -2,16 +2,13 @@ import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import {
-  Model2VecEmbeddingModel,
-  setModel2VecRuntimeForTesting,
-} from "../../dist/engine/models/providers/model2vec/embedding.js";
-import { createTemporaryDirectory } from "../helpers/fixtures.mjs";
+import { Model2VecEmbeddingModel } from "../../../dist/engine/models/backends/model2vec.js";
+import { createTemporaryDirectory } from "../../helpers/fixtures.mjs";
 
 function entry(overrides = {}) {
   return {
     backend: "model2vec",
-    id: "local/test-potion",
+    reference: "local/test-potion",
     provider: "local",
     model: "test-potion",
     repo: "test/potion",
@@ -80,7 +77,7 @@ test("Model2Vec downloads pinned Safetensors assets and performs normalized stat
     },
     { unk_token_id: 99 },
   );
-  setModel2VecRuntimeForTesting({
+  const dependencies = {
     async loadTokenizer(source, options) {
       calls.tokenizerLoads.push({ source, options });
       return tokenizer;
@@ -101,14 +98,17 @@ test("Model2Vec downloads pinned Safetensors assets and performs normalized stat
         url.endsWith("tokenizer.json") ? "{}" : "weights",
       );
     },
-  });
-  t.after(() => setModel2VecRuntimeForTesting(null));
+  };
 
-  const model = new Model2VecEmbeddingModel(entry(), {
-    apiKey: "",
-    modelCacheDir: root,
-  });
-  const vectors = await model.embed(
+  const model = new Model2VecEmbeddingModel(
+    entry(),
+    {
+      apiKey: "",
+      modelCacheDir: root,
+    },
+    dependencies,
+  );
+  const { vectors } = await model.embed(
     [
       { kind: "text", text: "both tokens" },
       { kind: "text", text: "unknown-only" },
@@ -163,7 +163,7 @@ test("Model2Vec downloads pinned Safetensors assets and performs normalized stat
 
 test("Model2Vec parses real F32 and F16 Safetensors embedding tables", async (t) => {
   const root = await createTemporaryDirectory(t, "zvec-model2vec-safetensors-");
-  setModel2VecRuntimeForTesting({
+  const dependencies = {
     async loadTokenizer() {
       return Object.assign(
         async (text) => ({
@@ -177,8 +177,7 @@ test("Model2Vec parses real F32 and F16 Safetensors embedding tables", async (t)
     async download() {
       throw new Error("cached test assets should not be downloaded");
     },
-  });
-  t.after(() => setModel2VecRuntimeForTesting(null));
+  };
 
   const fixtures = [
     {
@@ -220,16 +219,20 @@ test("Model2Vec parses real F32 and F16 Safetensors embedding tables", async (t)
         apiKey: "",
         modelCacheDir: root,
       },
+      dependencies,
     );
     assert.deepEqual(
       await model.embed([
         { kind: "text", text: "first" },
         { kind: "text", text: "second" },
       ]),
-      [
-        [1, 2, 3],
-        [4, 5, 6],
-      ],
+      {
+        vectors: [
+          [1, 2, 3],
+          [4, 5, 6],
+        ],
+        truncated: [],
+      },
     );
     await model.dispose();
   }
@@ -238,7 +241,7 @@ test("Model2Vec parses real F32 and F16 Safetensors embedding tables", async (t)
 test("Model2Vec reports and truncates inputs beyond the model token limit", async (t) => {
   const root = await createTemporaryDirectory(t, "zvec-model2vec-truncate-");
   const calls = [];
-  setModel2VecRuntimeForTesting({
+  const dependencies = {
     async loadTokenizer() {
       return Object.assign(
         async (_text, options) => {
@@ -261,18 +264,19 @@ test("Model2Vec reports and truncates inputs beyond the model token limit", asyn
     async download(_url, destination) {
       await writeFile(destination, "asset");
     },
-  });
-  t.after(() => setModel2VecRuntimeForTesting(null));
+  };
 
-  const model = new Model2VecEmbeddingModel(entry({ maxInputTokens: 2 }), {
-    apiKey: "",
-    modelCacheDir: root,
-  });
-  const result = await model.embedWithDiagnostics([
-    { kind: "text", text: "too many tokens" },
-  ]);
+  const model = new Model2VecEmbeddingModel(
+    entry({ maxInputTokens: 2 }),
+    {
+      apiKey: "",
+      modelCacheDir: root,
+    },
+    dependencies,
+  );
+  const result = await model.embed([{ kind: "text", text: "too many tokens" }]);
 
-  assert.deepEqual(result.diagnostics.truncatedInputIndexes, [0]);
+  assert.deepEqual(result.truncated, [0]);
   assert.ok(Math.abs(result.vectors[0][0] - Math.SQRT1_2) < 1e-7);
   assert.ok(Math.abs(result.vectors[0][1] - Math.SQRT1_2) < 1e-7);
   assert.equal(result.vectors[0][2], 0);
@@ -287,7 +291,7 @@ test("Model2Vec reports and truncates inputs beyond the model token limit", asyn
 
 test("Model2Vec rejects token ids outside the static embedding table", async (t) => {
   const root = await createTemporaryDirectory(t, "zvec-model2vec-invalid-");
-  setModel2VecRuntimeForTesting({
+  const dependencies = {
     async loadTokenizer() {
       return Object.assign(
         async () => ({ input_ids: { data: BigInt64Array.from([3n]) } }),
@@ -305,13 +309,16 @@ test("Model2Vec rejects token ids outside the static embedding table", async (t)
     async download(_url, destination) {
       await writeFile(destination, "asset");
     },
-  });
-  t.after(() => setModel2VecRuntimeForTesting(null));
+  };
 
-  const model = new Model2VecEmbeddingModel(entry(), {
-    apiKey: "",
-    modelCacheDir: root,
-  });
+  const model = new Model2VecEmbeddingModel(
+    entry(),
+    {
+      apiKey: "",
+      modelCacheDir: root,
+    },
+    dependencies,
+  );
   await assert.rejects(
     model.embed([{ kind: "text", text: "value" }]),
     (error) =>

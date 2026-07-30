@@ -8,21 +8,17 @@ import {
   unlinkSync,
 } from "node:fs";
 import { join } from "node:path";
-import { EngineError } from "../../../errors/index.js";
-import type { Content, TextContent } from "../../../types.js";
-import { defaultHome } from "../../../utils/path.js";
+import { EngineError } from "../../errors/index.js";
+import type { Content, TextContent } from "../../types.js";
+import { defaultHome } from "../../utils/path.js";
 import {
-  EmbeddingModel,
-  type EmbeddingBatchResult,
-  type EmbeddingLimits,
-  type EmbeddingVector,
+  BaseEmbeddingModel,
+  type CreateEmbeddingModelOptions,
+  type EmbeddingModelInfo,
+  type EmbeddingResult,
   type NormalizedEmbeddingOptions,
-} from "../../embeddings.js";
-import type {
-  LlamaCppEmbeddingCatalogEntry,
-  LlamaGpuMode,
-  ModelProviderOptions,
-} from "../../types.js";
+} from "../embeddings.js";
+import type { LlamaCppEmbeddingCatalogEntry } from "../catalog.js";
 
 type LlamaEmbedding = {
   vector: ArrayLike<number>;
@@ -55,6 +51,9 @@ type Llama = {
   dispose?(): Promise<void> | void;
 };
 
+type LlamaGpuSelection =
+  Exclude<NonNullable<CreateEmbeddingModelOptions["device"]>, "cpu"> | false;
+
 type NodeLlamaCppModule = {
   getLlama(options: Record<string, unknown>): Promise<Llama>;
   resolveModelFile(
@@ -65,6 +64,14 @@ type NodeLlamaCppModule = {
 };
 
 type NodeLlamaCppLoader = () => Promise<NodeLlamaCppModule>;
+type LlamaCppRuntimeState = {
+  failedGpuInitModes: Set<LlamaGpuSelection>;
+  cpuCompatibleFallbackWarningShown: boolean;
+};
+type LlamaCppDependencies = {
+  loadRuntime: NodeLlamaCppLoader;
+  runtimeState: LlamaCppRuntimeState;
+};
 
 const DEFAULT_MODEL_CACHE_DIR = join(defaultHome(), "models");
 const GGUF_MAGIC = Buffer.from("GGUF");
@@ -77,11 +84,6 @@ const DEFAULT_DARWIN_ARM64_CMAKE_OPTIONS = {
   GGML_NATIVE: "OFF",
 } as const;
 const SUPPRESSED_LLAMA_CPP_LOG_MESSAGES = new Set(["Failed to get swap info"]);
-
-let nodeLlamaCppImport: Promise<NodeLlamaCppModule> | null = null;
-let nodeLlamaCppLoader: NodeLlamaCppLoader = defaultNodeLlamaCppLoader;
-const failedGpuInitModes = new Set<LlamaGpuMode>();
-let cpuCompatibleFallbackWarningShown = false;
 
 async function defaultNodeLlamaCppLoader(): Promise<NodeLlamaCppModule> {
   const moduleName = "node-llama-cpp";
@@ -113,32 +115,28 @@ function installDarwinMetalResidencyMitigation(): void {
   process.env.GGML_METAL_NO_RESIDENCY ??= "1";
 }
 
-async function loadNodeLlamaCpp(): Promise<NodeLlamaCppModule> {
-  nodeLlamaCppImport ??= nodeLlamaCppLoader();
-  return nodeLlamaCppImport;
-}
+let defaultRuntimeImport: Promise<NodeLlamaCppModule> | null = null;
 
-export function setLlamaCppRuntimeForTesting(
-  loader: NodeLlamaCppLoader | null,
-): void {
-  nodeLlamaCppImport = null;
-  nodeLlamaCppLoader = loader ?? defaultNodeLlamaCppLoader;
-  failedGpuInitModes.clear();
-  cpuCompatibleFallbackWarningShown = false;
-}
+const defaultDependencies: LlamaCppDependencies = {
+  loadRuntime() {
+    defaultRuntimeImport ??= defaultNodeLlamaCppLoader();
+    return defaultRuntimeImport;
+  },
+  runtimeState: {
+    failedGpuInitModes: new Set<LlamaGpuSelection>(),
+    cpuCompatibleFallbackWarningShown: false,
+  },
+};
 
-export class LlamaCppEmbeddingModel extends EmbeddingModel {
-  readonly ref;
-  readonly dimension;
-  readonly metric;
-  readonly supportedContentKinds = ["text"] as const;
-  readonly limits;
-  override readonly recommendedIndexConcurrency = 1;
+export class LlamaCppEmbeddingModel extends BaseEmbeddingModel {
+  readonly info: EmbeddingModelInfo;
 
   private readonly modelCacheDir: string;
-  private readonly gpu: LlamaGpuMode;
-  private readonly embeddingParallelism?: number;
+  private readonly gpu: LlamaGpuSelection;
+  private readonly parallelism?: number;
+  private readonly dependencies: LlamaCppDependencies;
 
+  private runtimeImport: Promise<NodeLlamaCppModule> | null = null;
   private llama: Llama | null = null;
   private model: LlamaModel | null = null;
   private contexts: LlamaEmbeddingContext[] = [];
@@ -150,49 +148,45 @@ export class LlamaCppEmbeddingModel extends EmbeddingModel {
 
   constructor(
     private readonly entry: LlamaCppEmbeddingCatalogEntry,
-    options: ModelProviderOptions,
+    options: CreateEmbeddingModelOptions,
+    dependencies: Partial<LlamaCppDependencies> = {},
   ) {
     super();
 
-    this.ref = {
+    this.info = {
+      reference: entry.reference,
       provider: entry.provider,
-      model: entry.model,
-    } as const;
-    this.dimension = entry.dimension;
-    this.metric = entry.metric;
-    this.limits = {
-      maxBatchSize: entry.maxBatchSize,
-      maxInputTokens: entry.contextSize,
-    } as const satisfies EmbeddingLimits;
+      name: entry.model,
+      dimension: entry.dimension,
+      metric: entry.metric,
+      inputKinds: ["text"],
+      limits: {
+        maxBatchSize: entry.maxBatchSize,
+        maxInputTokens: entry.contextSize,
+      },
+    };
     this.modelCacheDir =
       options.modelCacheDir ??
       process.env.ZVEC_GREP_MODEL_CACHE ??
       DEFAULT_MODEL_CACHE_DIR;
-    this.gpu =
-      options.llamaGpu ?? resolveLlamaGpuMode(process.env.ZVEC_GREP_LLAMA_GPU);
-    this.embeddingParallelism =
-      options.embeddingParallelism ??
-      resolveParallelismOverride(process.env.ZVEC_GREP_EMBED_PARALLELISM);
+    this.gpu = embeddingDeviceToLlamaGpuSelection(options.device ?? "cpu");
+    this.parallelism = resolveParallelismOverride(
+      process.env.ZVEC_GREP_LLAMA_CONTEXT_PARALLELISM,
+    );
+    this.dependencies = { ...defaultDependencies, ...dependencies };
   }
 
   protected async doEmbed(
     contents: readonly Content[],
     options: NormalizedEmbeddingOptions,
-  ): Promise<EmbeddingVector[]> {
-    return (await this.embedBatch(contents, options)).vectors;
-  }
-
-  protected override async doEmbedWithDiagnostics(
-    contents: readonly Content[],
-    options: NormalizedEmbeddingOptions,
-  ): Promise<EmbeddingBatchResult> {
+  ): Promise<EmbeddingResult> {
     return await this.embedBatch(contents, options);
   }
 
   private async embedBatch(
     contents: readonly Content[],
     options: NormalizedEmbeddingOptions,
-  ): Promise<EmbeddingBatchResult> {
+  ): Promise<EmbeddingResult> {
     this.ensureNotDisposed();
     const texts = (contents as readonly TextContent[]).map((content) =>
       formatTextForEmbedding(content.text, options.purpose, this.entry),
@@ -203,7 +197,7 @@ export class LlamaCppEmbeddingModel extends EmbeddingModel {
     } catch (cause) {
       throw new EngineError("llama.cpp embedding failed", {
         code: "ZVEC_GREP.ENGINE.MODELS.LLAMA_CPP_EMBED_FAILED",
-        context: `model=${this.entry.id}`,
+        context: `model=${this.entry.reference}`,
         cause,
       });
     }
@@ -220,9 +214,7 @@ export class LlamaCppEmbeddingModel extends EmbeddingModel {
     this.contextsCreatePromise = null;
   }
 
-  private async embedTexts(
-    texts: readonly string[],
-  ): Promise<EmbeddingBatchResult> {
+  private async embedTexts(texts: readonly string[]): Promise<EmbeddingResult> {
     const contexts = await this.ensureEmbeddingContexts(texts.length);
     const truncatedInputIndexes: number[] = [];
     const safeTexts = texts.map((text, index) => {
@@ -242,7 +234,7 @@ export class LlamaCppEmbeddingModel extends EmbeddingModel {
 
     const results = await Promise.all(
       chunks.map(async (chunk) => {
-        const vectors: EmbeddingVector[] = [];
+        const vectors: number[][] = [];
         for (const text of chunk.texts) {
           const embedding = await chunk.context.getEmbeddingFor(text);
           vectors.push(Array.from(embedding.vector));
@@ -253,7 +245,7 @@ export class LlamaCppEmbeddingModel extends EmbeddingModel {
 
     return {
       vectors: results.flat(),
-      diagnostics: { truncatedInputIndexes },
+      truncated: truncatedInputIndexes,
     };
   }
 
@@ -275,10 +267,15 @@ export class LlamaCppEmbeddingModel extends EmbeddingModel {
     }
   }
 
+  private async loadRuntime(): Promise<NodeLlamaCppModule> {
+    this.runtimeImport ??= this.dependencies.loadRuntime();
+    return await this.runtimeImport;
+  }
+
   private async loadLlamaWithFallback(): Promise<Llama> {
-    const runtime = await loadNodeLlamaCpp();
+    const runtime = await this.loadRuntime();
     const requestedGpu = this.usingCpuFallback ? false : this.gpu;
-    const load = (gpu: LlamaGpuMode) =>
+    const load = (gpu: LlamaGpuSelection) =>
       runtime.getLlama({
         build: "autoAttempt",
         logLevel: runtime.LlamaLogLevel?.error,
@@ -293,9 +290,9 @@ export class LlamaCppEmbeddingModel extends EmbeddingModel {
       return this.llama;
     }
 
-    if (failedGpuInitModes.has(requestedGpu)) {
+    if (this.dependencies.runtimeState.failedGpuInitModes.has(requestedGpu)) {
       process.stderr.write(
-        `zvec-grep warning: skipping previously failed llama.cpp GPU init${requestedGpu === "auto" ? "" : ` for ZVEC_GREP_LLAMA_GPU=${requestedGpu}`}, using CPU.\n`,
+        `zvec-grep warning: skipping previously failed llama.cpp GPU init${requestedGpu === "auto" ? "" : ` for device=${requestedGpu}`}, using CPU.\n`,
       );
       this.usingCpuFallback = true;
       this.llama = await this.loadCpuCompatibleLlama(load);
@@ -305,7 +302,7 @@ export class LlamaCppEmbeddingModel extends EmbeddingModel {
     try {
       this.llama = await load(requestedGpu);
     } catch (error) {
-      failedGpuInitModes.add(requestedGpu);
+      this.dependencies.runtimeState.failedGpuInitModes.add(requestedGpu);
       process.stderr.write(
         `zvec-grep warning: llama.cpp GPU init failed (${formatErrorMessage(error)}), falling back to CPU.\n`,
       );
@@ -317,13 +314,13 @@ export class LlamaCppEmbeddingModel extends EmbeddingModel {
   }
 
   private async loadCpuCompatibleLlama(
-    load: (gpu: LlamaGpuMode) => Promise<Llama>,
+    load: (gpu: LlamaGpuSelection) => Promise<Llama>,
   ): Promise<Llama> {
     try {
       return await load(false);
     } catch (error) {
-      if (!cpuCompatibleFallbackWarningShown) {
-        cpuCompatibleFallbackWarningShown = true;
+      if (!this.dependencies.runtimeState.cpuCompatibleFallbackWarningShown) {
+        this.dependencies.runtimeState.cpuCompatibleFallbackWarningShown = true;
         process.stderr.write(
           `zvec-grep warning: CPU-only llama.cpp backend unavailable (${formatErrorMessage(error)}); using packaged backend with GPU model offloading disabled.\n`,
         );
@@ -491,7 +488,7 @@ export class LlamaCppEmbeddingModel extends EmbeddingModel {
   private async resolveModelPath(): Promise<string> {
     mkdirSync(this.modelCacheDir, { recursive: true });
 
-    const runtime = await loadNodeLlamaCpp();
+    const runtime = await this.loadRuntime();
     const modelPath = await runtime.resolveModelFile(this.entry.uri, {
       directory: this.modelCacheDir,
       cli: false,
@@ -501,8 +498,8 @@ export class LlamaCppEmbeddingModel extends EmbeddingModel {
   }
 
   private async resolveParallelism(): Promise<number> {
-    if (this.embeddingParallelism !== undefined) {
-      return this.embeddingParallelism;
+    if (this.parallelism !== undefined) {
+      return this.parallelism;
     }
 
     const llama = await this.ensureLlama();
@@ -578,7 +575,7 @@ export class LlamaCppEmbeddingModel extends EmbeddingModel {
     if (this.disposed) {
       throw new EngineError("llama.cpp embedding model is disposed", {
         code: "ZVEC_GREP.ENGINE.MODELS.LLAMA_CPP_DISPOSED",
-        context: `model=${this.entry.id}`,
+        context: `model=${this.entry.reference}`,
       });
     }
   }
@@ -639,31 +636,10 @@ function formatTextForEmbedding(
     : `title: none | text: ${text}`;
 }
 
-function resolveLlamaGpuMode(envValue: string | undefined): LlamaGpuMode {
-  const normalized = envValue?.trim().toLowerCase() ?? "";
-  if (!normalized) {
-    return false;
-  }
-
-  if (
-    ["false", "off", "none", "disable", "disabled", "0"].includes(normalized)
-  ) {
-    return false;
-  }
-
-  if (
-    normalized === "auto" ||
-    normalized === "metal" ||
-    normalized === "vulkan" ||
-    normalized === "cuda"
-  ) {
-    return normalized;
-  }
-
-  process.stderr.write(
-    `zvec-grep warning: invalid ZVEC_GREP_LLAMA_GPU="${envValue}", using CPU.\n`,
-  );
-  return false;
+function embeddingDeviceToLlamaGpuSelection(
+  device: NonNullable<CreateEmbeddingModelOptions["device"]>,
+): LlamaGpuSelection {
+  return device === "cpu" ? false : device;
 }
 
 function resolveParallelismOverride(
@@ -677,7 +653,7 @@ function resolveParallelismOverride(
   const parsed = Number.parseInt(normalized, 10);
   if (!Number.isInteger(parsed) || parsed < 1) {
     process.stderr.write(
-      `zvec-grep warning: invalid ZVEC_GREP_EMBED_PARALLELISM="${envValue}", using automatic parallelism.\n`,
+      `zvec-grep warning: invalid ZVEC_GREP_LLAMA_CONTEXT_PARALLELISM="${envValue}", using automatic parallelism.\n`,
     );
     return undefined;
   }

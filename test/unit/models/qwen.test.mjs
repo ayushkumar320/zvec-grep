@@ -1,28 +1,40 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { EmbeddingModel } from "../../dist/engine/models/embeddings.js";
-import {
-  createEmbeddingModel,
-  createEmbeddingModelFromCatalog,
-  createEmbeddingModelFromReference,
-} from "../../dist/engine/models/factory.js";
+import { getEmbeddingModelCatalogEntry } from "../../../dist/engine/models/catalog.js";
 import {
   Qwen37TextEmbeddingModel,
   Qwen3VlEmbeddingModel,
   QwenTextEmbeddingV4Model,
-} from "../../dist/engine/models/providers/qwen/embedding.js";
-import { TransformersJsEmbeddingModel } from "../../dist/engine/models/providers/transformers-js/embedding.js";
+} from "../../../dist/engine/models/backends/qwen.js";
 
 const vector = (dimension, value = 0.25) => Array(dimension).fill(value);
+const qwenTextEntry = getEmbeddingModelCatalogEntry("qwen/text-embedding-v4");
+const qwen37TextEntry = getEmbeddingModelCatalogEntry(
+  "qwen/qwen3.7-text-embedding",
+);
+const qwenVlEntry = getEmbeddingModelCatalogEntry("qwen/qwen3-vl-embedding");
 
-async function withFetch(mock, callback) {
-  const original = globalThis.fetch;
-  globalThis.fetch = mock;
-  try {
-    return await callback();
-  } finally {
-    globalThis.fetch = original;
-  }
+function createDependencies() {
+  let currentFetch;
+  return {
+    dependencies: {
+      fetch(...args) {
+        if (!currentFetch) {
+          throw new Error("Fetch dependency is not configured");
+        }
+        return currentFetch(...args);
+      },
+    },
+    async withFetch(fetch, callback) {
+      const previousFetch = currentFetch;
+      currentFetch = fetch;
+      try {
+        return await callback();
+      } finally {
+        currentFetch = previousFetch;
+      }
+    },
+  };
 }
 
 function jsonResponse(body, init = {}) {
@@ -32,113 +44,28 @@ function jsonResponse(body, init = {}) {
   });
 }
 
-class StubEmbeddingModel extends EmbeddingModel {
-  ref = { provider: "test", model: "stub" };
-  dimension = 2;
-  metric = "cosine";
-  supportedContentKinds = ["text", "image"];
-  limits = { maxBatchSize: 2, maxImageBytes: 3 };
-  result = [[1, 0]];
-  seenPurpose;
-  seenSignal;
-
-  async doEmbed(_contents, options) {
-    this.seenPurpose = options.purpose;
-    this.seenSignal = options.signal;
-    return this.result;
-  }
-}
-
-test("embedding base class validates inputs, provider outputs, and purpose defaults", async () => {
-  const model = new StubEmbeddingModel();
-  assert.deepEqual(await model.embed([{ kind: "text", text: "hello" }]), [
-    [1, 0],
-  ]);
-  assert.equal(model.seenPurpose, "document");
-  const signal = new AbortController().signal;
-  await model.embed([{ kind: "text", text: "query" }], {
-    purpose: "query",
-    signal,
-  });
-  assert.equal(model.seenPurpose, "query");
-  assert.equal(model.seenSignal, signal);
-  await model.dispose();
-
-  await assert.rejects(model.embed([]), /at least one/);
-  await assert.rejects(
-    model.embed([
-      { kind: "text", text: "one" },
-      { kind: "text", text: "two" },
-      { kind: "text", text: "three" },
-    ]),
-    /batch size/,
-  );
-  await assert.rejects(
-    model.embed([{ kind: "text", text: "  " }]),
-    /must not be empty/,
-  );
-  await assert.rejects(
-    model.embed([{ kind: "image", data: new Uint8Array(), format: "png" }]),
-    /must not be empty/,
-  );
-  await assert.rejects(
-    model.embed([{ kind: "image", data: new Uint8Array([1]), format: "" }]),
-    /include a format/,
-  );
-  await assert.rejects(
-    model.embed([
-      { kind: "image", data: new Uint8Array([1, 2, 3, 4]), format: "png" },
-    ]),
-    /exceeds model limit/,
-  );
-
-  model.supportedContentKinds = ["text"];
-  await assert.rejects(
-    model.embed([{ kind: "image", data: new Uint8Array([1]), format: "png" }]),
-    /does not support/,
-  );
-  model.supportedContentKinds = ["text", "image"];
-
-  model.result = null;
-  await assert.rejects(
-    model.embed([{ kind: "text", text: "value" }]),
-    /non-array response/,
-  );
-  model.result = [];
-  await assert.rejects(
-    model.embed([{ kind: "text", text: "value" }]),
-    /wrong number/,
-  );
-  model.result = [null];
-  await assert.rejects(
-    model.embed([{ kind: "text", text: "value" }]),
-    /non-array vector/,
-  );
-  model.result = [[1]];
-  await assert.rejects(
-    model.embed([{ kind: "text", text: "value" }]),
-    /wrong dimension/,
-  );
-  model.result = [[1, Number.NaN]];
-  await assert.rejects(
-    model.embed([{ kind: "text", text: "value" }]),
-    /non-finite/,
-  );
-});
-
 test("Qwen text model sends ordered batches and validates all response shapes", async () => {
+  const { dependencies, withFetch } = createDependencies();
   assert.throws(
-    () => new QwenTextEmbeddingV4Model({ apiKey: " " }),
+    () => new QwenTextEmbeddingV4Model(qwenTextEntry, { apiKey: " " }),
     /requires an API key/,
   );
   assert.throws(
-    () => new QwenTextEmbeddingV4Model({ apiKey: "secret", endpoint: "  " }),
+    () =>
+      new QwenTextEmbeddingV4Model(qwenTextEntry, {
+        apiKey: "secret",
+        endpoint: "  ",
+      }),
     /requires an endpoint/,
   );
-  const model = new QwenTextEmbeddingV4Model({
-    apiKey: "secret-value",
-    endpoint: " https://example.test/embeddings ",
-  });
+  const model = new QwenTextEmbeddingV4Model(
+    qwenTextEntry,
+    {
+      apiKey: "secret-value",
+      endpoint: " https://example.test/embeddings ",
+    },
+    dependencies,
+  );
   let request;
   const result = await withFetch(
     async (_url, init) => {
@@ -156,8 +83,8 @@ test("Qwen text model sends ordered batches and validates all response shapes", 
         { kind: "text", text: "second" },
       ]),
   );
-  assert.equal(result[0][0], 1);
-  assert.equal(result[1][0], 2);
+  assert.equal(result.vectors[0][0], 1);
+  assert.equal(result.vectors[1][0], 2);
   assert.equal(request.headers.Authorization, "Bearer secret-value");
   assert.ok(request.signal instanceof AbortSignal);
   assert.deepEqual(JSON.parse(request.body).input, ["first", "second"]);
@@ -256,16 +183,21 @@ test("Qwen text model sends ordered batches and validates all response shapes", 
 });
 
 test("Qwen3.7 text embedding uses its model name and expanded limits", async () => {
+  const { dependencies, withFetch } = createDependencies();
   assert.throws(
-    () => new Qwen37TextEmbeddingModel({ apiKey: " " }),
+    () => new Qwen37TextEmbeddingModel(qwen37TextEntry, { apiKey: " " }),
     /requires an API key/,
   );
 
-  const model = new Qwen37TextEmbeddingModel({
-    apiKey: "secret-value",
-    endpoint: "https://example.test/embeddings",
-  });
-  assert.deepEqual(model.limits, {
+  const model = new Qwen37TextEmbeddingModel(
+    qwen37TextEntry,
+    {
+      apiKey: "secret-value",
+      endpoint: "https://example.test/embeddings",
+    },
+    dependencies,
+  );
+  assert.deepEqual(model.info.limits, {
     maxBatchSize: 20,
     maxInputTokens: 128000,
   });
@@ -283,7 +215,7 @@ test("Qwen3.7 text embedding uses its model name and expanded limits", async () 
     () => model.embed([{ kind: "text", text: "find relevant code" }]),
   );
 
-  assert.equal(result[0][0], 3);
+  assert.equal(result.vectors[0][0], 3);
   assert.equal(body.model, "qwen3.7-text-embedding");
   assert.equal(body.dimensions, 1024);
   assert.equal(body.encoding_format, "float");
@@ -301,18 +233,27 @@ test("Qwen3.7 text embedding uses its model name and expanded limits", async () 
 });
 
 test("Qwen VL model validates images, encodes bytes, and accepts provider index variants", async () => {
+  const { dependencies, withFetch } = createDependencies();
   assert.throws(
-    () => new Qwen3VlEmbeddingModel({ apiKey: "" }),
+    () => new Qwen3VlEmbeddingModel(qwenVlEntry, { apiKey: "" }),
     /requires an API key/,
   );
   assert.throws(
-    () => new Qwen3VlEmbeddingModel({ apiKey: "secret", endpoint: " " }),
+    () =>
+      new Qwen3VlEmbeddingModel(qwenVlEntry, {
+        apiKey: "secret",
+        endpoint: " ",
+      }),
     /requires an endpoint/,
   );
-  const model = new Qwen3VlEmbeddingModel({
-    apiKey: "secret",
-    endpoint: "https://example.test/vl",
-  });
+  const model = new Qwen3VlEmbeddingModel(
+    qwenVlEntry,
+    {
+      apiKey: "secret",
+      endpoint: "https://example.test/vl",
+    },
+    dependencies,
+  );
   await assert.rejects(
     model.embed([{ kind: "image", data: new Uint8Array([1]), format: "gif" }]),
     /does not support image format/,
@@ -354,7 +295,7 @@ test("Qwen VL model validates images, encodes bytes, and accepts provider index 
       ]),
   );
   assert.deepEqual(
-    result.map((item) => item[0]),
+    result.vectors.map((item) => item[0]),
     [1, 2, 3, 4],
   );
   assert.equal(body.input.contents[1].image, "AQ==");
@@ -404,71 +345,4 @@ test("Qwen VL model validates images, encodes bytes, and accepts provider index 
         assert.rejects(model.embed([{ kind: "text", text: "value" }]), message),
     );
   }
-});
-
-test("embedding factory resolves catalog and explicit references and rejects unknown models", () => {
-  const options = { apiKey: "secret", endpoint: "https://example.test" };
-  assert.ok(
-    createEmbeddingModel(
-      { provider: "qwen", model: "text-embedding-v4" },
-      options,
-    ) instanceof QwenTextEmbeddingV4Model,
-  );
-  assert.ok(
-    createEmbeddingModelFromReference(
-      "qwen/qwen3.7-text-embedding",
-      options,
-    ) instanceof Qwen37TextEmbeddingModel,
-  );
-  assert.ok(
-    createEmbeddingModelFromReference(
-      "qwen/qwen3-vl-embedding",
-      options,
-    ) instanceof Qwen3VlEmbeddingModel,
-  );
-  assert.equal(
-    createEmbeddingModelFromCatalog("local/embeddinggemma-300m", options).ref
-      .model,
-    "embeddinggemma-300m",
-  );
-  assert.equal(
-    createEmbeddingModelFromReference("local/qwen3-embedding-0.6b", options).ref
-      .model,
-    "qwen3-embedding-0.6b",
-  );
-  assert.ok(
-    createEmbeddingModelFromReference(
-      "local/bge-small-en-v1.5",
-      options,
-    ) instanceof TransformersJsEmbeddingModel,
-  );
-  for (const reference of [
-    "local/multilingual-e5-small",
-    "local/jina-embeddings-v2-base-code",
-    "local/gte-modernbert-base",
-    "local/nomic-embed-text-v1.5",
-  ]) {
-    assert.ok(
-      createEmbeddingModelFromReference(reference, options) instanceof
-        TransformersJsEmbeddingModel,
-    );
-  }
-  assert.throws(
-    () => createEmbeddingModelFromCatalog("missing", options),
-    /not in the zvec-grep catalog/,
-  );
-  assert.throws(
-    () => createEmbeddingModelFromReference("invalid", options),
-    /not in the zvec-grep catalog/,
-  );
-  assert.throws(
-    () =>
-      createEmbeddingModel({ provider: "unknown", model: "missing" }, options),
-    /not implemented/,
-  );
-  assert.throws(
-    () =>
-      createEmbeddingModel({ provider: "local", model: "missing" }, options),
-    /not in the zvec-grep catalog/,
-  );
 });

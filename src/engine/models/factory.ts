@@ -1,119 +1,71 @@
 import { EngineError } from "../errors/index.js";
 import {
   getEmbeddingModelCatalogEntry,
-  getEmbeddingModelCatalogEntryByRef,
+  type QwenEmbeddingCatalogEntry,
 } from "./catalog.js";
-import type { EmbeddingModel } from "./embeddings.js";
+import type {
+  CreateEmbeddingModelOptions,
+  EmbeddingModel,
+} from "./embeddings.js";
+import { LlamaCppEmbeddingModel } from "./backends/llama-cpp.js";
+import { Model2VecEmbeddingModel } from "./backends/model2vec.js";
 import {
-  LlamaCppEmbeddingModel,
-  Model2VecEmbeddingModel,
   Qwen37TextEmbeddingModel,
   Qwen3VlEmbeddingModel,
   QwenTextEmbeddingV4Model,
-  TransformersJsEmbeddingModel,
-} from "./providers/index.js";
-import type { ModelProviderOptions, ModelRef } from "./types.js";
+} from "./backends/qwen.js";
+import { TransformersJsEmbeddingModel } from "./backends/transformers-js.js";
 
 export function createEmbeddingModel(
-  ref: ModelRef,
-  options: ModelProviderOptions,
-): EmbeddingModel {
-  if (ref.provider === "local") {
-    const entry = getEmbeddingModelCatalogEntryByRef(ref);
-    if (!entry || entry.provider !== "local") {
-      throw new EngineError(
-        "Local embedding model is not in the zvec-grep catalog",
-        {
-          code: "ZVEC_GREP.ENGINE.MODELS.LOCAL_MODEL_NOT_IN_CATALOG",
-          context: `provider=${ref.provider} model=${ref.model}`,
-        },
-      );
-    }
-
-    if (entry.backend === "llama-cpp") {
-      return new LlamaCppEmbeddingModel(entry, options);
-    }
-
-    if (entry.backend === "model2vec") {
-      return new Model2VecEmbeddingModel(entry, options);
-    }
-
-    return new TransformersJsEmbeddingModel(entry, options);
-  }
-
-  if (ref.provider === "qwen" && ref.model === "text-embedding-v4") {
-    return new QwenTextEmbeddingV4Model(options);
-  }
-
-  if (ref.provider === "qwen" && ref.model === "qwen3.7-text-embedding") {
-    return new Qwen37TextEmbeddingModel(options);
-  }
-
-  if (ref.provider === "qwen" && ref.model === "qwen3-vl-embedding") {
-    return new Qwen3VlEmbeddingModel(options);
-  }
-
-  throw new EngineError("Embedding model is not implemented", {
-    code: "ZVEC_GREP.ENGINE.MODELS.EMBEDDING_MODEL_NOT_IMPLEMENTED",
-    context: `provider=${ref.provider} model=${ref.model}`,
-  });
-}
-
-export function createEmbeddingModelFromCatalog(
-  id: string,
-  options: ModelProviderOptions,
-): EmbeddingModel {
-  const entry = getEmbeddingModelCatalogEntry(id);
-  if (!entry) {
-    throw new EngineError("Embedding model is not in the zvec-grep catalog", {
-      code: "ZVEC_GREP.ENGINE.MODELS.EMBEDDING_CATALOG_MODEL_NOT_FOUND",
-      context: `embedding=${id}`,
-    });
-  }
-
-  return createEmbeddingModel(
-    {
-      provider: entry.provider,
-      model: entry.model,
-    },
-    options,
-  );
-}
-
-export function createEmbeddingModelFromReference(
   reference: string,
-  options: ModelProviderOptions,
+  options: CreateEmbeddingModelOptions = {},
 ): EmbeddingModel {
   const catalogEntry = getEmbeddingModelCatalogEntry(reference);
-  if (catalogEntry) {
-    return createEmbeddingModel(
-      {
-        provider: catalogEntry.provider,
-        model: catalogEntry.model,
-      },
-      options,
-    );
-  }
-
-  const ref = parseModelReference(reference);
-  if (!ref) {
+  if (!catalogEntry) {
     throw new EngineError("Embedding model is not in the zvec-grep catalog", {
       code: "ZVEC_GREP.ENGINE.MODELS.EMBEDDING_CATALOG_MODEL_NOT_FOUND",
       context: `embedding=${reference}`,
     });
   }
 
-  return createEmbeddingModel(ref, options);
+  switch (catalogEntry.backend) {
+    case "llama-cpp":
+      return new LlamaCppEmbeddingModel(catalogEntry, options);
+    case "model2vec":
+      return new Model2VecEmbeddingModel(catalogEntry, options);
+    case "transformers-js":
+      return new TransformersJsEmbeddingModel(catalogEntry, options);
+    case "qwen":
+      return createQwenEmbeddingModel(catalogEntry, options);
+    default:
+      return unsupportedCatalogEntry(catalogEntry);
+  }
 }
 
-function parseModelReference(reference: string): ModelRef | undefined {
-  const separator = reference.indexOf("/");
-  if (separator <= 0 || separator === reference.length - 1) {
-    return undefined;
+function createQwenEmbeddingModel(
+  entry: QwenEmbeddingCatalogEntry,
+  options: CreateEmbeddingModelOptions,
+): EmbeddingModel {
+  switch (entry.kind) {
+    case "multimodal":
+      return new Qwen3VlEmbeddingModel(entry, options);
+    case "text":
+      switch (entry.model) {
+        case "text-embedding-v4":
+          return new QwenTextEmbeddingV4Model(entry, options);
+        case "qwen3.7-text-embedding":
+          return new Qwen37TextEmbeddingModel(entry, options);
+        default:
+          return unsupportedCatalogEntry(entry);
+      }
+    default:
+      return unsupportedCatalogEntry(entry);
   }
+}
 
-  return {
-    provider: reference.slice(0, separator),
-    model: reference.slice(separator + 1),
-  };
+function unsupportedCatalogEntry(entry: never): never {
+  throw new EngineError("Embedding catalog entry is not implemented", {
+    code: "ZVEC_GREP.ENGINE.MODELS.EMBEDDING_MODEL_NOT_IMPLEMENTED",
+    context: JSON.stringify(entry),
+  });
 }

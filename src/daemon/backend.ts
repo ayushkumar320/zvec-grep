@@ -3,8 +3,11 @@ import type {
   CreateZvecGrepOptions,
   ZvecGrepInfoResult,
 } from "../engine/service/types.js";
-import { getEmbeddingModelCatalogEntry } from "../engine/models/index.js";
 import { isEngineError } from "../engine/errors/index.js";
+import type {
+  EmbeddingModel,
+  EmbeddingModelInfo,
+} from "../engine/models/index.js";
 import type {
   CollectionEmbeddingSchema,
   IndexProgress,
@@ -41,6 +44,8 @@ import {
 } from "./job-scheduler.js";
 import {
   EmbeddingModelPool,
+  type EmbeddingModelLoadRequest,
+  type ModelLease,
   type EmbeddingModelPoolOptions,
 } from "./model-pool.js";
 import {
@@ -75,7 +80,6 @@ export type DaemonBackendOptions = {
   schedulerOptions?: JobSchedulerOptions;
   readCollectionIdleTtlMs?: number;
   runtimeIdleTtlMs?: number;
-  resolveEmbeddingSchema?: (reference: string) => CollectionEmbeddingSchema;
   createService?: typeof createZvecGrep;
   watchManagerFactory?: (options: WatchManagerOptions) => WatchManager;
   logger?: DaemonLogger;
@@ -135,14 +139,31 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
       return undefined;
     }
     const info = await inspectRoot(input.root, this.options.serviceOptions);
-    let schema: CollectionEmbeddingSchema;
+    let model: EmbeddingModelLoadRequest["model"];
     try {
-      schema = this.indexSchema(info, input);
+      model = this.indexModel(info, input);
     } catch (error) {
       if (error instanceof DaemonError && error.code === "MODEL_LOAD_FAILED") {
         return undefined;
       }
       throw error;
+    }
+    let lease: ModelLease;
+    try {
+      lease = await this.modelPool.acquire({ model });
+    } catch (error) {
+      if (isEngineError(error)) {
+        return undefined;
+      }
+      throw error;
+    }
+    let schema: CollectionEmbeddingSchema;
+    let modelInfo: EmbeddingModelInfo;
+    try {
+      schema = embeddingSchema(lease.model);
+      modelInfo = lease.model.info;
+    } finally {
+      lease.release();
     }
     const existing = info.collection?.embedding;
     if (
@@ -158,9 +179,8 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
     }
     return await planRemoteIndexAuthorization({
       info,
-      schema,
+      model: modelInfo,
       rebuild: input.rebuild,
-      serviceOptions: this.options.serviceOptions,
       store: this.authorizationManager.store,
     });
   }
@@ -192,14 +212,22 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
       info = cached;
     }
     const canonicalRoot = await resolveRequestedRoot(info.root, false);
+    const schema = info.collection?.embedding;
+    if (!info.indexed || !schema || schema.provider !== "qwen") {
+      return undefined;
+    }
+    const modelInfo = await this.loadEmbeddingModelInfo({
+      provider: schema.provider,
+      name: schema.model,
+    });
     return await planRemoteSearchAuthorization({
       info,
+      model: modelInfo,
       search: input,
       runtimeNeedsReconciliation:
         this.runtimeManager
           .getByCanonicalRoot(canonicalRoot)
           ?.needsReconciliation() ?? false,
-      serviceOptions: this.options.serviceOptions,
       store: this.authorizationManager.store,
     });
   }
@@ -619,17 +647,18 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
       true,
     );
     this.statusCache.set(runtime.canonicalRoot, before);
-    const schema = this.indexSchema(before, input);
-    runtime.updateModelRequest({
-      schema,
-      root: runtime.canonicalRoot,
-      registryHome: before.home,
-    });
-    const lease = await this.modelPool.acquire({
-      schema,
-      root: runtime.canonicalRoot,
-      registryHome: before.home,
-    });
+    const model = this.indexModel(before, input);
+    const modelLoadRequest = { model };
+    runtime.updateModelLoadRequest(modelLoadRequest);
+    let lease: ModelLease;
+    try {
+      lease = await this.modelPool.acquire(modelLoadRequest);
+    } catch (error) {
+      throw new DaemonError(
+        "MODEL_LOAD_FAILED",
+        `Embedding model ${embeddingModelReference(model)} could not be created: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
     let service: Awaited<ReturnType<typeof createZvecGrep>> | undefined;
     try {
       service = await (this.options.createService ?? createZvecGrep)({
@@ -685,10 +714,11 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
         "Index completed without an embedding schema.",
       );
     }
-    runtime.updateModelRequest({
-      schema: after.collection.embedding,
-      root: runtime.canonicalRoot,
-      registryHome: after.home,
+    runtime.updateModelLoadRequest({
+      model: {
+        provider: after.collection.embedding.provider,
+        name: after.collection.embedding.model,
+      },
     });
     this.options.logger?.event("index.completed", {
       root_id: rootIdentity(runtime.canonicalRoot),
@@ -874,12 +904,15 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
     const root = runtime.canonicalRoot;
     const info = await inspectRoot(root, this.options.serviceOptions);
     const schema = info.collection?.embedding;
-    if (!schema || schema.provider === "local") return { allowed: true };
+    if (!schema || schema.provider !== "qwen") return { allowed: true };
+    const modelInfo = await this.loadEmbeddingModelInfo({
+      provider: schema.provider,
+      name: schema.model,
+    });
     const plan = await planRemoteIndexAuthorization({
       info,
-      schema,
+      model: modelInfo,
       needsUpdate: true,
-      serviceOptions: this.options.serviceOptions,
       store: this.authorizationManager.store,
     });
     if (!plan) return { allowed: true };
@@ -939,6 +972,17 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
     }
   }
 
+  private async loadEmbeddingModelInfo(
+    model: EmbeddingModelLoadRequest["model"],
+  ): Promise<EmbeddingModelInfo> {
+    const lease = await this.modelPool.acquire({ model });
+    try {
+      return lease.model.info;
+    } finally {
+      lease.release();
+    }
+  }
+
   private async probeCurrentFreshness(
     runtime: RootRuntime,
   ): Promise<"fresh" | "stale"> {
@@ -973,12 +1017,15 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
     }
   }
 
-  private indexSchema(
+  private indexModel(
     info: ZvecGrepInfoResult,
     input: ZvecGrepIndexInput,
-  ): CollectionEmbeddingSchema {
+  ): EmbeddingModelLoadRequest["model"] {
     if (info.collection?.embedding && !input.embedding) {
-      return info.collection.embedding;
+      return {
+        provider: info.collection.embedding.provider,
+        name: info.collection.embedding.model,
+      };
     }
     const reference =
       input.embedding ??
@@ -992,9 +1039,7 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
         "A new index requires embedding or an explicit server default model.",
       );
     }
-    return (
-      this.options.resolveEmbeddingSchema ?? resolveCatalogEmbeddingSchema
-    )(reference);
+    return parseEmbeddingModelReference(reference);
   }
 }
 
@@ -1040,22 +1085,35 @@ function assertDropOnlyInput(input: ZvecGrepIndexInput): void {
   }
 }
 
-function resolveCatalogEmbeddingSchema(
+function embeddingSchema(model: EmbeddingModel): CollectionEmbeddingSchema {
+  return {
+    provider: model.info.provider,
+    model: model.info.name,
+    dimension: model.info.dimension,
+    metric: model.info.metric,
+  };
+}
+
+function parseEmbeddingModelReference(
   reference: string,
-): CollectionEmbeddingSchema {
-  const entry = getEmbeddingModelCatalogEntry(reference);
-  if (!entry) {
+): EmbeddingModelLoadRequest["model"] {
+  const separator = reference.indexOf("/");
+  if (separator <= 0 || separator === reference.length - 1) {
     throw new DaemonError(
       "MODEL_LOAD_FAILED",
-      `Server MVP cannot resolve embedding schema for ${reference}.`,
+      `Embedding model reference ${reference} is invalid.`,
     );
   }
   return {
-    provider: entry.provider,
-    model: entry.model,
-    dimension: entry.dimension,
-    metric: entry.metric,
+    provider: reference.slice(0, separator),
+    name: reference.slice(separator + 1),
   };
+}
+
+function embeddingModelReference(
+  model: EmbeddingModelLoadRequest["model"],
+): string {
+  return `${model.provider}/${model.name}`;
 }
 
 function persistentStatus(

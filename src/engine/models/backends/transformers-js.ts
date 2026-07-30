@@ -1,18 +1,15 @@
 import { join } from "node:path";
-import { EngineError } from "../../../errors/index.js";
-import type { Content, TextContent } from "../../../types.js";
-import { defaultHome } from "../../../utils/path.js";
+import { EngineError } from "../../errors/index.js";
+import type { Content, TextContent } from "../../types.js";
+import { defaultHome } from "../../utils/path.js";
 import {
-  EmbeddingModel,
-  type EmbeddingBatchResult,
-  type EmbeddingLimits,
-  type EmbeddingOptions,
-  type EmbeddingVector,
-} from "../../embeddings.js";
-import type {
-  ModelProviderOptions,
-  TransformersJsEmbeddingCatalogEntry,
-} from "../../types.js";
+  BaseEmbeddingModel,
+  type CreateEmbeddingModelOptions,
+  type EmbeddingModelInfo,
+  type EmbeddingResult,
+  type NormalizedEmbeddingOptions,
+} from "../embeddings.js";
+import type { TransformersJsEmbeddingCatalogEntry } from "../catalog.js";
 
 type TensorLike = {
   data: ArrayLike<number>;
@@ -78,10 +75,11 @@ type TransformersJsModule = {
 
 type TransformersJsLoader = () => Promise<TransformersJsModule>;
 type TransformersJsExecutionProvider = "cpu" | "webgpu" | "cuda" | "dml";
+type TransformersJsDependencies = {
+  loadRuntime: TransformersJsLoader;
+};
 
 const DEFAULT_MODEL_CACHE_DIR = join(defaultHome(), "models");
-let transformersJsImport: Promise<TransformersJsModule> | null = null;
-let transformersJsLoader: TransformersJsLoader = defaultTransformersJsLoader;
 
 async function defaultTransformersJsLoader(): Promise<TransformersJsModule> {
   try {
@@ -98,29 +96,21 @@ async function defaultTransformersJsLoader(): Promise<TransformersJsModule> {
   }
 }
 
-async function loadTransformersJs(): Promise<TransformersJsModule> {
-  transformersJsImport ??= transformersJsLoader();
-  return await transformersJsImport;
-}
+let defaultRuntimeImport: Promise<TransformersJsModule> | null = null;
 
-export function setTransformersJsRuntimeForTesting(
-  loader: TransformersJsLoader | null,
-): void {
-  transformersJsImport = null;
-  transformersJsLoader = loader ?? defaultTransformersJsLoader;
-}
+const defaultDependencies: TransformersJsDependencies = {
+  loadRuntime() {
+    defaultRuntimeImport ??= defaultTransformersJsLoader();
+    return defaultRuntimeImport;
+  },
+};
 
-export class TransformersJsEmbeddingModel extends EmbeddingModel {
-  readonly ref;
-  readonly dimension;
-  readonly metric;
-  readonly supportedContentKinds = ["text"] as const;
-  readonly limits;
-  override readonly recommendedIndexConcurrency = 1;
-  override readonly maxIndexConcurrency = 1;
+export class TransformersJsEmbeddingModel extends BaseEmbeddingModel {
+  readonly info: EmbeddingModelInfo;
 
   private readonly modelCacheDir: string;
   private readonly executionProvider: TransformersJsExecutionProvider | null;
+  private readonly dependencies: TransformersJsDependencies;
   private pipeline: FeatureExtractionPipeline | null = null;
   private pipelineLoadPromise: Promise<FeatureExtractionPipeline> | null = null;
   private usingCpuFallback = false;
@@ -128,41 +118,41 @@ export class TransformersJsEmbeddingModel extends EmbeddingModel {
 
   constructor(
     private readonly entry: TransformersJsEmbeddingCatalogEntry,
-    options: ModelProviderOptions,
+    options: CreateEmbeddingModelOptions,
+    dependencies: Partial<TransformersJsDependencies> = {},
   ) {
     super();
-    this.ref = { provider: entry.provider, model: entry.model } as const;
-    this.dimension = entry.dimension;
-    this.metric = entry.metric;
-    this.limits = {
-      maxBatchSize: entry.maxBatchSize,
-      maxInputTokens: entry.maxInputTokens,
-    } as const satisfies EmbeddingLimits;
+    this.info = {
+      reference: entry.reference,
+      provider: entry.provider,
+      name: entry.model,
+      dimension: entry.dimension,
+      metric: entry.metric,
+      inputKinds: ["text"],
+      limits: {
+        maxBatchSize: entry.maxBatchSize,
+        maxInputTokens: entry.maxInputTokens,
+      },
+    };
     this.modelCacheDir =
       options.modelCacheDir ??
       process.env.ZVEC_GREP_MODEL_CACHE ??
       DEFAULT_MODEL_CACHE_DIR;
-    this.executionProvider = resolveExecutionProvider(options.llamaGpu);
+    this.executionProvider = resolveExecutionProvider(options.device);
+    this.dependencies = { ...defaultDependencies, ...dependencies };
   }
 
   protected async doEmbed(
     contents: readonly Content[],
-    options: Required<EmbeddingOptions>,
-  ): Promise<EmbeddingVector[]> {
-    return (await this.embedBatch(contents, options)).vectors;
-  }
-
-  protected override async doEmbedWithDiagnostics(
-    contents: readonly Content[],
-    options: Required<EmbeddingOptions>,
-  ): Promise<EmbeddingBatchResult> {
+    options: NormalizedEmbeddingOptions,
+  ): Promise<EmbeddingResult> {
     return await this.embedBatch(contents, options);
   }
 
   private async embedBatch(
     contents: readonly Content[],
-    options: Required<EmbeddingOptions>,
-  ): Promise<EmbeddingBatchResult> {
+    options: NormalizedEmbeddingOptions,
+  ): Promise<EmbeddingResult> {
     this.ensureNotDisposed();
     const texts = (contents as readonly TextContent[]).map((content) =>
       formatText(content.text, options.purpose, this.entry),
@@ -173,7 +163,7 @@ export class TransformersJsEmbeddingModel extends EmbeddingModel {
     } catch (cause) {
       throw new EngineError("Transformers.js embedding failed", {
         code: "ZVEC_GREP.ENGINE.MODELS.TRANSFORMERS_JS_EMBED_FAILED",
-        context: `model=${this.entry.id} repo=${this.entry.repo}`,
+        context: `model=${this.entry.reference} repo=${this.entry.repo}`,
         cause,
       });
     }
@@ -187,7 +177,7 @@ export class TransformersJsEmbeddingModel extends EmbeddingModel {
     } catch (cause) {
       throw new EngineError("Transformers.js tokenization failed", {
         code: "ZVEC_GREP.ENGINE.MODELS.TRANSFORMERS_JS_TOKENIZATION_FAILED",
-        context: `model=${this.entry.id} repo=${this.entry.repo}`,
+        context: `model=${this.entry.reference} repo=${this.entry.repo}`,
         cause,
       });
     }
@@ -213,7 +203,7 @@ export class TransformersJsEmbeddingModel extends EmbeddingModel {
 
     throw new EngineError("Transformers.js embedding failed", {
       code: "ZVEC_GREP.ENGINE.MODELS.TRANSFORMERS_JS_EMBED_FAILED",
-      context: `model=${this.entry.id} repo=${this.entry.repo}`,
+      context: `model=${this.entry.reference} repo=${this.entry.repo}`,
       cause: failure,
     });
   }
@@ -247,7 +237,7 @@ export class TransformersJsEmbeddingModel extends EmbeddingModel {
   }
 
   private async loadPipeline(): Promise<FeatureExtractionPipeline> {
-    const runtime = await loadTransformersJs();
+    const runtime = await this.dependencies.loadRuntime();
     let pipeline: FeatureExtractionPipeline;
     const executionProvider = this.usingCpuFallback
       ? "cpu"
@@ -275,7 +265,7 @@ export class TransformersJsEmbeddingModel extends EmbeddingModel {
     pipeline: FeatureExtractionPipeline,
     texts: string[],
     truncatedInputIndexes: number[],
-  ): Promise<EmbeddingBatchResult> {
+  ): Promise<EmbeddingResult> {
     const tensor = await pipeline(texts, {
       pooling: this.entry.pooling,
       normalize: this.entry.normalize,
@@ -284,9 +274,7 @@ export class TransformersJsEmbeddingModel extends EmbeddingModel {
     });
     return {
       vectors: tensorToVectors(tensor, texts.length, this.entry.dimension),
-      diagnostics: {
-        truncatedInputIndexes,
-      },
+      truncated: truncatedInputIndexes,
     };
   }
 
@@ -328,7 +316,7 @@ export class TransformersJsEmbeddingModel extends EmbeddingModel {
     if (this.disposed) {
       throw new EngineError("Transformers.js embedding model is disposed", {
         code: "ZVEC_GREP.ENGINE.MODELS.TRANSFORMERS_JS_DISPOSED",
-        context: `model=${this.entry.id}`,
+        context: `model=${this.entry.reference}`,
       });
     }
   }
@@ -373,18 +361,18 @@ async function findTruncatedInputIndexes(
 }
 
 function resolveExecutionProvider(
-  gpu: ModelProviderOptions["llamaGpu"],
+  device: CreateEmbeddingModelOptions["device"],
 ): TransformersJsExecutionProvider | null {
-  if (gpu === undefined) {
+  if (device === undefined) {
     return null;
   }
-  if (gpu === false) {
+  if (device === "cpu") {
     return "cpu";
   }
-  if (gpu === "metal" || gpu === "vulkan") {
+  if (device === "metal" || device === "vulkan") {
     return "webgpu";
   }
-  if (gpu === "cuda") {
+  if (device === "cuda") {
     return "cuda";
   }
 
@@ -403,10 +391,17 @@ function formatErrorMessage(error: unknown): string {
 
 function formatText(
   text: string,
-  purpose: Required<EmbeddingOptions>["purpose"],
+  purpose: NormalizedEmbeddingOptions["purpose"],
   entry: TransformersJsEmbeddingCatalogEntry,
 ): string {
-  const prefix = purpose === "query" ? entry.queryPrefix : entry.documentPrefix;
+  const prefix =
+    purpose === "query"
+      ? "queryPrefix" in entry
+        ? entry.queryPrefix
+        : undefined
+      : "documentPrefix" in entry
+        ? entry.documentPrefix
+        : undefined;
   return prefix ? `${prefix}${text}` : text;
 }
 
@@ -414,7 +409,7 @@ function tensorToVectors(
   tensor: TensorLike,
   count: number,
   dimension: number,
-): EmbeddingVector[] {
+): number[][] {
   if (
     tensor.dims.length !== 2 ||
     tensor.dims[0] !== count ||
