@@ -285,11 +285,11 @@ test("Streamable HTTP serves health, MCP contracts and a real cached index searc
   );
   const rgSearch = await clients[0].callTool({
     name: "zvec_grep_rg",
-    arguments: { root: unindexedRoot, pattern: "newlyIndexed" },
+    arguments: { root: unindexedRoot, command: "rg newlyIndexed" },
   });
   assert.equal(rgSearch.isError, undefined);
   assert.equal(rgSearch.structuredContent, undefined);
-  assert.match(rgSearch.content[0].text, /^new\.ts:1\n1:\t/);
+  assert.match(rgSearch.content[0].text, /^new\.ts\n {2}1:\t/);
   assert.match(rgSearch.content[0].text, /newlyIndexed/);
 
   blockEmbedding = true;

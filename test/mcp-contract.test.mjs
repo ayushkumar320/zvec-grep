@@ -285,7 +285,9 @@ test("full server contract exposes all tools with stable annotations", async (t)
   assert.match(instructions, /start with zvec_grep_search/);
   assert.match(instructions, /exact keyword, text, or symbol is known/);
   assert.match(instructions, /use zvec_grep_rg/);
-  assert.match(instructions, /Scope searches with the path parameter/);
+  assert.match(instructions, /exhaustive by default/);
+  assert.match(instructions, /trailing \| head -N explicitly bounds/);
+  assert.match(instructions, /Scope zvec_grep_rg with command paths/);
   assert.match(instructions, /refine broad or noisy searches/);
   assert.match(instructions, /Trust zvec-grep results/);
   assert.match(
@@ -346,18 +348,22 @@ test("full server contract exposes all tools with stable annotations", async (t)
     );
   }
   const rg = tools.find((tool) => tool.name === "zvec_grep_rg");
-  assert.match(rg.description, /Use it first when an exact keyword/);
+  assert.match(rg.description, /exhaustive, AST-enriched managed ripgrep/);
+  assert.match(rg.description, /Use it instead of raw grep or rg/);
+  assert.match(rg.description, /exhaustive by default/);
+  assert.match(rg.description, /append `\| head -N` only/);
+  assert.deepEqual(Object.keys(rg.inputSchema.properties).toSorted(), [
+    "command",
+    "root",
+  ]);
   assert.match(
-    rg.description,
-    /filename, path, configuration key, error message/,
+    rg.inputSchema.properties.command.description,
+    /rg command you would otherwise run/i,
   );
   assert.match(
-    rg.description,
-    /named class, function, or symbol remains an exact anchor/,
+    rg.inputSchema.properties.command.description,
+    /exhaustive by default/i,
   );
-  assert.match(rg.description, /Scope broad matches with the path parameter/);
-  assert.ok(rg.inputSchema.properties.path);
-  assert.equal(rg.inputSchema.properties.paths, undefined);
   assert.equal(rg.outputSchema, undefined);
   assert.equal(search.outputSchema, undefined);
   for (const tool of tools.filter(
@@ -790,7 +796,7 @@ test("root tools require an absolute root", async (t) => {
 
   const rgRelative = await client.callTool({
     name: "zvec_grep_rg",
-    arguments: { root: "relative/path", pattern: "query" },
+    arguments: { root: "relative/path", command: "rg query" },
   });
   assert.equal(rgRelative.isError, true);
   assert.match(rgRelative.content[0].text, /absolute path/i);
@@ -895,7 +901,7 @@ test("search can return the current index without scheduling an update", async (
   assert.equal(received.autoUpdate, false);
 });
 
-test("rg normalizes managed ripgrep input before calling the backend", async (t) => {
+test("rg forwards a managed ripgrep command before calling the backend", async (t) => {
   let received;
   const backend = createBackend();
   backend.rg = async (input) => {
@@ -912,37 +918,30 @@ test("rg normalizes managed ripgrep input before calling the backend", async (t)
     name: "zvec_grep_rg",
     arguments: {
       root,
-      pattern: "needle",
-      fixedStrings: true,
-      ignoreCase: true,
-      path: ["src", "test"],
-      glob: ["src/**", "!dist/**"],
-      context: 2,
+      command: "rg -Fi -C 2 -g 'src/**' -g '!dist/**' needle src test",
     },
   });
 
-  assert.equal(received.pattern, "needle");
-  assert.equal(received.fixedStrings, true);
-  assert.equal(received.ignoreCase, true);
-  assert.deepEqual(received.path, ["src", "test"]);
-  assert.deepEqual(received.glob, ["src/**", "!dist/**"]);
-  assert.equal(received.context, 2);
+  assert.equal(
+    received.command,
+    "rg -Fi -C 2 -g 'src/**' -g '!dist/**' needle src test",
+  );
   assert.equal(result.structuredContent, undefined);
   const expected = formatAgentContextResult(
-    (await createBackend().rg({ root, pattern: "needle" })).result,
+    (await createBackend().rg({ root, command: "rg needle" })).result,
     {},
   );
   assert.equal(result.content[0].text, expected);
-  assert.match(result.content[0].text, /^src\/index\.ts:1\n1:\t/);
+  assert.match(result.content[0].text, /^src\/index\.ts\n {2}1:\t/);
   assert.doesNotMatch(result.content[0].text, /rank=|matchedBy=|source:/);
 });
 
-test("rg does not apply indexed search input bounds", async (t) => {
-  let received;
+test("rg reports truncation only for an explicit output bound", async (t) => {
   const backend = createBackend();
   backend.rg = async (input) => {
-    received = input;
-    return createBackend().rg(input);
+    const response = await createBackend().rg(input);
+    response.result.coverage = "rg_truncated";
+    return response;
   };
   const { client, server } = await connect(backend);
   t.after(async () => {
@@ -950,20 +949,37 @@ test("rg does not apply indexed search input bounds", async (t) => {
     await server.close();
   });
 
-  const pattern = "n".repeat(4_001);
-  const patterns = Array.from({ length: 33 }, (_, index) => `pattern-${index}`);
-  const path = Array.from({ length: 129 }, (_, index) => `path-${index}`);
-  const glob = Array.from({ length: 129 }, (_, index) => `glob-${index}`);
   const result = await client.callTool({
     name: "zvec_grep_rg",
-    arguments: { root, pattern, patterns, path, glob },
+    arguments: {
+      root,
+      command: "rg needle | head -1",
+    },
   });
 
-  assert.notEqual(result.isError, true);
-  assert.equal(received.pattern, pattern);
-  assert.deepEqual(received.patterns, patterns);
-  assert.deepEqual(received.path, path);
-  assert.deepEqual(received.glob, glob);
+  assert.match(result.content[0].text, /explicit output bound/);
+  assert.match(result.content[0].text, /Remove or increase.*`head`/);
+  assert.doesNotMatch(result.content[0].text, /inspect.*before searching/i);
+});
+
+test("rg command input is required and bounded", async (t) => {
+  const { client, server } = await connect();
+  t.after(async () => {
+    await client.close();
+    await server.close();
+  });
+
+  const excessive = await client.callTool({
+    name: "zvec_grep_rg",
+    arguments: { root, command: `rg ${"n".repeat(4_001)}` },
+  });
+  assert.equal(excessive.isError, true);
+
+  const missing = await client.callTool({
+    name: "zvec_grep_rg",
+    arguments: { root },
+  });
+  assert.equal(missing.isError, true);
 });
 
 test("input upper bounds are enforced", async (t) => {
@@ -1063,14 +1079,14 @@ test("structured tools return schema-compatible content and searches return only
 
   const rg = await client.callTool({
     name: "zvec_grep_rg",
-    arguments: { root, pattern: "needle" },
+    arguments: { root, command: "rg needle" },
   });
   assert.equal(rg.structuredContent, undefined);
   assert.equal(rg.content[0].text.includes(longRgContent), true);
   assert.equal(
     rg.content[0].text,
     formatAgentContextResult(
-      (await createBackend().rg({ root, pattern: "needle" })).result,
+      (await createBackend().rg({ root, command: "rg needle" })).result,
       {},
     ),
   );

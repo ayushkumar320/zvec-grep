@@ -410,7 +410,7 @@ test("Codex installer refreshes legacy managed guidance", async (t) => {
   );
   assert.match(
     agents,
-    /named class, function, or symbol remains an exact anchor even when its file or definition location is unknown/,
+    /exhaustive by default and enriches matches with code structure/,
   );
   assert.doesNotMatch(agents, /indexed search first/);
   assert.doesNotMatch(agents, /Indexing and status/);
@@ -668,7 +668,7 @@ test("OpenCode installer preserves config and manages a remote MCP server", asyn
   );
   assert.match(
     guidance,
-    /named class, function, or symbol remains an exact anchor even when its file or definition location is unknown/,
+    /exhaustive by default and enriches matches with code structure/,
   );
   assert.equal(countOccurrences(guidance, "<!-- ZVEC_GREP_START -->"), 1);
   assert.equal(countOccurrences(guidance, "<!-- ZVEC_GREP_END -->"), 1);

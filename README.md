@@ -145,9 +145,14 @@ zg query --human "root local index discovery" --limit 3
 ```
 
 The default public MCP toolset contains `zvec_grep_search` and
-`zvec_grep_rg`. MCP inputs use JSON-friendly fields such as
-`globs: ["src/**"]`. Use the `zg index`, `zg status`, and `zg server status`
-CLI commands for lifecycle and diagnostics. The installer writes user-level MCP
+`zvec_grep_rg`. Exact searches accept an absolute `root` and a familiar managed
+ripgrep command, for example
+`{"root": "/absolute/repo", "command": "rg -n -F 'needle' -g '*.ts' src"}`.
+The command is parsed into arguments and never executed through a shell.
+Results are exhaustive by default; append `| head -N` only when intentionally
+requesting bounded output. Use the
+`zg index`, `zg status`, and `zg server status` CLI commands for lifecycle and
+diagnostics. The installer writes user-level MCP
 configuration for Codex, Claude Code, OpenCode, and Cursor. Codex and Claude
 Code also receive managed guidance and local tool trust configuration. `cc` and
 `claude-code` remain accepted aliases for the canonical `claude` target.

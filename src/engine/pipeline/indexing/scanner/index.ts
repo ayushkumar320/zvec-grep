@@ -75,6 +75,41 @@ const DEFAULT_IGNORED_DIRECTORY_NAMES = [
   "tmp",
   "temp",
   "logs",
+  "locale",
+  "locales",
+  "translations",
+] as const;
+
+const DEFAULT_IGNORED_FILE_PATTERNS = [
+  // Cross-ecosystem dependency resolution output. These files remain
+  // available to exact rg search and can be restored with an explicit include.
+  "*.lock",
+  "*.lockb",
+  "*-lock.json",
+  "*-lock.yaml",
+  "npm-shrinkwrap.json",
+  "go.sum",
+  "*.resolved",
+  // Generated localization, browser, and compiler artifacts.
+  "*.po",
+  "*.pot",
+  "*.map",
+  "*.min.*",
+  "*.bundle.*",
+  // General generated-source naming conventions outside generated directories.
+  "*.generated.*",
+  "*.gen.*",
+  "*.designer.*",
+  "*.pb.*",
+  "*_pb2.*",
+  "*.g.*",
+  // Raster assets require an explicitly selected path to enter the semantic
+  // index. Exact search behavior is unaffected.
+  "*.gif",
+  "*.jpeg",
+  "*.jpg",
+  "*.png",
+  "*.webp",
 ] as const;
 
 const HARD_SKIP_HIDDEN_NAMES = new Set([".git", ".zvec-grep"]);
@@ -94,15 +129,24 @@ type IgnoreMatch = {
   matchedRule?: IgnoreRule;
 };
 
-const DEFAULT_IGNORE_RULES: readonly IgnoreRule[] =
-  DEFAULT_IGNORED_DIRECTORY_NAMES.map((pattern) => ({
+const DEFAULT_IGNORE_RULES: readonly IgnoreRule[] = [
+  ...DEFAULT_IGNORED_DIRECTORY_NAMES.map((pattern) => ({
     basePath: "",
     pattern,
     negated: false,
     directoryOnly: true,
     anchored: false,
     hasSlash: false,
-  }));
+  })),
+  ...DEFAULT_IGNORED_FILE_PATTERNS.map((pattern) => ({
+    basePath: "",
+    pattern,
+    negated: false,
+    directoryOnly: false,
+    anchored: false,
+    hasSlash: false,
+  })),
+];
 
 const gitIgnoreRuleCache = new Map<
   string,
@@ -727,7 +771,10 @@ function includeSegmentNamesIgnoredPath(
     return false;
   }
 
-  return segmentMatches(segment, ignoredSegment);
+  return (
+    segmentMatches(segment, ignoredSegment) ||
+    segmentMatches(ignoredSegment, segment)
+  );
 }
 
 function ignoreRuleMatches(

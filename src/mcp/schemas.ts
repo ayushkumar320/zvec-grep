@@ -18,9 +18,6 @@ const boundedStringList = (description: string) =>
     ])
     .optional();
 
-const unboundedStringList = z
-  .union([z.string(), z.array(z.string())])
-  .optional();
 const pathFilter = z.string().max(MCP_MAX_PATH_CHARS);
 
 export const stringListInputSchema = boundedStringList(
@@ -226,60 +223,17 @@ export const zvecGrepIndexDropInputSchema = z.object({
 export const zvecGrepServerStatusInputSchema = z.object({});
 
 export const zvecGrepRgInputSchema = z.object({
-  pattern: z
+  root: absoluteRootSchema.describe(
+    "Absolute repository root visible to the daemon. Keep this at the repository root; scope the rg search with command paths or globs.",
+  ),
+  command: z
     .string()
-    .optional()
+    .trim()
+    .min(1, "command is required.")
+    .max(MCP_MAX_QUERY_CHARS)
     .describe(
-      "Regex or literal pattern to search for. Use zvec_grep_rg for exhaustive lexical search, unindexed repositories that can be answered lexically, or explicit rg-mode requests.",
+      "The rg command you would otherwise run, parsed as arguments and never executed by a shell. Search is exhaustive by default; append `| head -N` only to request a bounded result set.",
     ),
-  patterns: unboundedStringList.describe(
-    "Multiple regex or literal patterns to search for.",
-  ),
-  root: absoluteRootSchema,
-  path: unboundedStringList.describe(
-    "Optional path or array of paths to search within the root.",
-  ),
-  fixedStrings: z
-    .boolean()
-    .optional()
-    .describe("Treat pattern as a literal string."),
-  ignoreCase: z.boolean().optional().describe("Search case-insensitively."),
-  wordRegexp: z.boolean().optional().describe("Only match whole words."),
-  context: z
-    .number()
-    .int()
-    .nonnegative()
-    .max(20)
-    .optional()
-    .describe("Context lines before and after each match."),
-  beforeContext: z
-    .number()
-    .int()
-    .nonnegative()
-    .max(20)
-    .optional()
-    .describe("Context lines before each match."),
-  afterContext: z
-    .number()
-    .int()
-    .nonnegative()
-    .max(20)
-    .optional()
-    .describe("Context lines after each match."),
-  hidden: z
-    .boolean()
-    .optional()
-    .describe("Search hidden files and directories."),
-  glob: unboundedStringList.describe(
-    "ripgrep glob filters, for example '*.ts' or '!dist/**'. Accepts an array or comma-separated string.",
-  ),
-  limit: z
-    .number()
-    .int()
-    .positive()
-    .max(200)
-    .optional()
-    .describe("Maximum returned matches."),
 });
 
 const jobStateSchema = z.enum([

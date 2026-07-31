@@ -15,6 +15,25 @@ type ContextItemGroup = {
   items: ZvecGrepContextItem[];
 };
 
+type AgentRgBlock =
+  | {
+      kind: "symbol";
+      firstRank: number;
+      range: Range;
+      label: string;
+      items: ZvecGrepContextItem[];
+    }
+  | {
+      kind: "raw";
+      firstRank: number;
+      items: ZvecGrepContextItem[];
+    };
+
+type AgentRgSourceLine = SourceLineEntry & {
+  marker: ":" | "-" | undefined;
+  order: number;
+};
+
 const SHORT_SOURCE_MAX_LINES = 10;
 const SHORT_SOURCE_CONTEXT_BEFORE = 2;
 const SHORT_OUTLINE_MAX_LINES = 7;
@@ -41,6 +60,10 @@ function agentContextLines(
   result: ZvecGrepContextResult,
   options: CliOptions,
 ): string[] {
+  if (result.source === "rg") {
+    return agentRgContextLines(result);
+  }
+
   const highlighter = plainText;
   const groups = groupContextItems(result.items);
   const preview = previewMode(result, options);
@@ -87,6 +110,218 @@ function agentContextLines(
   }
 
   return lines;
+}
+
+function agentRgContextLines(result: ZvecGrepContextResult): string[] {
+  if (result.items.length === 0) {
+    return [emptyContextLabel(result), ...emptyContextDetailLines(result)];
+  }
+
+  const lines: string[] = [];
+
+  for (const group of groupContextItems(result.items)) {
+    lines.push(group.file.relativePath);
+
+    for (const block of groupAgentRgItems(group)) {
+      if (block.kind === "symbol" && !isRedundantDeclarationBlock(block)) {
+        lines.push(...agentRgSymbolBlockLines(block));
+      } else {
+        lines.push(...block.items.flatMap(agentRgFileSourceLines));
+      }
+    }
+  }
+
+  return lines;
+}
+
+function agentRgSymbolBlockLines(
+  block: Extract<AgentRgBlock, { kind: "symbol" }>,
+): string[] {
+  const sourceLines = agentRgSymbolSourceLines(block.items, "    ");
+  const header = `  ${rangeLabel(block.range)} [${block.label}]`;
+  if (block.items.length === 1 && sourceLines.length === 1) {
+    return [`${header} ${sourceLines[0]!.trimStart()}`];
+  }
+  return [header, ...sourceLines];
+}
+
+function groupAgentRgItems(group: ContextItemGroup): AgentRgBlock[] {
+  const blocks: AgentRgBlock[] = [];
+  const symbolBlocks = new Map<
+    string,
+    Extract<AgentRgBlock, { kind: "symbol" }>
+  >();
+
+  for (const item of [...group.items].sort(compareContextItems)) {
+    const symbol = agentRgSymbol(item);
+    if (!symbol) {
+      blocks.push({
+        kind: "raw",
+        firstRank: item.rank,
+        items: [item],
+      });
+      continue;
+    }
+
+    const key = `${item.container!.entityId}\0${symbol.label}`;
+    const existing = symbolBlocks.get(key);
+    if (existing) {
+      existing.firstRank = Math.min(existing.firstRank, item.rank);
+      existing.range = mergeAgentRgSymbolRanges(
+        existing.range,
+        item.container!.range,
+      );
+      existing.items.push(item);
+      continue;
+    }
+
+    const block: Extract<AgentRgBlock, { kind: "symbol" }> = {
+      kind: "symbol",
+      firstRank: item.rank,
+      range: item.container!.range,
+      label: symbol.label,
+      items: [item],
+    };
+    blocks.push(block);
+    symbolBlocks.set(key, block);
+  }
+
+  return blocks.sort(
+    (left, right) =>
+      left.firstRank - right.firstRank ||
+      rangeStartLine(agentRgBlockRange(left)) -
+        rangeStartLine(agentRgBlockRange(right)),
+  );
+}
+
+function mergeAgentRgSymbolRanges(left: Range, right: Range): Range {
+  if (left.kind !== "text" || right.kind !== "text") {
+    return left;
+  }
+
+  return {
+    kind: "text",
+    startLine: Math.min(left.startLine, right.startLine),
+    endLine: Math.max(left.endLine, right.endLine),
+    startOffset:
+      left.startLine <= right.startLine ? left.startOffset : right.startOffset,
+    endOffset: left.endLine >= right.endLine ? left.endOffset : right.endOffset,
+  };
+}
+
+function agentRgBlockRange(block: AgentRgBlock): Range {
+  return block.kind === "symbol" ? block.range : block.items[0]!.range;
+}
+
+function agentRgSymbol(
+  item: ZvecGrepContextItem,
+): { label: string } | undefined {
+  const container = item.container;
+  const metadata = container?.metadata ?? item.metadata;
+  if (!container || !metadata) {
+    return undefined;
+  }
+
+  if (metadata.kind === "code") {
+    if (!metadata.symbolName) {
+      return undefined;
+    }
+    const qualifiedName = metadata.scope
+      ? `${metadata.scope}.${metadata.symbolName}`
+      : metadata.symbolName;
+    return { label: `${metadata.symbolType} ${qualifiedName}` };
+  }
+
+  if (!metadata.heading) {
+    return undefined;
+  }
+  const qualifiedHeading = metadata.scope
+    ? `${metadata.scope} > ${metadata.heading}`
+    : metadata.heading;
+  return { label: `heading ${qualifiedHeading}` };
+}
+
+function agentRgSymbolSourceLines(
+  items: readonly ZvecGrepContextItem[],
+  indent: string,
+): string[] {
+  const byLine = new Map<number, AgentRgSourceLine>();
+  const unnumbered: AgentRgSourceLine[] = [];
+  let order = 0;
+
+  for (const item of [...items].sort(compareContextItems)) {
+    for (const entry of sourceLineEntries(item)) {
+      const candidate: AgentRgSourceLine = {
+        ...entry,
+        marker: sourceLineMarker(item, entry),
+        order: order++,
+      };
+      if (entry.lineNumber === null) {
+        unnumbered.push(candidate);
+        continue;
+      }
+
+      const existing = byLine.get(entry.lineNumber);
+      if (!existing) {
+        byLine.set(entry.lineNumber, candidate);
+      } else if (candidate.marker === ":" && existing.marker !== ":") {
+        existing.marker = ":";
+      }
+    }
+  }
+
+  return [...byLine.values(), ...unnumbered]
+    .sort(
+      (left, right) =>
+        (left.lineNumber ?? Number.MAX_SAFE_INTEGER) -
+          (right.lineNumber ?? Number.MAX_SAFE_INTEGER) ||
+        left.order - right.order,
+    )
+    .map(
+      (entry) =>
+        `${indent}${formatSourceLine(entry, plainText, undefined, entry.marker)}`,
+    );
+}
+
+function isRedundantDeclarationBlock(
+  block: Extract<AgentRgBlock, { kind: "symbol" }>,
+): boolean {
+  if (block.items.length !== 1) {
+    return false;
+  }
+
+  const item = block.items[0]!;
+  const metadata = item.container?.metadata ?? item.metadata;
+  const containerRange = item.container?.range;
+  if (
+    metadata?.kind !== "code" ||
+    !metadata.symbolName ||
+    containerRange?.kind !== "text"
+  ) {
+    return false;
+  }
+
+  const matchedLines = sourceLineEntries(item).filter(
+    (entry) => sourceLineMarker(item, entry) === ":",
+  );
+  const match = matchedLines[0];
+  return (
+    matchedLines.length === 1 &&
+    match?.lineNumber === containerRange.startLine &&
+    match.text.includes(metadata.symbolName)
+  );
+}
+
+function agentRgFileSourceLines(item: ZvecGrepContextItem): string[] {
+  return sourceLineEntries(item).map(
+    (entry) =>
+      `  ${formatSourceLine(
+        entry,
+        plainText,
+        undefined,
+        sourceLineMarker(item, entry),
+      )}`,
+  );
 }
 
 function plainText(value: string): string {

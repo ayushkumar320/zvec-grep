@@ -82,6 +82,7 @@ import {
 } from "../engine/index-status.js";
 import type { NormalizedSearchInput } from "../mcp/input-normalization.js";
 import { indexProgressFromMessage } from "../index-progress.js";
+import { normalizeManagedRgInput } from "./managed-rg.js";
 
 type AgentInstaller = {
   id: string;
@@ -1356,7 +1357,9 @@ function collectionIndexOption(options: CliOptions): string | undefined {
 }
 
 async function runQuery(parsed: ParsedArgs): Promise<void> {
-  const rgInput = parsed.options.rg ? normalizeRgInput(parsed) : undefined;
+  const rgInput = parsed.options.rg
+    ? normalizeManagedRgInput(parsed)
+    : undefined;
   const commandOptions = rgInput?.options ?? parsed.options;
   const queries = (
     rgInput?.queries ?? [
@@ -1785,31 +1788,6 @@ function contextOptions(
     modifiedBefore: options.modifiedBefore,
     symbolTypes: options.symbolTypes,
     embeddingConcurrency: options.embeddingConcurrency,
-  };
-}
-
-function normalizeRgInput(parsed: ParsedArgs): {
-  queries: string[];
-  options: CliOptions;
-} {
-  const explicitPatterns = parsed.options.rgOptions?.patterns ?? [];
-  const hasPatternFiles =
-    (parsed.options.rgOptions?.patternFiles?.length ?? 0) > 0;
-  const queries =
-    explicitPatterns.length > 0 || hasPatternFiles
-      ? explicitPatterns
-      : parsed.positionals.slice(0, 1);
-  const paths =
-    explicitPatterns.length > 0 || hasPatternFiles
-      ? parsed.positionals
-      : parsed.positionals.slice(1);
-
-  return {
-    queries,
-    options: {
-      ...parsed.options,
-      rgPaths: paths.length > 0 ? paths : undefined,
-    },
   };
 }
 
@@ -2391,7 +2369,7 @@ function agentGuidanceBlock(toolNames?: {
 
 Route repository search through zvec-grep instead of raw grep, rg, or broad file reads. Choose the tool by intent; indexed search does not need to run before exact search.
 
-- **MCP tools**: Use \`${rgTool}\` first when an exact keyword, text, symbol, filename, path, configuration key, error message, source fragment, literal, or regex anchor is known. A named class, function, or symbol remains an exact anchor even when its file or definition location is unknown. Use \`${searchTool}\` only when the exact anchor is unknown and conceptual discovery is needed.
+- **MCP tools**: Use \`${rgTool}\` first when an exact keyword, text, symbol, filename, path, configuration key, error message, source fragment, literal, or regex anchor is known. Pass the rg command you would otherwise run; it is exhaustive by default and enriches matches with code structure. Append \`| head -N\` only when intentionally requesting bounded output. Use \`${searchTool}\` only when the exact anchor is unknown and conceptual discovery is needed.
 - **Shell fallback**: If the MCP server is unavailable, use \`zg query "<query>"\` and \`zg query --rg "<pattern>"\`.
 
 Prefer focused -g/--glob and -t/--type filters, and exclude dependencies, generated output, caches, build artifacts, and logs unless the task is about those files.

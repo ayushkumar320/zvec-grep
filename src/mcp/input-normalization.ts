@@ -1,9 +1,6 @@
-import type {
-  CodeSymbolType,
-  ZvecGrepContextOptions,
-  ZvecGrepSearchOptions,
-} from "../index.js";
+import type { CodeSymbolType, ZvecGrepContextOptions } from "../index.js";
 import { parseModifiedTime, splitPathFilters } from "../cli/args.js";
+import { parseManagedRgCommand } from "../cli/managed-rg.js";
 import type {
   StringListInput,
   TimeInput,
@@ -52,32 +49,23 @@ export function normalizeSearchInput(
 export function contextOptionsFromRgInput(
   input: ZvecGrepRgInput,
 ): ZvecGrepContextOptions {
-  const queries = [
-    ...normalizeQueryList(input.pattern),
-    ...normalizeQueryList(input.patterns),
-  ];
-  if (queries.length === 0) {
-    throw new Error("zvec_grep_rg requires pattern or patterns.");
-  }
-
-  const { includePaths, excludePaths } = pathFiltersFromRgGlobs(input.glob);
-  const rgOptions: ZvecGrepSearchOptions = {
-    fixedStrings: input.fixedStrings,
-    ignoreCase: input.ignoreCase,
-    wordRegexp: input.wordRegexp,
-    beforeContext: input.beforeContext ?? input.context,
-    afterContext: input.afterContext ?? input.context,
-    hidden: input.hidden,
-  };
+  const { queries, options } = parseManagedRgCommand(input.root, input.command);
   return {
-    queries,
+    queries: queries.length > 0 ? queries : undefined,
     rg: true,
-    rgOptions,
-    rgPaths: normalizePlainStringList(input.path),
+    rgOptions: options.rgOptions,
+    rgPaths: options.rgPaths,
     root: input.root,
-    limit: input.limit,
-    includePaths,
-    excludePaths,
+    limit: options.limit,
+    globs: options.globs,
+    insensitiveGlobs: options.insensitiveGlobs,
+    fileTypes: options.fileTypes,
+    excludedFileTypes: options.excludedFileTypes,
+    hidden: options.hidden,
+    noIgnore: options.noIgnore,
+    ignoreFiles: options.ignoreFiles,
+    maxDepth: options.maxDepth,
+    maxFileSizeBytes: options.maxFileSizeBytes,
   };
 }
 
@@ -147,29 +135,6 @@ function normalizeSearchFields(
       input.modifiedBefore,
       "modifiedBefore",
     ),
-  };
-}
-
-function pathFiltersFromRgGlobs(value: StringListInput): {
-  includePaths?: string[];
-  excludePaths?: string[];
-} {
-  const includePaths: string[] = [];
-  const excludePaths: string[] = [];
-  for (const glob of normalizePathFilters(value)) {
-    if (glob.startsWith("!")) {
-      const exclude = glob.slice(1).trim();
-      if (exclude.length > 0) {
-        excludePaths.push(exclude);
-      }
-      continue;
-    }
-    includePaths.push(glob);
-  }
-
-  return {
-    includePaths: includePaths.length > 0 ? includePaths : undefined,
-    excludePaths: excludePaths.length > 0 ? excludePaths : undefined,
   };
 }
 

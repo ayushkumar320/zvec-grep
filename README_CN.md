@@ -165,11 +165,14 @@ zg query --rg -F "ZVEC_GREP_HOME" src
 zg query --human "root local index discovery" --limit 3
 ```
 
-默认公开 MCP toolset 包含 `zvec_grep_search` 和 `zvec_grep_rg`。MCP 输入使用
-JSON 友好的字段，例如 `globs: ["src/**"]`。索引生命周期与诊断请使用
-`zg index`、`zg status` 和 `zg server status`。installer 会为 Codex、Claude
-Code、OpenCode 和 Cursor 写入用户级 MCP 配置；Codex 和 Claude Code 还会获得托管
-指导与本机工具信任配置。`cc` 和 `claude-code` 仍可作为正式 target `claude` 的兼容别名。
+默认公开 MCP toolset 包含 `zvec_grep_search` 和 `zvec_grep_rg`。精确搜索接收绝对
+`root` 和熟悉的托管 ripgrep 命令，例如
+`{"root": "/absolute/repo", "command": "rg -n -F 'needle' -g '*.ts' src"}`。
+命令只会被解析为参数，不会交给 shell 执行。结果默认穷尽；只有明确需要限制输出时
+才追加 `| head -N`。索引生命周期与诊断请使用 `zg index`、`zg status` 和
+`zg server status`。installer 会为 Codex、Claude Code、OpenCode 和 Cursor
+写入用户级 MCP 配置；Codex 和 Claude Code 还会获得托管指导与本机工具信任配置。
+`cc` 和 `claude-code` 仍可作为正式 target `claude` 的兼容别名。
 
 ## <a id="models"></a>🧠 模型
 

@@ -48,11 +48,11 @@ test("zvec-grep skill triggers by task and selects the available transport", asy
   );
   assert.match(
     skill,
-    /Call `zvec_grep_rg` first when an exact keyword, text, symbol, filename/,
+    /Call `zvec_grep_rg` when an exact keyword, text, symbol, filename/,
   );
   assert.match(
     skill,
-    /named class, function, or symbol remains an exact anchor\s+even when its file or definition location is unknown/,
+    /It is exhaustive by\s+default and enriches matches with code structure/,
   );
   assert.match(
     skill,

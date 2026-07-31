@@ -28,11 +28,11 @@ Do not retry a submitted indexing write through another transport after a connec
 
 Pass the repository's daemon-visible absolute path as `root` on every repository call.
 
-1. Call `zvec_grep_rg` first when an exact keyword, text, symbol, filename,
-   path, configuration key, error message, source fragment, literal, or regex
-   anchor is known. A named class, function, or symbol remains an exact anchor
-   even when its file or definition location is unknown. Scope broad matches
-   with paths or globs.
+1. Call `zvec_grep_rg` when an exact keyword, text, symbol, filename, path,
+   configuration key, error message, source fragment, literal, or regex anchor
+   is known. Pass the rg command you would otherwise run. It is exhaustive by
+   default and enriches matches with code structure; append `| head -N` only
+   when intentionally requesting bounded output.
 2. Call `zvec_grep_search` when the exact anchor is unknown and conceptual
    discovery is needed. Search defaults to `freshness: "eventual"`; use
    `freshness: "wait_for_fresh"` only when the result must include all pending

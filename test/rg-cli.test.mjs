@@ -29,6 +29,54 @@ test("managed rg runs locally when indexed operations use server mode", async (t
     },
   );
 
-  assert.match(result.stdout, /src[\\/]answer\.ts:1/);
+  assert.match(result.stdout, /src[\\/]answer\.ts\n {2}1:/);
   assert.match(result.stdout, /exactNeedle/);
+});
+
+test("managed rg emits a compact file and adaptive symbol hierarchy", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "zvec-grep-rg-grouped-"));
+  await mkdir(join(root, "src"));
+  await writeFile(
+    join(root, "src", "grouped.py"),
+    [
+      "class Widget:",
+      "    def answer(self):",
+      "        grouped_needle = 42",
+      "        return grouped_needle",
+      "",
+      "module_grouped_needle = True",
+      "",
+      "def declared_grouped_needle():",
+      "    return True",
+      "",
+      "def singleton():",
+      '    value = "grouped_needle"',
+      "",
+    ].join("\n"),
+  );
+  t.after(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const result = await execFileAsync(
+    process.execPath,
+    [cliPath, "query", "--rg", "-n", "grouped_needle", "src/grouped.py"],
+    { cwd: root },
+  );
+
+  assert.match(
+    result.stdout,
+    /src\/grouped\.py\n {2}2-4 \[function Widget\.answer\]/,
+  );
+  assert.equal(result.stdout.match(/\[function Widget\.answer\]/g)?.length, 1);
+  assert.match(result.stdout, / {4}3:\s+grouped_needle = 42/);
+  assert.match(result.stdout, / {4}4:\s+return grouped_needle/);
+  assert.match(result.stdout, / {2}6:\s+module_grouped_needle = True/);
+  assert.match(result.stdout, / {2}8:\s+def declared_grouped_needle/);
+  assert.doesNotMatch(result.stdout, /\[function declared_grouped_needle\]/);
+  assert.match(
+    result.stdout,
+    / {2}\d+-\d+ \[function singleton\] \d+:\s+value = "grouped_needle"/,
+  );
+  assert.doesNotMatch(result.stdout, /^symbol:/mu);
 });

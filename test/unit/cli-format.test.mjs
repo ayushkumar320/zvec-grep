@@ -322,6 +322,178 @@ test("context formatters render indexed, lexical, metadata, preview, trace, and 
   }
 });
 
+test("managed rg uses a compact file and adaptive symbol hierarchy", () => {
+  const file = {
+    absolutePath: "/repo/src/example.ts",
+    relativePath: "src/example.ts",
+  };
+  const answerMetadata = {
+    kind: "code",
+    symbolType: "function",
+    symbolName: "answer",
+    scope: "Widget",
+    nodeType: "method_definition",
+    signature: null,
+    doc: null,
+    modifiers: [],
+  };
+  const result = contextResult({
+    source: "rg",
+    coverage: "rg_exhaustive",
+    collection: undefined,
+    items: [
+      {
+        kind: "lexical_match",
+        rank: 1,
+        file,
+        range: {
+          kind: "text",
+          startLine: 12,
+          endLine: 12,
+          startOffset: 0,
+          endOffset: 6,
+        },
+        content: "const needle = 42;",
+        status: "fresh",
+        matchedBy: "lexical",
+        container: {
+          entityId: "answer",
+          range: {
+            kind: "text",
+            startLine: 10,
+            endLine: 20,
+            startOffset: 0,
+            endOffset: 1,
+          },
+          metadata: answerMetadata,
+        },
+      },
+      {
+        kind: "lexical_match",
+        rank: 2,
+        file,
+        range: {
+          kind: "text",
+          startLine: 15,
+          endLine: 15,
+          startOffset: 7,
+          endOffset: 13,
+        },
+        content: "return needle;",
+        status: "fresh",
+        matchedBy: "lexical",
+        container: {
+          entityId: "answer",
+          range: {
+            kind: "text",
+            startLine: 10,
+            endLine: 20,
+            startOffset: 0,
+            endOffset: 1,
+          },
+          metadata: answerMetadata,
+        },
+      },
+      {
+        kind: "lexical_match",
+        rank: 3,
+        file,
+        range: {
+          kind: "text",
+          startLine: 30,
+          endLine: 30,
+          startOffset: 0,
+          endOffset: 6,
+        },
+        content: "const needle = other();",
+        status: "fresh",
+        matchedBy: "lexical",
+        container: {
+          entityId: "other",
+          range: {
+            kind: "text",
+            startLine: 28,
+            endLine: 35,
+            startOffset: 0,
+            endOffset: 1,
+          },
+          metadata: {
+            ...answerMetadata,
+            symbolName: "other",
+          },
+        },
+      },
+      {
+        kind: "lexical_match",
+        rank: 4,
+        file,
+        range: {
+          kind: "text",
+          startLine: 40,
+          endLine: 40,
+          startOffset: 6,
+          endOffset: 12,
+        },
+        content: "const moduleNeedle = true;",
+        status: "fresh",
+        matchedBy: "lexical",
+      },
+      {
+        kind: "lexical_match",
+        rank: 5,
+        file,
+        range: {
+          kind: "text",
+          startLine: 50,
+          endLine: 50,
+          startOffset: 9,
+          endOffset: 16,
+        },
+        content: "function declaredNeedle() {}",
+        status: "fresh",
+        matchedBy: "lexical",
+        container: {
+          entityId: "declaredNeedle",
+          range: {
+            kind: "text",
+            startLine: 50,
+            endLine: 50,
+            startOffset: 0,
+            endOffset: 28,
+          },
+          metadata: {
+            ...answerMetadata,
+            symbolName: "declaredNeedle",
+            scope: null,
+          },
+        },
+      },
+    ],
+    diagnostics: {
+      rg: {
+        backend: "bundled-rg",
+        command: "rg",
+        args: [],
+        ignoredDirectories: [],
+        truncated: false,
+      },
+    },
+  });
+
+  assert.equal(
+    formatAgentContextResult(result, { color: "never" }),
+    [
+      "src/example.ts",
+      "  10-20 [function Widget.answer]",
+      "    12:\tconst needle = 42;",
+      "    15:\treturn needle;",
+      "  28-35 [function Widget.other] 30:\tconst needle = other();",
+      "  40:\tconst moduleNeedle = true;",
+      "  50:\tfunction declaredNeedle() {}",
+    ].join("\n"),
+  );
+});
+
 test("debug formatter reports every diagnostic and trace availability state", async () => {
   const full = await captureConsole(() =>
     printDebug(contextResult(), { trace: true }),

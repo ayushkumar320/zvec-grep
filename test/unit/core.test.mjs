@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { resolve } from "node:path";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import {
   parseArgs,
@@ -173,38 +175,96 @@ test("CLI parsers reject invalid values and normalize supported values", () => {
   assert.throws(() => parseArgs(["--unknown"]), /Unknown command/);
 });
 
-test("MCP rg normalization preserves brace glob entries", () => {
+test("MCP rg command normalization preserves quoted patterns, paths, and globs", () => {
   const braceGlob = "*.{py,cc,cpp,h,hpp}";
-  const scalar = contextOptionsFromRgInput({
+  const normalized = contextOptionsFromRgInput({
     root: "/repo",
-    pattern: "valid",
-    glob: braceGlob,
+    command: `rg -niF 'valid value' -g '${braceGlob}' -g '!test/**' src test`,
   });
-  assert.deepEqual(scalar.includePaths, [braceGlob]);
+  assert.deepEqual(normalized.queries, ["valid value"]);
+  assert.deepEqual(normalized.rgPaths, ["src", "test"]);
+  assert.deepEqual(normalized.globs, [braceGlob, "!test/**"]);
+  assert.deepEqual(normalized.rgOptions.extraArgs, ["-i", "-F"]);
+  assert.equal(normalized.limit, undefined);
 
-  const array = contextOptionsFromRgInput({
+  const regex = contextOptionsFromRgInput({
     root: "/repo",
-    pattern: "valid",
-    glob: [braceGlob, "!test/**"],
+    command: String.raw`rg "\\d+" src`,
   });
-  assert.deepEqual(array.includePaths, [braceGlob]);
-  assert.deepEqual(array.excludePaths, ["test/**"]);
+  assert.deepEqual(regex.queries, [String.raw`\d+`]);
+
+  const bounded = contextOptionsFromRgInput({
+    root: "/repo",
+    command: `rg -ln "needle" src 2>/dev/null | head -30`,
+  });
+  assert.deepEqual(bounded.queries, ["needle"]);
+  assert.deepEqual(bounded.rgPaths, ["src"]);
+  assert.deepEqual(bounded.rgOptions.extraArgs, ["--max-count", "1"]);
+  assert.equal(bounded.limit, 30);
+
+  const defaultHead = contextOptionsFromRgInput({
+    root: "/repo",
+    command: `rg "needle" src | head`,
+  });
+  assert.equal(defaultHead.limit, 10);
+
+  const largeBound = contextOptionsFromRgInput({
+    root: "/repo",
+    command: `rg "needle" src | head -1000`,
+  });
+  assert.equal(largeBound.limit, 1000);
+
+  const hyphenPattern = contextOptionsFromRgInput({
+    root: "/repo",
+    command: `rg -n '----.*1' src`,
+  });
+  assert.deepEqual(hyphenPattern.queries, ["----.*1"]);
 });
 
-test("MCP rg normalization accepts scalar and array path input", () => {
-  const scalar = contextOptionsFromRgInput({
-    root: "/repo",
-    pattern: "valid",
-    path: "src",
-  });
-  assert.deepEqual(scalar.rgPaths, ["src"]);
+test(
+  "MCP rg command normalization rejects paths that escape through symlinks",
+  { skip: process.platform === "win32" },
+  async (t) => {
+    const temporaryDirectory = await mkdtemp(
+      join(tmpdir(), "zvec-grep-managed-rg-"),
+    );
+    const root = join(temporaryDirectory, "repo");
+    const outside = join(temporaryDirectory, "outside");
+    await Promise.all([mkdir(root), mkdir(outside)]);
+    await writeFile(join(outside, "patterns.txt"), "needle\n");
+    await symlink(join(outside, "patterns.txt"), join(root, "patterns.txt"));
+    t.after(async () => {
+      await rm(temporaryDirectory, { recursive: true, force: true });
+    });
 
-  const array = contextOptionsFromRgInput({
-    root: "/repo",
-    pattern: "valid",
-    path: ["src", "test"],
-  });
-  assert.deepEqual(array.rgPaths, ["src", "test"]);
+    assert.throws(
+      () =>
+        contextOptionsFromRgInput({
+          root,
+          command: "rg -f patterns.txt .",
+        }),
+      /pattern file resolves outside root/,
+    );
+  },
+);
+
+test("MCP rg command parsing rejects shell syntax, non-rg flags, and root escapes", () => {
+  for (const command of [
+    "grep valid src",
+    "rg valid src | tail -10",
+    "rg valid src > output.txt",
+    "rg $(whoami)",
+    "rg 'unclosed",
+    "rg valid --limit 2",
+    "rg valid ../outside",
+    "rg --follow valid src",
+  ]) {
+    assert.throws(
+      () => contextOptionsFromRgInput({ root: "/repo", command }),
+      /rg command|within root|unclosed/i,
+      command,
+    );
+  }
 });
 
 test("CLI parser covers utility commands, provider controls, routes, and equals syntax", () => {

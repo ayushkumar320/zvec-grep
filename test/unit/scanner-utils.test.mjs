@@ -183,6 +183,75 @@ test("scanner applies ignore files, hidden and generated directories, size, bina
   );
 });
 
+test("scanner excludes general low-signal content and permits explicit includes", async (t) => {
+  const root = await createTemporaryDirectory(t, "zvec-scanner-defaults-");
+  await mkdir(join(root, "src"), { recursive: true });
+  await mkdir(join(root, "docs"), { recursive: true });
+  await mkdir(join(root, "fixtures"), { recursive: true });
+  await mkdir(join(root, "locales"), { recursive: true });
+  await mkdir(join(root, ".github", "workflows"), { recursive: true });
+  await mkdir(join(root, ".hidden"), { recursive: true });
+
+  const retainedFiles = {
+    "src/main.ts": "export const main = true;\n",
+    "docs/guide.md": "# Guide\n",
+    "fixtures/input.json": '{"input": true}\n',
+  };
+  const ignoredFiles = {
+    "locales/en.json": '{"hello": "Hello"}\n',
+    "messages.po": 'msgid "Hello"\nmsgstr "Hello"\n',
+    "messages.pot": 'msgid "Hello"\nmsgstr ""\n',
+    "package-lock.json": '{"lockfileVersion": 3}\n',
+    "yarn.lock": "package@1.0.0:\n",
+    "Cargo.lock": "[[package]]\n",
+    "Package.resolved": '{"pins": []}\n',
+    "app.min.js": "function a(){return 1}\n",
+    "app.bundle.mjs": "export default {};\n",
+    "app.js.map": '{"version": 3}\n',
+    "api.generated.ts": "export const generated = true;\n",
+    "client.pb.go": "package client\n",
+    "service_pb2.py": "GENERATED = True\n",
+    "view.g.ts": "export const generated = true;\n",
+    "logo.png": "not-a-real-image",
+    ".github/workflows/ci.yml": "name: CI\n",
+    ".hidden/secret.ts": "export const secret = true;\n",
+    ".editorconfig": "root = true\n",
+    ".eslintrc.json": '{"root": true}\n',
+    ".env": "TOKEN=secret\n",
+    ".env.example": "TOKEN=replace-me\n",
+  };
+
+  for (const [path, content] of Object.entries({
+    ...retainedFiles,
+    ...ignoredFiles,
+  })) {
+    await writeFile(join(root, path), content);
+  }
+
+  const result = await scanRootPaths("collection", [root]);
+  assert.deepEqual(
+    result.files.map((file) => file.relativePath).sort(),
+    Object.keys(retainedFiles).sort(),
+  );
+
+  const explicitlyIncluded = await scanRootPaths("collection", [
+    {
+      absolutePath: root,
+      recursive: true,
+      include: [
+        "locales/en.json",
+        "package-lock.json",
+        "client.pb.go",
+        "logo.png",
+      ],
+    },
+  ]);
+  assert.deepEqual(
+    explicitlyIncluded.files.map((file) => file.relativePath).sort(),
+    ["client.pb.go", "locales/en.json", "logo.png", "package-lock.json"],
+  );
+});
+
 test("scanner applies rg-style globs, types, discovery controls, and safe symlink following", async (t) => {
   const root = await createTemporaryDirectory(t, "zvec-scanner-rg-options-");
   await mkdir(join(root, "src", "deep"), { recursive: true });

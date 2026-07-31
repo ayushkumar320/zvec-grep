@@ -257,7 +257,9 @@ test("CLI completes index, search, explicit refresh, status, and rg workflows", 
     ],
     { cwd: root, env },
   );
-  assert.match(multiline.stdout, /example\.ts:1-2/);
+  assert.match(multiline.stdout, /example\.ts\n/);
+  assert.match(multiline.stdout, / {2}1:.*RefreshedWorkflowSymbol/);
+  assert.match(multiline.stdout, / {2}2:.*OtherWorkflowSymbol/);
 
   await writeFile(join(root, "patterns.txt"), "RefreshedWorkflowSymbol\n");
   const patternFile = await runCli(
