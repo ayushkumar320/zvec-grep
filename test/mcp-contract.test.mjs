@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import test from "node:test";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import {
   createZvecGrepMcpServer,
   ZVEC_GREP_AGENT_MCP_INSTRUCTIONS,
@@ -14,8 +13,6 @@ import {
   parseMcpToolset,
   resolveMcpToolset,
 } from "../dist/mcp/toolset.js";
-import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { withProgressHeartbeat } from "../dist/mcp/progress-heartbeat.js";
 import { indexProgressFromMessage } from "../dist/index-progress.js";
 import { formatAgentContextResult } from "../dist/cli/format/context.js";
 
@@ -233,9 +230,10 @@ test("default agent contract exposes only search and rg", async (t) => {
     ["zvec_grep_index_status", { root }],
     ["zvec_grep_server_status", {}],
   ]) {
-    const result = await client.callTool({ name, arguments: arguments_ });
-    assert.equal(result.isError, true);
-    assert.match(result.content[0].text, /not found/i);
+    await assert.rejects(
+      client.callTool({ name, arguments: arguments_ }),
+      (error) => error?.code === -32602 && /not found/i.test(error.message),
+    );
   }
   assert.equal(managementCalls, 0);
 });
@@ -484,7 +482,6 @@ test("index streams daemon progress through MCP", async (t) => {
       name: "zvec_grep_index",
       arguments: { root, embedding: "test/deterministic", wait: true },
     },
-    undefined,
     {
       onprogress: (progress) => {
         const update = indexProgressFromMessage(progress.message);
@@ -551,7 +548,7 @@ test("index authorization keeps the requested model and offers no local fallback
     { name: "mcp-index-auth-test", version: "1.0.0" },
     { capabilities: { elicitation: { form: {} } } },
   );
-  client.setRequestHandler(ElicitRequestSchema, async (request) => {
+  client.setRequestHandler("elicitation/create", async (request) => {
     const decisions = request.params.requestedSchema.properties.decision.oneOf;
     assert.deepEqual(
       decisions.map((decision) => decision.const),
@@ -626,7 +623,7 @@ test("search elicits merged Remote Embedding authorization for every once-scoped
     { name: "mcp-auth-test", version: "1.0.0" },
     { capabilities: { elicitation: { form: {} } } },
   );
-  client.setRequestHandler(ElicitRequestSchema, async (request) => {
+  client.setRequestHandler("elicitation/create", async (request) => {
     elicitations += 1;
     assert.equal(
       request.params.message,
@@ -676,7 +673,7 @@ test("search elicits merged Remote Embedding authorization for every once-scoped
   assert.equal(receivedPermit.scope, "once");
 });
 
-test("Remote Embedding authorization stays alive while waiting for user input", async (t) => {
+test("Remote Embedding authorization completes through a delayed MRTR response", async (t) => {
   const backend = createBackend();
   const target = {
     workspaceRoots: [root],
@@ -702,32 +699,18 @@ test("Remote Embedding authorization stays alive while waiting for user input", 
     operationId: "long-wait-operation",
   });
 
-  const server = createZvecGrepMcpServer(backend, "1.0.0", {
-    authorizationHeartbeatMs: 5,
-    authorizationRequestTimeoutMs: 20,
-  });
+  const server = createZvecGrepMcpServer(backend, "1.0.0");
   const client = new Client(
     { name: "mcp-long-auth-test", version: "1.0.0" },
     { capabilities: { elicitation: { form: {} } } },
   );
-  client.setRequestHandler(
-    ElicitRequestSchema,
-    async (_request, extra) =>
-      await withProgressHeartbeat(
-        extra,
-        async () => {
-          await new Promise((resolve) => setTimeout(resolve, 80));
-          return {
-            action: "accept",
-            content: { decision: "allow_once" },
-          };
-        },
-        {
-          intervalMs: 5,
-          message: "Waiting for simulated user input.",
-        },
-      ),
-  );
+  client.setRequestHandler("elicitation/create", async () => {
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    return {
+      action: "accept",
+      content: { decision: "allow_once" },
+    };
+  });
   const [clientTransport, serverTransport] =
     InMemoryTransport.createLinkedPair();
   await Promise.all([
@@ -739,24 +722,17 @@ test("Remote Embedding authorization stays alive while waiting for user input", 
     await server.close();
   });
 
-  let progressNotifications = 0;
   const result = await client.callTool(
     {
       name: "zvec_grep_search",
       arguments: { root, query: "authorization flow" },
     },
-    undefined,
     {
-      timeout: 20,
-      onprogress: () => {
-        progressNotifications += 1;
-      },
-      resetTimeoutOnProgress: true,
+      timeout: 500,
     },
   );
 
   assert.equal(result.isError, undefined);
-  assert.ok(progressNotifications >= 2);
 });
 
 test("root tools require an absolute root", async (t) => {
@@ -994,7 +970,10 @@ test("input upper bounds are enforced", async (t) => {
     arguments: { root, query: "query", limit: 51 },
   });
   assert.equal(excessiveLimit.isError, true);
-  assert.match(excessiveLimit.content[0].text, /less than or equal to 50/i);
+  assert.match(
+    excessiveLimit.content[0].text,
+    /less than or equal to 50|expected number to be <=50/i,
+  );
 
   const excessiveQuery = await client.callTool({
     name: "zvec_grep_search",

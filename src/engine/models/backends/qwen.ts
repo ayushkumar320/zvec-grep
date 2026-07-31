@@ -12,6 +12,7 @@ import type {
   QwenMultimodalEmbeddingCatalogEntry,
   QwenTextEmbeddingCatalogEntry,
 } from "../catalog.js";
+import { traceHeaders } from "../../../observability/trace-context.js";
 
 // -----------------------------------------------------------------------------
 // Text embedding models (OpenAI-compatible API)
@@ -126,6 +127,7 @@ abstract class QwenTextEmbeddingModel extends BaseEmbeddingModel {
       response = await this.dependencies.fetch(this.endpoint, {
         method: "POST",
         headers: {
+          ...traceHeaders(),
           Authorization: `Bearer ${this.apiKey}`,
           "Content-Type": "application/json",
         },
@@ -337,6 +339,7 @@ export class Qwen3VlEmbeddingModel extends BaseEmbeddingModel {
       response = await this.dependencies.fetch(this.endpoint, {
         method: "POST",
         headers: {
+          ...traceHeaders(),
           Authorization: `Bearer ${this.apiKey}`,
           "Content-Type": "application/json",
         },

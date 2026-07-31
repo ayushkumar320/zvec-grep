@@ -9,6 +9,10 @@ import {
   resolveMcpToolset,
   type McpToolset,
 } from "../mcp/toolset.js";
+import {
+  loadOrCreateMcpRequestStateKey,
+  PersistentRemoteEmbeddingRequestStateReplayGuard,
+} from "../mcp/request-state.js";
 
 export type RunDaemonOptions = {
   version: string;
@@ -46,6 +50,13 @@ export async function runDaemonForeground(
     await instanceLock.release();
     throw error;
   }
+  let requestStateKey;
+  try {
+    requestStateKey = await loadOrCreateMcpRequestStateKey(options.home);
+  } catch (error) {
+    await instanceLock.release();
+    throw error;
+  }
   const backend = new DaemonBackend({
     version: options.version,
     serviceOptions: options.serviceOptions,
@@ -58,6 +69,9 @@ export async function runDaemonForeground(
     version: options.version,
     mcpToolset,
     backend,
+    requestStateKey,
+    requestStateReplayGuard:
+      new PersistentRemoteEmbeddingRequestStateReplayGuard(options.home),
     logger,
     onShutdown: () => requestStop?.(),
   });

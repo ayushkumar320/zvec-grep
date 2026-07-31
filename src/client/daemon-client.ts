@@ -1,9 +1,8 @@
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import {
-  ElicitRequestSchema,
-  type Progress,
-} from "@modelcontextprotocol/sdk/types.js";
+  Client,
+  StreamableHTTPClientTransport,
+} from "@modelcontextprotocol/client";
+import type { Progress } from "@modelcontextprotocol/client";
 import { createInterface } from "node:readline/promises";
 import { resolveClientToken } from "../daemon/config.js";
 import {
@@ -64,9 +63,12 @@ export class DaemonClient {
     process.once("SIGINT", onInterrupt);
     const client = new Client(
       { name: "zvec-grep-cli", version: "1.0.0" },
-      { capabilities: { elicitation: { form: {} } } },
+      {
+        capabilities: { elicitation: { form: {} } },
+        versionNegotiation: { mode: { pin: "2026-07-28" } },
+      },
     );
-    client.setRequestHandler(ElicitRequestSchema, async (request, extra) => {
+    client.setRequestHandler("elicitation/create", async (request, ctx) => {
       if (this.options.allowRemote) {
         return {
           action: "accept" as const,
@@ -98,10 +100,13 @@ export class DaemonClient {
         let answer: string;
         try {
           answer = await withProgressHeartbeat(
-            extra,
+            ctx,
             async () =>
               await readline.question(`Choose [1-${cancelChoice}]: `, {
-                signal: AbortSignal.any([abortController.signal, extra.signal]),
+                signal: AbortSignal.any([
+                  abortController.signal,
+                  ctx.mcpReq.signal,
+                ]),
               }),
             { message: "Waiting for Remote Embedding authorization input." },
           );
@@ -148,7 +153,6 @@ export class DaemonClient {
       await client.connect(transport);
       const result = await client.callTool(
         { name, arguments: args },
-        undefined,
         {
           signal: abortController.signal,
           timeout: LONG_RUNNING_MCP_TIMEOUT_MS,

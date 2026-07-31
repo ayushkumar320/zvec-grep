@@ -1,9 +1,15 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
-import type {
-  ServerNotification,
-  ServerRequest,
-} from "@modelcontextprotocol/sdk/types.js";
+import { randomBytes } from "node:crypto";
+import {
+  acceptedContent,
+  inputRequired,
+  inputResponse,
+  McpServer,
+  ProtocolError,
+  type InputRequiredResult,
+  type RequestStateCodec,
+  type ServerContext,
+} from "@modelcontextprotocol/server";
+import { z } from "zod";
 import type { IndexProgress, ZvecGrepContextResult } from "../index.js";
 import { formatAgentContextResult } from "../cli/format/context.js";
 import {
@@ -37,13 +43,20 @@ import type {
   RemoteEmbeddingAuthorizationScope,
   RemoteEmbeddingOperationPermit,
 } from "../authorization/types.js";
-import {
-  LONG_RUNNING_MCP_TIMEOUT_MS,
-  REMOTE_AUTHORIZATION_HEARTBEAT_MS,
-  withProgressHeartbeat,
-} from "./progress-heartbeat.js";
 import { indexProgressMessage } from "../index-progress.js";
 import { DEFAULT_MCP_TOOLSET, type McpToolset } from "./toolset.js";
+import {
+  createRemoteEmbeddingRequestStateCodec,
+  InMemoryRemoteEmbeddingRequestStateReplayGuard,
+  matchesRemoteEmbeddingRequestState,
+  remoteEmbeddingRequestState,
+  type RemoteEmbeddingRequestStateReplayGuard,
+  type RemoteEmbeddingRequestState,
+} from "./request-state.js";
+import {
+  runWithTraceContext,
+  traceContextFromMcpMeta,
+} from "../observability/trace-context.js";
 
 export type IndexJobState =
   "queued" | "running" | "succeeded" | "failed" | "cancelled";
@@ -228,8 +241,8 @@ export const ZVEC_GREP_FULL_MCP_INSTRUCTIONS = [
 export const ZVEC_GREP_MCP_INSTRUCTIONS = ZVEC_GREP_AGENT_MCP_INSTRUCTIONS;
 
 export type ZvecGrepMcpServerOptions = {
-  authorizationHeartbeatMs?: number;
-  authorizationRequestTimeoutMs?: number;
+  requestStateCodec?: RequestStateCodec<RemoteEmbeddingRequestState>;
+  requestStateReplayGuard?: RemoteEmbeddingRequestStateReplayGuard;
   toolset?: McpToolset;
 };
 
@@ -239,6 +252,12 @@ export function createZvecGrepMcpServer(
   options: ZvecGrepMcpServerOptions = {},
 ): McpServer {
   const toolset = options.toolset ?? DEFAULT_MCP_TOOLSET;
+  const requestStateCodec =
+    options.requestStateCodec ??
+    createRemoteEmbeddingRequestStateCodec(randomBytes(32));
+  const requestStateReplayGuard =
+    options.requestStateReplayGuard ??
+    new InMemoryRemoteEmbeddingRequestStateReplayGuard();
   const server = new McpServer(
     { name: "zvec-grep", version },
     {
@@ -246,9 +265,19 @@ export function createZvecGrepMcpServer(
         toolset === "full"
           ? ZVEC_GREP_FULL_MCP_INSTRUCTIONS
           : ZVEC_GREP_AGENT_MCP_INSTRUCTIONS,
+      cacheHints: {
+        "server/discover": { ttlMs: 60 * 60 * 1_000, cacheScope: "private" },
+        "tools/list": { ttlMs: 60 * 60 * 1_000, cacheScope: "private" },
+      },
+      requestState: { verify: requestStateCodec.verify },
     },
   );
-  registerZvecGrepTools(server, backend, { ...options, toolset });
+  registerZvecGrepTools(server, backend, {
+    ...options,
+    requestStateCodec,
+    requestStateReplayGuard,
+    toolset,
+  });
   return server;
 }
 
@@ -267,8 +296,8 @@ export function registerZvecGrepTools(
         title: "Ensure or drop zvec-grep index",
         description:
           "Activate an absolute repository root to create, incrementally update, rebuild, or explicitly drop its index. Do not call this tool to create, rebuild, or drop an index unless the user requested persistent indexing or index deletion.",
-        inputSchema: zvecGrepIndexInputSchema.shape,
-        outputSchema: zvecGrepIndexOutputSchema.shape,
+        inputSchema: zvecGrepIndexInputSchema,
+        outputSchema: zvecGrepIndexOutputSchema,
         annotations: {
           readOnlyHint: false,
           destructiveHint: true,
@@ -276,57 +305,63 @@ export function registerZvecGrepTools(
           openWorldHint: true,
         },
       },
-      async (input, extra) => {
-        const plan = await backend.planIndexAuthorization?.(input);
-        const resolution = plan
-          ? await resolveRemoteEmbeddingAuthorization(
-              server,
-              backend,
-              plan,
-              undefined,
-              extra,
-              options,
-            )
-          : {};
-        const progress = createMcpIndexProgressReporter(extra);
-        let result: ZvecGrepIndexResult;
-        try {
-          result = await backend.index(input, {
-            authorization: resolution.authorization,
-            onProgress: progress.report,
-          });
-        } finally {
-          await progress.flush();
-        }
-        const structuredContent = {
-          root: result.root,
-          job_id: result.jobId,
-          state: result.state,
-          reused: result.reused,
-          action: result.action,
-          dropped: result.dropped,
-          error: result.error,
-        };
-        return toolResult(
-          [
-            `root: ${result.root}`,
-            `job_id: ${result.jobId}`,
-            `state: ${result.state}`,
-            `reused: ${result.reused}`,
-            ...(result.action ? [`action: ${result.action}`] : []),
-            ...(result.dropped !== undefined
-              ? [`dropped: ${result.dropped}`]
-              : []),
-            ...(result.error
-              ? [
-                  `error_code: ${result.error.code}`,
-                  `error_message: ${result.error.message}`,
-                ]
-              : []),
-          ].join("\n"),
-          structuredContent,
-        );
-      },
+      async (input, ctx) =>
+        await runWithTraceContext(
+          traceContextFromMcpMeta(ctx.mcpReq._meta),
+          async () => {
+            const plan = await backend.planIndexAuthorization?.(input);
+            const resolution = plan
+              ? await resolveRemoteEmbeddingAuthorization(
+                  backend,
+                  plan,
+                  undefined,
+                  ctx,
+                  "zvec_grep_index",
+                  input,
+                  options,
+                )
+              : { kind: "ready" as const };
+            if (resolution.kind === "input_required") return resolution.result;
+            const progress = createMcpIndexProgressReporter(ctx);
+            let result: ZvecGrepIndexResult;
+            try {
+              result = await backend.index(input, {
+                authorization: resolution.authorization,
+                onProgress: progress.report,
+              });
+            } finally {
+              await progress.flush();
+            }
+            const structuredContent = {
+              root: result.root,
+              job_id: result.jobId,
+              state: result.state,
+              reused: result.reused,
+              action: result.action,
+              dropped: result.dropped,
+              error: result.error,
+            };
+            return toolResult(
+              [
+                `root: ${result.root}`,
+                `job_id: ${result.jobId}`,
+                `state: ${result.state}`,
+                `reused: ${result.reused}`,
+                ...(result.action ? [`action: ${result.action}`] : []),
+                ...(result.dropped !== undefined
+                  ? [`dropped: ${result.dropped}`]
+                  : []),
+                ...(result.error
+                  ? [
+                      `error_code: ${result.error.code}`,
+                      `error_message: ${result.error.message}`,
+                    ]
+                  : []),
+              ].join("\n"),
+              structuredContent,
+            );
+          },
+        ),
     );
   }
 
@@ -337,7 +372,7 @@ export function registerZvecGrepTools(
       description: full
         ? "Search an existing repository index only when the exact keyword, text, symbol, filename, or path is unknown and conceptual discovery is needed. A known class, function, or symbol name is an exact anchor even when its file or definition location is unknown; use the managed ripgrep tool instead. Read freshness and indexing from the response; use zvec_grep_index_status only for missing indexes, failed or cancelled indexing, diagnostics, or explicit progress monitoring."
         : "Search an existing repository index only when the exact keyword, text, symbol, filename, or path is unknown and conceptual discovery is needed. A known class, function, or symbol name is an exact anchor even when its file or definition location is unknown; use the managed ripgrep tool instead. Read freshness and indexing directly from the response without a status preflight. When an index is unavailable, use the returned diagnostics to decide whether managed ripgrep can answer the task.",
-      inputSchema: zvecGrepSearchInputSchema.shape,
+      inputSchema: zvecGrepSearchInputSchema,
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -345,45 +380,51 @@ export function registerZvecGrepTools(
         openWorldHint: false,
       },
     },
-    async (input, extra) => {
-      const normalized = normalizeSearchInput(input);
-      const plan = await backend.planSearchAuthorization?.(normalized);
-      const resolution = plan
-        ? await resolveRemoteEmbeddingAuthorization(
-            server,
-            backend,
-            plan,
-            "local_search",
-            extra,
-            options,
-          )
-        : {};
-      const effectiveSearch =
-        resolution.alternative === "local_search"
-          ? ftsFallbackSearch(normalized)
-          : normalized;
-      const response = await backend.search(effectiveSearch, {
-        authorization: resolution.authorization,
-      });
-      const statusLines = [
-        `freshness: ${response.freshness}`,
-        ...(response.indexing
-          ? [`indexing: ${formatSearchIndexing(response.indexing)}`]
-          : []),
-      ];
-      // Mirror the compact rg output: return agent-formatted text only and drop
-      // the verbose structuredContent (per-item outline + full source), which
-      // otherwise dominates the agent's context. `short` keeps a bounded source
-      // snippet per hit so relevance is judgeable without extra file reads.
-      return textToolResult(
-        `${statusLines.join("\n")}\n${formatAgentContextResult(
-          response.result,
-          {
-            preview: "short",
-          },
-        )}`,
-      );
-    },
+    async (input, ctx) =>
+      await runWithTraceContext(
+        traceContextFromMcpMeta(ctx.mcpReq._meta),
+        async () => {
+          const normalized = normalizeSearchInput(input);
+          const plan = await backend.planSearchAuthorization?.(normalized);
+          const resolution = plan
+            ? await resolveRemoteEmbeddingAuthorization(
+                backend,
+                plan,
+                "local_search",
+                ctx,
+                "zvec_grep_search",
+                normalized,
+                options,
+              )
+            : { kind: "ready" as const };
+          if (resolution.kind === "input_required") return resolution.result;
+          const effectiveSearch =
+            resolution.alternative === "local_search"
+              ? ftsFallbackSearch(normalized)
+              : normalized;
+          const response = await backend.search(effectiveSearch, {
+            authorization: resolution.authorization,
+          });
+          const statusLines = [
+            `freshness: ${response.freshness}`,
+            ...(response.indexing
+              ? [`indexing: ${formatSearchIndexing(response.indexing)}`]
+              : []),
+          ];
+          // Mirror the compact rg output: return agent-formatted text only and drop
+          // the verbose structuredContent (per-item outline + full source), which
+          // otherwise dominates the agent's context. `short` keeps a bounded source
+          // snippet per hit so relevance is judgeable without extra file reads.
+          return textToolResult(
+            `${statusLines.join("\n")}\n${formatAgentContextResult(
+              response.result,
+              {
+                preview: "short",
+              },
+            )}`,
+          );
+        },
+      ),
   );
 
   if (full) {
@@ -393,8 +434,8 @@ export function registerZvecGrepTools(
         title: "Drop zvec-grep Workspace index",
         description:
           "Delete the persisted index for an absolute Workspace root and release its daemon runtime.",
-        inputSchema: zvecGrepIndexDropInputSchema.shape,
-        outputSchema: zvecGrepIndexDropOutputSchema.shape,
+        inputSchema: zvecGrepIndexDropInputSchema,
+        outputSchema: zvecGrepIndexDropOutputSchema,
         annotations: {
           readOnlyHint: false,
           destructiveHint: true,
@@ -424,7 +465,7 @@ export function registerZvecGrepTools(
       title: "Search with managed ripgrep",
       description:
         "Run exhaustive, AST-enriched managed ripgrep locally without requiring an index. Use it instead of raw grep or rg for exact keywords, text, symbols, filenames, paths, configuration keys, errors, source fragments, literals, or regex anchors. Pass the rg command you would otherwise run. Results are exhaustive by default; append `| head -N` only when you intentionally want a bounded result set. Scope broad matches with command paths, `-g`/`--glob`, or `-t`/`--type` filters.",
-      inputSchema: zvecGrepRgInputSchema.shape,
+      inputSchema: zvecGrepRgInputSchema,
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
@@ -449,8 +490,8 @@ export function registerZvecGrepTools(
         title: "Inspect zvec-grep index status",
         description:
           "Read persisted index status and, when active, daemon runtime and job status for an absolute root. Use only after a missing-index response, indexing failure or cancellation, explicit progress monitoring, or daemon diagnostics.",
-        inputSchema: zvecGrepIndexStatusInputSchema.shape,
-        outputSchema: zvecGrepIndexStatusOutputSchema.shape,
+        inputSchema: zvecGrepIndexStatusInputSchema,
+        outputSchema: zvecGrepIndexStatusOutputSchema,
         annotations: {
           readOnlyHint: true,
           destructiveHint: false,
@@ -474,8 +515,8 @@ export function registerZvecGrepTools(
         title: "Inspect zvec-grep server status",
         description:
           "Read daemon version, queue, runtime and model-pool summary without exposing repository paths.",
-        inputSchema: zvecGrepServerStatusInputSchema.shape,
-        outputSchema: zvecGrepServerStatusOutputSchema.shape,
+        inputSchema: zvecGrepServerStatusInputSchema,
+        outputSchema: zvecGrepServerStatusOutputSchema,
         annotations: {
           readOnlyHint: true,
           destructiveHint: false,
@@ -512,25 +553,27 @@ function rgCoverageHint(result: ZvecGrepContextResult): string {
     : "";
 }
 
-function createMcpIndexProgressReporter(
-  extra: RequestHandlerExtra<ServerRequest, ServerNotification>,
-): {
+function createMcpIndexProgressReporter(extra: ServerContext): {
   report: (progress: IndexProgress) => void;
   flush: () => Promise<void>;
 } {
-  const progressToken = extra._meta?.progressToken;
+  const progressToken = extra.mcpReq._meta?.progressToken;
   let progressValue = Date.now();
   let pending = Promise.resolve();
   return {
     report(progress) {
       const message = indexProgressMessage(progress);
-      if (progressToken === undefined || !message || extra.signal.aborted) {
+      if (
+        progressToken === undefined ||
+        !message ||
+        extra.mcpReq.signal.aborted
+      ) {
         return;
       }
       progressValue = Math.max(progressValue + 1, Date.now());
       pending = pending
         .then(() =>
-          extra.sendNotification({
+          extra.mcpReq.notify({
             method: "notifications/progress",
             params: {
               progressToken,
@@ -550,105 +593,137 @@ function createMcpIndexProgressReporter(
 const REMOTE_EMBEDDING_SCOPE_DESCRIPTION =
   "Allow this operation once or remember permission for this workspace.";
 
+const remoteEmbeddingDecisionSchema = z.object({
+  decision: z.enum([
+    "allow_once",
+    "allow_workspace",
+    "use_local_search",
+    "cancel",
+  ]),
+});
+
+type RemoteEmbeddingAuthorizationResolution =
+  | {
+      kind: "ready";
+      authorization?: RemoteEmbeddingOperationPermit;
+      alternative?: "local_search";
+    }
+  | { kind: "input_required"; result: InputRequiredResult };
+
 async function resolveRemoteEmbeddingAuthorization(
-  server: McpServer,
   backend: ZvecGrepDaemonBackend,
   plan: RemoteEmbeddingAuthorizationPlan,
   alternative: "local_search" | undefined,
-  extra: RequestHandlerExtra<ServerRequest, ServerNotification>,
+  ctx: ServerContext,
+  tool: string,
+  args: unknown,
   options: ZvecGrepMcpServerOptions = {},
-): Promise<{
-  authorization?: RemoteEmbeddingOperationPermit;
-  alternative?: "local_search";
-}> {
+): Promise<RemoteEmbeddingAuthorizationResolution> {
   const existing = await backend.existingRemoteEmbeddingPermit?.(plan);
-  if (existing) return { authorization: existing };
+  if (existing) return { kind: "ready", authorization: existing };
   if (!backend.grantRemoteEmbedding) {
     throw new Error("Remote Embedding authorization is required.");
   }
 
-  const elicitation = await elicitRemoteEmbeddingAuthorization(
-    server,
-    extra,
-    options,
-    {
-      mode: "form",
-      message: formatRemoteEmbeddingAuthorizationPrompt({
-        workspaceRoots: plan.target.workspaceRoots,
-        provider: plan.target.provider,
-        model: plan.target.model,
-        endpoint: plan.target.endpoint,
-        data: remoteEmbeddingDisclosureData(plan.disclosure),
-      }),
-      requestedSchema: {
-        type: "object",
-        properties: {
-          decision: {
-            type: "string",
-            title: "Remote Embedding permission",
-            description: REMOTE_EMBEDDING_SCOPE_DESCRIPTION,
-            oneOf: [
-              { const: "allow_once", title: "Allow once" },
-              {
-                const: "allow_workspace",
-                title: "Allow for this workspace",
-              },
-              ...(alternative === "local_search"
-                ? [
-                    {
-                      const: "use_local_search",
-                      title: "Use FTS only",
-                    },
-                  ]
-                : []),
-              { const: "cancel", title: "Cancel" },
-            ],
-            default: "cancel",
-          },
-        },
-        required: ["decision"],
-      },
-    },
-  );
-  const decision =
-    elicitation.action === "accept" ? elicitation.content?.decision : undefined;
-  if (decision === "use_local_search") {
-    return { alternative: "local_search" };
-  }
-  if (decision !== "allow_once" && decision !== "allow_workspace") {
-    throw new Error(
-      "Remote Embedding authorization was declined. No remote data was sent.",
+  const expectedState = remoteEmbeddingRequestState(tool, args, plan);
+  const echoedState = ctx.mcpReq.requestState<RemoteEmbeddingRequestState>();
+  if (echoedState) {
+    if (!matchesRemoteEmbeddingRequestState(echoedState, expectedState)) {
+      throw new ProtocolError(-32602, "Invalid or expired requestState");
+    }
+    const response = inputResponse(
+      ctx.mcpReq.inputResponses,
+      "remote_embedding_authorization",
     );
+    const content = acceptedContent(
+      ctx.mcpReq.inputResponses,
+      "remote_embedding_authorization",
+      remoteEmbeddingDecisionSchema,
+    );
+    if (
+      response.kind !== "elicit" ||
+      response.action !== "accept" ||
+      !content
+    ) {
+      throw new Error(
+        "Remote Embedding authorization was declined. No remote data was sent.",
+      );
+    }
+    if (!(await options.requestStateReplayGuard?.consume(echoedState))) {
+      throw new ProtocolError(-32602, "Invalid or expired requestState");
+    }
+    if (content.decision === "use_local_search" && alternative) {
+      return { kind: "ready", alternative: "local_search" };
+    }
+    if (
+      content.decision !== "allow_once" &&
+      content.decision !== "allow_workspace"
+    ) {
+      throw new Error(
+        "Remote Embedding authorization was declined. No remote data was sent.",
+      );
+    }
+    const scope: RemoteEmbeddingAuthorizationScope =
+      content.decision === "allow_workspace" ? "workspace" : "once";
+    return {
+      kind: "ready",
+      authorization: await backend.grantRemoteEmbedding(plan, scope),
+    };
   }
-  const scope: RemoteEmbeddingAuthorizationScope =
-    decision === "allow_workspace" ? "workspace" : "once";
-  return {
-    authorization: await backend.grantRemoteEmbedding(plan, scope),
-  };
-}
 
-async function elicitRemoteEmbeddingAuthorization(
-  server: McpServer,
-  extra: RequestHandlerExtra<ServerRequest, ServerNotification>,
-  options: ZvecGrepMcpServerOptions,
-  request: Parameters<McpServer["server"]["elicitInput"]>[0],
-): ReturnType<McpServer["server"]["elicitInput"]> {
-  return await withProgressHeartbeat(
-    extra,
-    async () =>
-      await server.server.elicitInput(request, {
-        signal: extra.signal,
-        timeout:
-          options.authorizationRequestTimeoutMs ?? LONG_RUNNING_MCP_TIMEOUT_MS,
-        onprogress: () => undefined,
-        resetTimeoutOnProgress: true,
-      }),
-    {
-      intervalMs:
-        options.authorizationHeartbeatMs ?? REMOTE_AUTHORIZATION_HEARTBEAT_MS,
-      message: "Waiting for Remote Embedding authorization.",
-    },
-  );
+  const requestStateCodec = options.requestStateCodec;
+  if (!requestStateCodec) {
+    throw new Error("MCP request-state signing is not configured.");
+  }
+  return {
+    kind: "input_required",
+    result: inputRequired({
+      requestState: await requestStateCodec.mint(
+        options.requestStateReplayGuard!.issue(expectedState),
+        ctx,
+      ),
+      inputRequests: {
+        remote_embedding_authorization: inputRequired.elicit({
+          mode: "form",
+          message: formatRemoteEmbeddingAuthorizationPrompt({
+            workspaceRoots: plan.target.workspaceRoots,
+            provider: plan.target.provider,
+            model: plan.target.model,
+            endpoint: plan.target.endpoint,
+            data: remoteEmbeddingDisclosureData(plan.disclosure),
+          }),
+          requestedSchema: {
+            type: "object",
+            properties: {
+              decision: {
+                type: "string",
+                title: "Remote Embedding permission",
+                description: REMOTE_EMBEDDING_SCOPE_DESCRIPTION,
+                oneOf: [
+                  { const: "allow_once", title: "Allow once" },
+                  {
+                    const: "allow_workspace",
+                    title: "Allow for this workspace",
+                  },
+                  ...(alternative === "local_search"
+                    ? [
+                        {
+                          const: "use_local_search",
+                          title: "Use FTS only",
+                        },
+                      ]
+                    : []),
+                  { const: "cancel", title: "Cancel" },
+                ],
+                default: "cancel",
+              },
+            },
+            required: ["decision"],
+          },
+        }),
+      },
+    }),
+  };
 }
 
 function ftsFallbackSearch(

@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { appendFile, chmod, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { daemonHome } from "./config.js";
+import { currentTraceContext } from "../observability/trace-context.js";
 
 export type LogFields = Record<string, string | number | boolean | undefined>;
 
@@ -15,9 +16,11 @@ export function createDaemonLogger(home?: string): DaemonLogger {
   let tail = Promise.resolve();
   return {
     event(name, fields = {}) {
+      const trace = currentTraceContext();
       const record = JSON.stringify({
         timestamp: new Date().toISOString(),
         event: name,
+        ...(trace ? { trace_id: trace.traceId } : {}),
         ...sanitizeFields(fields),
       });
       tail = tail

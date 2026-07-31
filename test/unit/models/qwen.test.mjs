@@ -6,6 +6,7 @@ import {
   Qwen3VlEmbeddingModel,
   QwenTextEmbeddingV4Model,
 } from "../../../dist/engine/models/backends/qwen.js";
+import { runWithTraceContext } from "../../../dist/observability/trace-context.js";
 
 const vector = (dimension, value = 0.25) => Array(dimension).fill(value);
 const qwenTextEntry = getEmbeddingModelCatalogEntry("qwen/text-embedding-v4");
@@ -230,6 +231,43 @@ test("Qwen3.7 text embedding uses its model name and expanded limits", async () 
     ),
     /batch size exceeds model limit/,
   );
+});
+
+test("Qwen requests propagate the active standard trace context", async () => {
+  const { dependencies, withFetch } = createDependencies();
+  const model = new QwenTextEmbeddingV4Model(
+    qwenTextEntry,
+    {
+      apiKey: "secret-value",
+      endpoint: "https://example.test/embeddings",
+    },
+    dependencies,
+  );
+  let headers;
+  await runWithTraceContext(
+    {
+      traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+      traceId: "4bf92f3577b34da6a3ce929d0e0e4736",
+      tracestate: "vendor=value",
+      baggage: "tenant=example",
+    },
+    () =>
+      withFetch(
+        async (_url, init) => {
+          headers = init.headers;
+          return jsonResponse({
+            data: [{ index: 0, embedding: vector(1024) }],
+          });
+        },
+        () => model.embed([{ kind: "text", text: "trace me" }]),
+      ),
+  );
+  assert.equal(
+    headers.traceparent,
+    "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+  );
+  assert.equal(headers.tracestate, "vendor=value");
+  assert.equal(headers.baggage, "tenant=example");
 });
 
 test("Qwen VL model validates images, encodes bytes, and accepts provider index variants", async () => {

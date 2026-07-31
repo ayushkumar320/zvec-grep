@@ -11,9 +11,10 @@ import { tmpdir } from "node:os";
 import { request as httpRequest } from "node:http";
 import { join } from "node:path";
 import test from "node:test";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import {
+  Client,
+  StreamableHTTPClientTransport,
+} from "@modelcontextprotocol/client";
 import { DaemonBackend } from "../dist/daemon/backend.js";
 import { DaemonHttpServer } from "../dist/daemon/http-server.js";
 import { BaseEmbeddingModel } from "../dist/engine/models/embeddings.js";
@@ -158,15 +159,50 @@ test("Streamable HTTP serves health, MCP contracts and a real cached index searc
     "zvec_grep_rg",
     "zvec_grep_search",
   ]);
-  const hiddenManagementCall = await publicClient.callTool({
-    name: "zvec_grep_index_status",
-    arguments: { root },
-  });
-  assert.equal(hiddenManagementCall.isError, true);
-  assert.match(
-    hiddenManagementCall.content[0].text,
-    /tool.*not found|not found.*tool/i,
+  await assert.rejects(
+    publicClient.callTool({
+      name: "zvec_grep_index_status",
+      arguments: { root },
+    }),
+    (error) =>
+      error?.code === -32602 &&
+      /tool.*not found|not found.*tool/i.test(error.message),
   );
+
+  const modernPublicClient = await connectClient(
+    mcpUrl,
+    "modern-public-client",
+    undefined,
+    true,
+  );
+  t.after(async () => modernPublicClient.close());
+  const modernPublicTools = await modernPublicClient.listTools();
+  assert.equal(modernPublicTools.ttlMs, 60 * 60 * 1_000);
+  assert.equal(modernPublicTools.cacheScope, "private");
+  assert.deepEqual(
+    modernPublicTools.tools.map((tool) => tool.name).toSorted(),
+    ["zvec_grep_rg", "zvec_grep_search"],
+  );
+
+  const legacyAdmin = await fetch(adminMcpUrl, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: "application/json, text/event-stream",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: "2025-11-25",
+        capabilities: {},
+        clientInfo: { name: "legacy-admin-test", version: "1.0.0" },
+      },
+    }),
+  });
+  assert.equal((await legacyAdmin.json()).error.code, -32022);
 
   const clients = await Promise.all([
     connectClient(adminMcpUrl, "client-a"),
@@ -549,13 +585,19 @@ test("Streamable HTTP indexes and searches with qwen text-embedding-v4", async (
   await assert.rejects(access(join(unsupportedRoot, ".zvec-grep", "index")));
 });
 
-async function connectClient(url, name, onElicitation) {
+async function connectClient(url, name, onElicitation, modern = false) {
+  const modernOnly = modern || new URL(url).pathname.endsWith("/mcp/admin");
   const client = new Client(
     { name, version: "1.0.0" },
-    onElicitation ? { capabilities: { elicitation: { form: {} } } } : undefined,
+    {
+      ...(onElicitation ? { capabilities: { elicitation: { form: {} } } } : {}),
+      ...(modernOnly
+        ? { versionNegotiation: { mode: { pin: "2026-07-28" } } }
+        : {}),
+    },
   );
   if (onElicitation) {
-    client.setRequestHandler(ElicitRequestSchema, onElicitation);
+    client.setRequestHandler("elicitation/create", onElicitation);
   }
   const transport = new StreamableHTTPClientTransport(url, {
     requestInit: {

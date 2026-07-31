@@ -8,6 +8,7 @@ import {
   opaqueIdentity,
   rootIdentity,
 } from "../dist/daemon/logger.js";
+import { runWithTraceContext } from "../dist/observability/trace-context.js";
 
 test("structured daemon logs omit credentials and full query text", async (t) => {
   const home = await mkdtemp(join(tmpdir(), "zvec-grep-logger-"));
@@ -36,4 +37,23 @@ test("structured daemon logs omit credentials and full query text", async (t) =>
   );
   if (process.platform !== "win32")
     assert.equal((await stat(path)).mode & 0o777, 0o600);
+});
+
+test("structured daemon logs correlate with the active trace", async (t) => {
+  const home = await mkdtemp(join(tmpdir(), "zvec-grep-trace-log-"));
+  t.after(async () => rm(home, { recursive: true, force: true }));
+  const logger = createDaemonLogger(home);
+  runWithTraceContext(
+    {
+      traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+      traceId: "4bf92f3577b34da6a3ce929d0e0e4736",
+    },
+    () => logger.event("embedding.request"),
+  );
+  await logger.flush();
+
+  const record = JSON.parse(
+    (await readFile(join(home, "daemon", "logs", "server.log"), "utf8")).trim(),
+  );
+  assert.equal(record.trace_id, "4bf92f3577b34da6a3ce929d0e0e4736");
 });

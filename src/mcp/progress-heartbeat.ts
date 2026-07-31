@@ -1,4 +1,4 @@
-import type { ProgressNotification } from "@modelcontextprotocol/sdk/types.js";
+import type { ProgressNotification } from "@modelcontextprotocol/server";
 
 export const REMOTE_AUTHORIZATION_HEARTBEAT_MS = 15_000;
 
@@ -8,9 +8,11 @@ export const REMOTE_AUTHORIZATION_HEARTBEAT_MS = 15_000;
 export const LONG_RUNNING_MCP_TIMEOUT_MS = 2_147_483_647;
 
 type ProgressHeartbeatContext = {
-  _meta?: { progressToken?: string | number };
-  signal?: AbortSignal;
-  sendNotification: (notification: ProgressNotification) => Promise<void>;
+  mcpReq: {
+    _meta?: { progressToken?: string | number };
+    signal: AbortSignal;
+    notify: (notification: ProgressNotification) => Promise<void>;
+  };
 };
 
 export async function withProgressHeartbeat<T>(
@@ -21,7 +23,7 @@ export async function withProgressHeartbeat<T>(
     message: string;
   },
 ): Promise<T> {
-  const progressToken = context._meta?.progressToken;
+  const progressToken = context.mcpReq._meta?.progressToken;
   if (progressToken === undefined) {
     return await operation();
   }
@@ -31,10 +33,10 @@ export async function withProgressHeartbeat<T>(
   let inFlight: Promise<void> | undefined;
 
   const sendHeartbeat = async (): Promise<void> => {
-    if (context.signal?.aborted || inFlight) return;
+    if (context.mcpReq.signal.aborted || inFlight) return;
     progress += 1;
-    inFlight = context
-      .sendNotification({
+    inFlight = context.mcpReq
+      .notify({
         method: "notifications/progress",
         params: {
           progressToken,

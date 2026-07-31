@@ -1,4 +1,4 @@
-import { timingSafeEqual } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import {
   createServer,
   type IncomingMessage,
@@ -7,8 +7,18 @@ import {
 } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { ZvecGrepDaemonBackend } from "../mcp/tools.js";
-import { McpHttpSessionManager } from "../mcp/http-transport.js";
+import { McpHttpEndpoint } from "../mcp/http-transport.js";
+import {
+  createRemoteEmbeddingRequestStateCodec,
+  InMemoryRemoteEmbeddingRequestStateReplayGuard,
+  requestPrincipal,
+  type RemoteEmbeddingRequestStateReplayGuard,
+} from "../mcp/request-state.js";
 import { DEFAULT_MCP_TOOLSET, type McpToolset } from "../mcp/toolset.js";
+import {
+  runWithTraceContext,
+  traceContextFromMcpBody,
+} from "../observability/trace-context.js";
 import { isLoopbackHost, type ServerListenAddress } from "./config.js";
 import { requestId, type DaemonLogger } from "./logger.js";
 
@@ -19,28 +29,48 @@ export type DaemonHttpServerOptions = ServerListenAddress & {
   version: string;
   mcpToolset?: McpToolset;
   backend: ZvecGrepDaemonBackend;
+  requestStateKey?: Uint8Array;
+  requestStateReplayGuard?: RemoteEmbeddingRequestStateReplayGuard;
+  legacySessionIdleTtlMs?: number;
+  maxLegacySessions?: number;
   onShutdown?: () => void | Promise<void>;
   logger?: DaemonLogger;
 };
 
 export class DaemonHttpServer {
   private server?: Server;
-  private readonly mcpSessions: McpHttpSessionManager;
-  private readonly adminMcpSessions: McpHttpSessionManager;
+  private readonly requestTraceIds = new Map<string, string>();
+  private readonly mcpEndpoint: McpHttpEndpoint;
+  private readonly adminMcpEndpoint: McpHttpEndpoint;
 
   constructor(private readonly options: DaemonHttpServerOptions) {
     if (!isLoopbackHost(options.host)) {
       throw new Error("Daemon HTTP server requires a loopback host.");
     }
-    this.mcpSessions = new McpHttpSessionManager(
-      options.backend,
-      options.version,
-      { toolset: options.mcpToolset ?? DEFAULT_MCP_TOOLSET },
+    const requestStateCodec = createRemoteEmbeddingRequestStateCodec(
+      options.requestStateKey ?? randomBytes(32),
     );
-    this.adminMcpSessions = new McpHttpSessionManager(
+    const requestStateReplayGuard =
+      options.requestStateReplayGuard ??
+      new InMemoryRemoteEmbeddingRequestStateReplayGuard();
+    this.mcpEndpoint = new McpHttpEndpoint(
       options.backend,
       options.version,
-      { toolset: "full" },
+      {
+        toolset: options.mcpToolset ?? DEFAULT_MCP_TOOLSET,
+        requestStateCodec,
+        requestStateReplayGuard,
+      },
+      {
+        legacySessionIdleTtlMs: options.legacySessionIdleTtlMs,
+        maxLegacySessions: options.maxLegacySessions,
+      },
+    );
+    this.adminMcpEndpoint = new McpHttpEndpoint(
+      options.backend,
+      options.version,
+      { toolset: "full", requestStateCodec, requestStateReplayGuard },
+      { modernOnly: true },
     );
   }
 
@@ -55,6 +85,7 @@ export class DaemonHttpServer {
         .catch((error) => {
           this.options.logger?.event("request.failed", {
             request_id: id,
+            trace_id: this.requestTraceIds.get(id),
             error_code: errorCode(error),
           });
           if (!response.headersSent) {
@@ -70,11 +101,13 @@ export class DaemonHttpServer {
         .finally(() => {
           this.options.logger?.event("request.completed", {
             request_id: id,
+            trace_id: this.requestTraceIds.get(id),
             method: request.method,
             path: safeRequestPath(request.url),
             status: response.statusCode,
             duration_ms: Date.now() - startedAt,
           });
+          this.requestTraceIds.delete(id);
         });
     });
     try {
@@ -107,8 +140,8 @@ export class DaemonHttpServer {
       return;
     }
     await Promise.all([
-      this.mcpSessions.close(),
-      this.adminMcpSessions.close(),
+      this.mcpEndpoint.close(),
+      this.adminMcpEndpoint.close(),
     ]);
     await new Promise<void>((resolve, reject) => {
       server.close((error) => (error ? reject(error) : resolve()));
@@ -152,13 +185,13 @@ export class DaemonHttpServer {
       return;
     }
 
-    const mcpSessions =
+    const mcpEndpoint =
       url.pathname === "/mcp"
-        ? this.mcpSessions
+        ? this.mcpEndpoint
         : url.pathname === "/mcp/admin"
-          ? this.adminMcpSessions
+          ? this.adminMcpEndpoint
           : undefined;
-    if (!mcpSessions) {
+    if (!mcpEndpoint) {
       writeJson(response, 404, { error: "not_found" });
       return;
     }
@@ -175,7 +208,8 @@ export class DaemonHttpServer {
       return;
     }
     if (request.method === "GET" || request.method === "DELETE") {
-      await mcpSessions.handleSessionRequest(request, response);
+      attachRequestPrincipal(request, this.options.token);
+      await mcpEndpoint.handleSessionRequest(request, response);
       return;
     }
     if (request.method !== "POST") {
@@ -202,13 +236,27 @@ export class DaemonHttpServer {
       });
       return;
     }
-    this.options.logger?.event("mcp.request", {
-      request_id: id,
-      client_id: request.headers["x-client-id"] as string | undefined,
-      tool: toolName(body),
+    const traceContext = traceContextFromMcpBody(body);
+    if (traceContext) this.requestTraceIds.set(id, traceContext.traceId);
+    await runWithTraceContext(traceContext, async () => {
+      this.options.logger?.event("mcp.request", {
+        request_id: id,
+        client_id: request.headers["x-client-id"] as string | undefined,
+        tool: toolName(body),
+      });
+      attachRequestPrincipal(request, this.options.token);
+      await mcpEndpoint.handlePost(request, response, body);
     });
-    await mcpSessions.handlePost(request, response, body);
   }
+}
+
+function attachRequestPrincipal(
+  request: IncomingMessage,
+  token: string | undefined,
+): void {
+  (
+    request as IncomingMessage & { auth?: ReturnType<typeof requestPrincipal> }
+  ).auth = requestPrincipal(token);
 }
 
 function validHost(hostHeader: string | undefined): boolean {

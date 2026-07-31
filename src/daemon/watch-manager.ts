@@ -21,12 +21,25 @@ export type WatchManagerOptions = {
   nodeVersion?: string;
 };
 
+type WatchRecoveryState = {
+  consecutiveErrors: number;
+  reconciliationPending: boolean;
+  retryTimer?: ReturnType<typeof setTimeout>;
+  stableTimer?: ReturnType<typeof setTimeout>;
+};
+
+const PRIMARY_WATCHER = Symbol("primary-watcher");
+
 export class WatchManager {
   private readonly watchers = new Set<FSWatcher>();
   private readonly watchedDirectories = new Set<string>();
   private readonly directoryWatchers = new Map<string, FSWatcher>();
   private readonly pendingRecords = new Set<Promise<void>>();
   private readonly inflightFlushes = new Set<Promise<void>>();
+  private readonly recoveryStates = new Map<
+    string | typeof PRIMARY_WATCHER,
+    WatchRecoveryState
+  >();
   private changes: ChangeSet;
   private debounceTimer?: ReturnType<typeof setTimeout>;
   private maxWaitTimer?: ReturnType<typeof setTimeout>;
@@ -78,6 +91,11 @@ export class WatchManager {
     if (this.maxWaitTimer) clearTimeout(this.maxWaitTimer);
     if (this.reconcileTimer) clearInterval(this.reconcileTimer);
     if (this.resumeTimer) clearInterval(this.resumeTimer);
+    for (const recovery of this.recoveryStates.values()) {
+      if (recovery.retryTimer) clearTimeout(recovery.retryTimer);
+      if (recovery.stableTimer) clearTimeout(recovery.stableTimer);
+    }
+    this.recoveryStates.clear();
     await Promise.allSettled([...this.pendingRecords]);
     await Promise.allSettled([...this.inflightFlushes]);
     this.options.onPendingChange?.(false);
@@ -205,6 +223,7 @@ export class WatchManager {
     factory: typeof watch,
     directory?: string,
   ): void {
+    const recoveryKey = directory ?? PRIMARY_WATCHER;
     this.watchers.add(watcher);
     if (directory) this.directoryWatchers.set(directory, watcher);
     watcher.on("error", () => {
@@ -214,18 +233,53 @@ export class WatchManager {
         this.directoryWatchers.delete(directory);
         this.watchedDirectories.delete(directory);
       }
-      this.queueFullReconcile();
+      const recovery = this.recoveryState(recoveryKey);
+      if (recovery.stableTimer) clearTimeout(recovery.stableTimer);
+      recovery.stableTimer = undefined;
+      recovery.consecutiveErrors += 1;
+      if (!recovery.reconciliationPending) {
+        recovery.reconciliationPending = true;
+        this.queueFullReconcile();
+      }
       if (!this.closed) {
-        const retry = setTimeout(() => {
+        if (recovery.retryTimer) clearTimeout(recovery.retryTimer);
+        const retryDelayMs = Math.min(
+          100 * 2 ** (recovery.consecutiveErrors - 1),
+          5_000,
+        );
+        recovery.retryTimer = setTimeout(() => {
+          recovery.retryTimer = undefined;
           if (directory) {
             void this.watchDirectoryTree(directory, factory);
           } else {
             this.startPrimaryWatcher(factory);
           }
-        }, 100);
-        retry.unref?.();
+        }, retryDelayMs);
+        recovery.retryTimer.unref?.();
       }
     });
+    const recovery = this.recoveryState(recoveryKey);
+    if (recovery.stableTimer) clearTimeout(recovery.stableTimer);
+    recovery.stableTimer = setTimeout(() => {
+      recovery.stableTimer = undefined;
+      recovery.consecutiveErrors = 0;
+      recovery.reconciliationPending = false;
+      if (!recovery.retryTimer) this.recoveryStates.delete(recoveryKey);
+    }, 1_000);
+    recovery.stableTimer.unref?.();
+  }
+
+  private recoveryState(
+    key: string | typeof PRIMARY_WATCHER,
+  ): WatchRecoveryState {
+    const existing = this.recoveryStates.get(key);
+    if (existing) return existing;
+    const created = {
+      consecutiveErrors: 0,
+      reconciliationPending: false,
+    };
+    this.recoveryStates.set(key, created);
+    return created;
   }
 
   private startPrimaryWatcher(factory: typeof watch): void {

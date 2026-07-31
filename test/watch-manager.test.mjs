@@ -239,7 +239,56 @@ test("watcher errors trigger reconciliation and replace the failed watcher", asy
     watchers[0].emit("error", new Error("watch failed"));
     await waitFor(() => reasons.length === 1);
     await waitFor(() => watchers.length === 2);
+    watchers[1].emit("error", new Error("watch still failed"));
+    await waitFor(() => watchers.length === 3);
     assert.equal(reasons[0], "reconcile");
+    assert.equal(reasons.length, 1);
+  } finally {
+    await manager.close();
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("directory watcher retries are independent", async () => {
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-watch-multi-error-"),
+  );
+  const root = join(temporaryDirectory, "repo");
+  const first = join(root, "first");
+  const second = join(root, "second");
+  await mkdir(first, { recursive: true });
+  await mkdir(second);
+  const watchers = new Map();
+  const manager = new WatchManager({
+    root,
+    platform: "linux",
+    nodeVersion: "22.0.0",
+    debounceMs: 5,
+    maxWaitMs: 20,
+    reconcileIntervalMs: 0,
+    resumeCheckIntervalMs: 0,
+    watchFactory: (directory) => {
+      const created = new EventEmitter();
+      created.close = () => {};
+      const existing = watchers.get(directory) ?? [];
+      existing.push(created);
+      watchers.set(directory, existing);
+      return created;
+    },
+    onChanges: () => {},
+  });
+  try {
+    manager.start();
+    await waitFor(
+      () =>
+        watchers.get(first)?.length === 1 && watchers.get(second)?.length === 1,
+    );
+    watchers.get(first)[0].emit("error", new Error("first failed"));
+    watchers.get(second)[0].emit("error", new Error("second failed"));
+    await waitFor(
+      () =>
+        watchers.get(first)?.length === 2 && watchers.get(second)?.length === 2,
+    );
   } finally {
     await manager.close();
     await rm(temporaryDirectory, { recursive: true, force: true });

@@ -37,6 +37,7 @@ test("npm package contains and exposes the supported public surface", async (t) 
   const npmEnvironment = {
     ...process.env,
     npm_config_cache: npmCache,
+    npm_config_registry: "https://registry.npmjs.org/",
   };
   await mkdir(packDirectory, { recursive: true });
   await mkdir(consumerDirectory, { recursive: true });
@@ -76,7 +77,7 @@ test("npm package contains and exposes the supported public surface", async (t) 
     {
       cwd: consumerDirectory,
       env: npmEnvironment,
-      timeout: 180_000,
+      timeout: 300_000,
     },
   );
 
