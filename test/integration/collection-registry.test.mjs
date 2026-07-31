@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, writeFile } from "node:fs/promises";
+import { chmod, mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import {
@@ -31,6 +31,9 @@ test("collection registry covers lifecycle, caching, rename, roots, disable, rea
 
   const withoutModelHome = join(temporaryDirectory, "without-model");
   const withoutModel = new CollectionRegistry(withoutModelHome);
+  if (process.platform !== "win32") {
+    assert.equal((await stat(withoutModelHome)).mode & 0o777, 0o700);
+  }
   assert.throws(
     () => withoutModel.create("missing-model", [root]),
     /requires an embedding model/,
@@ -48,6 +51,16 @@ test("collection registry covers lifecycle, caching, rename, roots, disable, rea
   assert.equal(registry.has("docs"), true);
   assert.equal(registry.get("docs")?.id, created.id);
   assert.equal(registry.list().length, 1);
+  assert.deepEqual(registry.getEmbeddingRuntime("docs"), {});
+  registry.updateEmbeddingRuntime("docs", {
+    apiKey: "workspace-key",
+    endpoint: "https://example.test/embeddings",
+  });
+  assert.deepEqual(registry.getEmbeddingRuntime("docs"), {
+    apiKey: "workspace-key",
+    endpoint: "https://example.test/embeddings",
+  });
+  assert.equal("apiKey" in registry.get("docs"), false);
   assert.throws(() => registry.create("docs", [root]), /already exists/);
 
   const collection = registry.open("docs");
@@ -87,6 +100,10 @@ test("collection registry covers lifecycle, caching, rename, roots, disable, rea
   assert.equal(renamed?.name, "renamed");
   assert.equal(registry.has("docs"), false);
   assert.equal(registry.has("renamed"), true);
+  assert.deepEqual(registry.getEmbeddingRuntime("renamed"), {
+    apiKey: "workspace-key",
+    endpoint: "https://example.test/embeddings",
+  });
 
   const unchanged = registry.updateRootPaths("renamed", [root]);
   assert.equal(unchanged?.updatedTime, renamed?.updatedTime);
@@ -150,7 +167,13 @@ test("collection registry covers lifecycle, caching, rename, roots, disable, rea
   registry.close();
   assert.doesNotThrow(() => registry.close());
   registry = undefined;
+  if (process.platform !== "win32") {
+    await chmod(home, 0o755);
+  }
   readOnly = new CollectionRegistry(home, embedding, true);
+  if (process.platform !== "win32") {
+    assert.equal((await stat(home)).mode & 0o777, 0o700);
+  }
   assert.ok(readOnly.list().length > 0);
   for (const operation of [
     () => readOnly.create("readonly", [root]),
@@ -159,6 +182,7 @@ test("collection registry covers lifecycle, caching, rename, roots, disable, rea
     () => readOnly.prepareIndex("renamed", [root]),
     () => readOnly.disableIndex("renamed", [root]),
     () => readOnly.updateRootPaths("renamed", [root]),
+    () => readOnly.updateEmbeddingRuntime("renamed", { apiKey: "other" }),
   ]) {
     assert.throws(operation, /read-only/);
   }

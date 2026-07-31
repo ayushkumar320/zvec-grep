@@ -53,9 +53,11 @@ export class RootRuntime {
   private writerContext?: (
     options: ZvecGrepContextOptions,
   ) => Promise<ZvecGrepContextResult>;
+  private writerModelKey?: string;
   private activeWriterSearches = 0;
   private writerSearchesDrained?: Promise<void>;
   private writerSearchesDrainedResolve?: () => void;
+  private activeOperations = 0;
   private closed = false;
 
   constructor(private readonly options: RootRuntimeOptions) {
@@ -71,16 +73,45 @@ export class RootRuntime {
     return this.modelLoadRequest?.model.provider;
   }
 
+  currentModelLoadRequest(): EmbeddingModelLoadRequest | undefined {
+    return this.modelLoadRequest;
+  }
+
+  beginActivity(): () => void {
+    if (this.closed) {
+      throw new Error("Root runtime is closed.");
+    }
+    this.activeOperations += 1;
+    this.options.onActivity?.();
+    let released = false;
+    return () => {
+      if (released) {
+        return;
+      }
+      released = true;
+      this.activeOperations = Math.max(0, this.activeOperations - 1);
+      this.options.onActivity?.();
+    };
+  }
+
   async search(
     options: ZvecGrepContextOptions,
+    modelLoadRequest?: EmbeddingModelLoadRequest,
   ): Promise<ZvecGrepContextResult> {
     this.options.onActivity?.();
     if (this.closed) {
       throw new Error("Root runtime is closed.");
     }
+    const overrideModelKey = modelLoadRequest
+      ? this.options.modelPool.keyFor(modelLoadRequest)
+      : undefined;
     while (true) {
       const writerContext = this.writerContext;
-      if (writerContext) {
+      if (
+        writerContext &&
+        (overrideModelKey === undefined ||
+          overrideModelKey === this.writerModelKey)
+      ) {
         return await this.withWriterContext(writerContext, options);
       }
       if (!this.writerPending || !this.writerReady) {
@@ -93,7 +124,7 @@ export class RootRuntime {
       if (this.closed) {
         throw new Error("Root runtime is closed.");
       }
-      const request = this.modelLoadRequest;
+      const request = modelLoadRequest ?? this.modelLoadRequest;
       if (!request) {
         throw new Error("Root runtime does not have an embedding model.");
       }
@@ -136,8 +167,10 @@ export class RootRuntime {
     context: (
       options: ZvecGrepContextOptions,
     ) => Promise<ZvecGrepContextResult>,
+    modelKey: string,
   ): () => Promise<void> {
     this.writerContext = context;
+    this.writerModelKey = modelKey;
     this.notifyWriterStateChanged();
     this.armWriterReady();
     return async () => {
@@ -145,6 +178,7 @@ export class RootRuntime {
         return;
       }
       this.writerContext = undefined;
+      this.writerModelKey = undefined;
       this.notifyWriterStateChanged();
       this.armWriterReady();
       if (this.activeWriterSearches > 0) {
@@ -262,6 +296,7 @@ export class RootRuntime {
   snapshot(): {
     readCollectionOpen: boolean;
     activeReaders: number;
+    activeOperations: number;
     writerPending: boolean;
     dirtyRevision: number;
     indexedRevision: number;
@@ -273,6 +308,7 @@ export class RootRuntime {
     return {
       readCollectionOpen: read?.open ?? false,
       activeReaders: read?.activeReaders ?? 0,
+      activeOperations: this.activeOperations,
       writerPending: this.writerPending,
       dirtyRevision: this.dirtyRevision,
       indexedRevision: this.indexedRevision,

@@ -28,6 +28,7 @@ test("server-mode index reports Workspace progress", async (t) => {
   const port = await availablePort();
   const env = {
     HOME: home,
+    USERPROFILE: home,
     NO_COLOR: "1",
     ZVEC_GREP_API_KEY: "test-key",
     ZVEC_GREP_ENDPOINT: endpoint,
@@ -90,7 +91,15 @@ test("CLI completes index, search, explicit refresh, status, and rg workflows", 
   );
 
   const endpoint = await createFakeEmbeddingServer(t);
-  const env = { HOME: home, NO_COLOR: "1" };
+  const env = { HOME: home, USERPROFILE: home, NO_COLOR: "1" };
+  await mkdir(join(home, ".zvec-grep"), { recursive: true });
+  await writeFile(
+    join(home, ".zvec-grep", "config.json"),
+    `${JSON.stringify({
+      version: 1,
+      defaults: { embedding: "qwen/text-embedding-v4" },
+    })}\n`,
+  );
 
   const indexed = await runCli(
     [
@@ -283,6 +292,9 @@ test("CLI exposes stable help, version, and failure behavior", async () => {
   const indexHelp = await runCli(["index", "-h"]);
   assert.match(indexHelp.stdout, /qwen\/text-embedding-v4/);
   assert.doesNotMatch(indexHelp.stdout, /qwen3\.7-text-embedding/);
+  const configHelp = await runCli(["config", "--help"]);
+  assert.match(configHelp.stdout, /Default API key for the provider/);
+  assert.match(configHelp.stdout, /Existing indexes continue to use/);
   const version = await runCli(["version"]);
   assert.match(version.stdout.trim(), /^\d+\.\d+\.\d+/);
   const verboseVersion = await runCli(["version", "-v"]);
@@ -292,6 +304,16 @@ test("CLI exposes stable help, version, and failure behavior", async () => {
     assert.match(error.stderr, /Unknown command/);
     return true;
   });
+  await assert.rejects(
+    runCli(["index", "--embedding", "unknown/model"]),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /Unsupported embedding model: unknown\/model/);
+      assert.match(error.stderr, /local\/embeddinggemma-300m/);
+      assert.match(error.stderr, /qwen\/text-embedding-v4/);
+      return true;
+    },
+  );
   await assert.rejects(
     runCli(["collections", "list", "extra"]),
     /does not accept/,

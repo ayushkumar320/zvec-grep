@@ -22,7 +22,7 @@ Commands:
   index          Build, rebuild, or drop the workspace index
   status         Show workspace and index status
   collections    Manage named collections
-  config         Configure per-model local embedding runtime settings
+  config         Configure provider credentials and embedding model defaults
   auth           Manage Workspace Remote Embedding authorization
   server         Start, stop, inspect, or run the shared MCP server
   install        Install agent integrations
@@ -72,7 +72,6 @@ Result options:
 
 Embedding runtime:
   --api-key <key>                   Embedding provider API key
-  --endpoint <url>                  Embedding provider endpoint
   --model-cache <path>              Local model cache directory
   --device <device>                 auto, cpu, metal, vulkan, cuda
   --allow-remote                    Allow Remote Embedding for this command only
@@ -148,10 +147,22 @@ Named collections support the same embedding, file-selection, discovery,
 rebuild, and embedding-concurrency options as zg index.`;
     case "config":
       return `Usage:
-  zg config model set <local/model> --device <auto|cpu|metal|vulkan|cuda>
+  zg config provider set <provider> --api-key <key>
+  zg config model set <model> [--endpoint <url> | --device <device>] [--default]
 
-Stores the runtime device for one local embedding model in
-~/.zvec-grep/config.json. These settings do not change index compatibility.`;
+Provider options:
+  --api-key <key>                   Default API key for the provider
+
+Model options:
+  --endpoint <url>                  Endpoint for a remote embedding model
+  --device <device>                 Local device: auto, cpu, metal, vulkan, cuda
+  --default                         Use this model for new indexes
+
+Remote models support --endpoint; local models support --device. At least one
+model option is required. --default may be used alone or with a runtime option.
+Existing indexes continue to use their stored model.
+
+Global configuration is stored in ~/.zvec-grep/config.json.`;
     case "auth":
       return `Usage:
   zg auth grant [root] --capability embedding --scope workspace [--embedding <model>]

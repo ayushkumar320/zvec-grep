@@ -5,12 +5,32 @@ import { join } from "node:path";
 import test from "node:test";
 import { updateGlobalConfig } from "../dist/engine/config.js";
 import { BaseEmbeddingModel } from "../dist/engine/models/embeddings.js";
+import { embeddingModelPoolKeyForIdentity } from "../dist/engine/service/index.js";
 import { createZvecGrep } from "../dist/index.js";
 import {
   createRemoteEmbeddingOperationPermit,
   createRemoteEmbeddingTarget,
   withRemoteEmbeddingOperationPermit,
 } from "../dist/authorization/index.js";
+
+test("embedding model cache identities are stable without exposing API keys", () => {
+  const identity = { provider: "qwen", name: "text-embedding-v4" };
+  const options = {
+    apiKey: "first-secret-key",
+    endpoint: "https://example.test/embeddings",
+  };
+  const first = embeddingModelPoolKeyForIdentity(identity, options);
+  const repeated = embeddingModelPoolKeyForIdentity(identity, options);
+  const differentKey = embeddingModelPoolKeyForIdentity(identity, {
+    ...options,
+    apiKey: "second-secret-key",
+  });
+
+  assert.equal(repeated, first);
+  assert.notEqual(differentKey, first);
+  assert.doesNotMatch(first, /first-secret-key/);
+  assert.doesNotMatch(differentKey, /second-secret-key/);
+});
 
 test("recovered embedding model cache is bounded and defers disposal until active queries finish", async () => {
   const temporaryDirectory = await mkdtemp(
@@ -26,8 +46,8 @@ test("recovered embedding model cache is bounded and defers disposal until activ
   let blockedContext;
 
   const blockedRequestStarted = new Promise((resolve) => {
-    globalThis.fetch = async (input, init) => {
-      if (String(input) === "https://blocked.test/embeddings") {
+    globalThis.fetch = async (_input, init) => {
+      if (init?.headers?.Authorization === "Bearer blocked") {
         resolve();
         await new Promise((release) => {
           releaseBlockedRequest = release;
@@ -49,7 +69,7 @@ test("recovered embedding model cache is bounded and defers disposal until activ
       join(root, "src", "example.ts"),
       "export const answer = 42;\n",
     );
-    configureQwen("https://initial.test/embeddings");
+    configureQwen("initial");
 
     service = await createZvecGrep({
       root,
@@ -59,8 +79,8 @@ test("recovered embedding model cache is bounded and defers disposal until activ
       service.index(),
     );
 
-    configureQwen("https://blocked.test/embeddings");
-    blockedContext = withPermit(root, "https://blocked.test/embeddings", () =>
+    configureQwen("blocked");
+    blockedContext = withPermit(root, "https://initial.test/embeddings", () =>
       service.context({
         root,
         query: "where is the answer defined",
@@ -71,8 +91,8 @@ test("recovered embedding model cache is bounded and defers disposal until activ
     await blockedRequestStarted;
 
     for (const name of ["third", "fourth", "fifth", "sixth"]) {
-      configureQwen(`https://${name}.test/embeddings`);
-      await withPermit(root, `https://${name}.test/embeddings`, () =>
+      configureQwen(name);
+      await withPermit(root, "https://initial.test/embeddings", () =>
         service.context({
           root,
           query: "where is the answer defined",
@@ -106,12 +126,16 @@ test("recovered embedding model cache is bounded and defers disposal until activ
   }
 });
 
-function configureQwen(endpoint) {
+function configureQwen(apiKey) {
   updateGlobalConfig({
     providers: {
       qwen: {
-        apiKey: "test-key",
-        endpoint,
+        apiKey,
+      },
+    },
+    models: {
+      "qwen/text-embedding-v4": {
+        endpoint: "https://initial.test/embeddings",
       },
     },
   });

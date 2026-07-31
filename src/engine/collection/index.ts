@@ -9,7 +9,7 @@ import {
   type ZVecDocInput,
 } from "@zvec/zvec";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import {
   collectionDetail,
@@ -61,9 +61,11 @@ import type {
 } from "../types.js";
 import { CURRENT_INDEX_VERSION } from "../types.js";
 import { defaultHome, normalizePath } from "../utils/path.js";
+import type { EmbeddingDevice, EmbeddingRuntimeConfig } from "../config.js";
 
 const COLLECTIONS_ZVEC = "collections.zvec";
 const FILES_ZVEC = "files.zvec";
+const COLLECTION_REGISTRY_HOME_MODE = 0o700;
 
 export class Collection {
   private readonly storage: CollectionStorage;
@@ -215,6 +217,10 @@ export class Collection {
           collectionDetail(this.name),
           detail("expected", CURRENT_INDEX_VERSION),
           detail("actual", this.info.indexVersion),
+          detail(
+            "hint",
+            'Recreate the index with the current zvec-grep version; run "zg index --rebuild" for a workspace index.',
+          ),
         ]),
       });
     }
@@ -359,7 +365,13 @@ export class CollectionRegistry {
     private readonly readOnly = false,
   ) {
     if (!readOnly) {
-      mkdirSync(home, { recursive: true });
+      mkdirSync(home, {
+        recursive: true,
+        mode: COLLECTION_REGISTRY_HOME_MODE,
+      });
+    }
+    if (existsSync(home)) {
+      chmodSync(home, COLLECTION_REGISTRY_HOME_MODE);
     }
 
     this.meta = new ZvecCollectionsMetaStore(
@@ -374,6 +386,30 @@ export class CollectionRegistry {
 
   get(name: string): CollectionInfo | null {
     return this.meta.getByName(name);
+  }
+
+  getEmbeddingRuntime(name: string): EmbeddingRuntimeConfig {
+    return this.meta.getRuntimeByName(name);
+  }
+
+  updateEmbeddingRuntime(name: string, runtime: EmbeddingRuntimeConfig): void {
+    if (this.readOnly) {
+      throw new EngineError(
+        "Cannot update embedding runtime in a read-only registry",
+        {
+          code: "ZVEC_GREP.ENGINE.COLLECTION.READ_ONLY",
+          context: collectionOperationDetails(name, "updateEmbeddingRuntime"),
+        },
+      );
+    }
+    const info = this.get(name);
+    if (!info) {
+      throw new EngineError("Collection not found", {
+        code: "ZVEC_GREP.ENGINE.COLLECTION.NOT_FOUND",
+        context: errorDetails([collectionDetail(name)]),
+      });
+    }
+    this.meta.upsert(info, runtime);
   }
 
   has(name: string): boolean {
@@ -798,16 +834,32 @@ class ZvecCollectionsMetaStore {
     return doc ? docToCollectionInfo(doc) : null;
   }
 
-  upsert(info: CollectionInfo): void {
+  getRuntimeByName(name: string): EmbeddingRuntimeConfig {
+    if (!this.collection) {
+      return {};
+    }
+    const [doc] = this.collection.querySync({
+      filter: `name = ${quoteFilterString(name)}`,
+      topk: 1,
+      includeVector: false,
+    });
+    return doc ? docToEmbeddingRuntime(doc) : {};
+  }
+
+  upsert(info: CollectionInfo, runtime?: EmbeddingRuntimeConfig): void {
     this.assertWritable("upsert");
     const collection = this.requireCollection();
+    const previousRuntime =
+      runtime === undefined ? this.getRuntimeByCollectionId(info.id) : runtime;
     const deleteStatus = collection.deleteSync(info.id);
     assertZvecStatusOrNotFound(
       deleteStatus,
       "collection metadata replace",
       info.name,
     );
-    const status = collection.upsertSync(collectionInfoToDoc(info));
+    const status = collection.upsertSync(
+      collectionInfoToDoc(info, previousRuntime),
+    );
     assertZvecStatus(status, "collection metadata upsert", info.name);
     this.needsOptimize = true;
   }
@@ -843,6 +895,20 @@ class ZvecCollectionsMetaStore {
     }
 
     return this.collection;
+  }
+
+  private getRuntimeByCollectionId(
+    collectionId: string,
+  ): EmbeddingRuntimeConfig {
+    if (!this.collection) {
+      return {};
+    }
+    const [doc] = this.collection.querySync({
+      filter: `collection_id = ${quoteFilterString(collectionId)}`,
+      topk: 1,
+      includeVector: false,
+    });
+    return doc ? docToEmbeddingRuntime(doc) : {};
   }
 
   private assertWritable(operation: string): void {
@@ -887,6 +953,9 @@ function createCollectionsSchema(): ZVecCollectionSchema {
         nullable: true,
       },
       indexedStringField("embedding_metric", true),
+      stringField("embedding_api_key", true),
+      stringField("embedding_endpoint", true),
+      stringField("embedding_device", true),
       {
         name: "index_version",
         dataType: ZVecDataType.INT32,
@@ -906,7 +975,10 @@ function createCollectionsSchema(): ZVecCollectionSchema {
   });
 }
 
-function collectionInfoToDoc(info: CollectionInfo): ZVecDocInput {
+function collectionInfoToDoc(
+  info: CollectionInfo,
+  runtime: EmbeddingRuntimeConfig = {},
+): ZVecDocInput {
   const fields: Record<string, string | number> = {
     collection_id: info.id,
     name: info.name,
@@ -930,11 +1002,51 @@ function collectionInfoToDoc(info: CollectionInfo): ZVecDocInput {
   if (info.indexVersion !== null && info.indexVersion !== undefined) {
     fields.index_version = info.indexVersion;
   }
+  if (runtime.apiKey !== undefined) {
+    fields.embedding_api_key = runtime.apiKey;
+  }
+  if (runtime.endpoint !== undefined) {
+    fields.embedding_endpoint = runtime.endpoint;
+  }
+  if (runtime.device !== undefined) {
+    fields.embedding_device = runtime.device;
+  }
 
   return {
     id: info.id,
     fields,
   };
+}
+
+function docToEmbeddingRuntime(doc: ZVecDoc): EmbeddingRuntimeConfig {
+  const apiKey = readNullableStringFieldFromFields(
+    doc.fields,
+    "embedding_api_key",
+  );
+  const endpoint = readNullableStringFieldFromFields(
+    doc.fields,
+    "embedding_endpoint",
+  );
+  const device = embeddingDeviceFromField(
+    readNullableStringFieldFromFields(doc.fields, "embedding_device"),
+  );
+  return {
+    ...(apiKey ? { apiKey } : {}),
+    ...(endpoint ? { endpoint } : {}),
+    ...(device ? { device } : {}),
+  };
+}
+
+function embeddingDeviceFromField(
+  value: string | null,
+): EmbeddingDevice | undefined {
+  return value === "auto" ||
+    value === "cpu" ||
+    value === "metal" ||
+    value === "vulkan" ||
+    value === "cuda"
+    ? value
+    : undefined;
 }
 
 function docToCollectionInfo(doc: ZVecDoc): CollectionInfo {
