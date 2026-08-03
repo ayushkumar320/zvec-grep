@@ -48,6 +48,8 @@ const ZVEC_PATH = "index.zvec";
 const ZVEC_LOCK_FILE = "LOCK";
 const NO_MATCH_FILTER = "file_id = '__zvec_grep_no_match__'";
 const ZVEC_UPSERT_BATCH_SIZE = 1024;
+const ZVEC_MAX_QUERY_TOPK = 100_000;
+const FILE_ID_HEX_ALPHABET = "0123456789abcdef";
 const ZVEC_OPEN_RETRY_ATTEMPTS = 8;
 const ZVEC_OPEN_RETRY_BASE_DELAY_MS = 100;
 const ZVEC_OPEN_RETRY_MAX_DELAY_MS = 1000;
@@ -472,12 +474,11 @@ export class ZvecFileMetaStore {
   }
 
   list(collectionId: string): FileRecord[] {
-    const topk = Math.max(this.collection.stats.docCount, 1);
-    const docs = this.collection.querySync({
-      filter: `collection_id = ${quoteFilterString(collectionId)}`,
-      topk,
-      includeVector: false,
-    });
+    const docs = queryFileMetadataDocs(
+      this.collection,
+      collectionId,
+      ZVEC_MAX_QUERY_TOPK,
+    );
 
     return docs
       .map((doc) => docToFileRecord(doc))
@@ -530,6 +531,67 @@ export class ZvecFileMetaStore {
       });
     }
   }
+}
+
+export function queryFileMetadataDocs(
+  collection: Pick<ZVecCollection, "querySync" | "stats">,
+  collectionId: string,
+  maxTopk = ZVEC_MAX_QUERY_TOPK,
+): ZVecDoc[] {
+  if (!Number.isInteger(maxTopk) || maxTopk < 1) {
+    throw new EngineError("zvec metadata query limit must be positive", {
+      code: "ZVEC_GREP.ENGINE.STORAGE.INVALID_METADATA_QUERY_LIMIT",
+      context: `maxTopk=${maxTopk}`,
+    });
+  }
+
+  const collectionFilter = `collection_id = ${quoteFilterString(collectionId)}`;
+  if (collection.stats.docCount <= maxTopk) {
+    return collection.querySync({
+      filter: collectionFilter,
+      topk: Math.max(collection.stats.docCount, 1),
+      includeVector: false,
+    });
+  }
+
+  return FILE_ID_HEX_ALPHABET.split("").flatMap((prefix) =>
+    queryFileMetadataPartition(collection, collectionFilter, prefix, maxTopk),
+  );
+}
+
+function queryFileMetadataPartition(
+  collection: Pick<ZVecCollection, "querySync">,
+  collectionFilter: string,
+  prefix: string,
+  maxTopk: number,
+): ZVecDoc[] {
+  const lower = quoteFilterString(prefix);
+  const upper = quoteFilterString(`${prefix}g`);
+  const docs = collection.querySync({
+    filter: `${collectionFilter} AND file_id >= ${lower} AND file_id < ${upper}`,
+    topk: maxTopk,
+    includeVector: false,
+  });
+
+  if (docs.length < maxTopk) {
+    return docs;
+  }
+
+  if (prefix.length >= 64) {
+    throw new EngineError("zvec metadata partition exceeds query limit", {
+      code: "ZVEC_GREP.ENGINE.STORAGE.METADATA_PARTITION_TOO_LARGE",
+      context: `prefix=${prefix} maxTopk=${maxTopk}`,
+    });
+  }
+
+  return FILE_ID_HEX_ALPHABET.split("").flatMap((suffix) =>
+    queryFileMetadataPartition(
+      collection,
+      collectionFilter,
+      `${prefix}${suffix}`,
+      maxTopk,
+    ),
+  );
 }
 
 function createFilesSchema(): ZVecCollectionSchema {

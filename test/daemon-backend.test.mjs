@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { DaemonBackend } from "../dist/daemon/backend.js";
+import { inspectRoot } from "../dist/daemon/runtime-manager.js";
 import { BaseEmbeddingModel } from "../dist/engine/models/embeddings.js";
 import { createZvecGrep } from "../dist/index.js";
 
@@ -470,6 +471,59 @@ test("eventual search queries while background reconciliation is running", async
     blockBackgroundEmbedding = false;
     releaseBackground();
     await backend.scheduler.waitForRootIdle(await realpath(root));
+    await backend.close();
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("search requests reuse active runtime metadata without rescanning", async () => {
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-authorization-cache-"),
+  );
+  const root = join(temporaryDirectory, "repo");
+  await mkdir(root);
+  await writeFile(join(root, "answer.ts"), "export const answer = 42;\n");
+  const service = await createZvecGrep({
+    root,
+    embeddingModel: new QwenTestEmbeddingModel(),
+  });
+  await service.index();
+  await service.close();
+
+  const inspections = [];
+  const backend = new DaemonBackend({
+    version: "1.0.0",
+    modelPoolOptions: { createModel: () => new QwenTestEmbeddingModel() },
+    watchManagerFactory: noopWatchManagerFactory,
+    inspectRoot: async (...args) => {
+      inspections.push(args[2] ?? true);
+      return await inspectRoot(...args);
+    },
+  });
+  try {
+    const first = await backend.planSearchAuthorization(
+      searchInput(root, "answer", "eventual"),
+    );
+    await backend.search(searchInput(root, "answer", "eventual"));
+    const activationInspectionCount = inspections.length;
+
+    const second = await backend.planSearchAuthorization(
+      searchInput(root, "answer", "eventual"),
+    );
+    await backend.search(searchInput(root, "answer", "eventual"));
+
+    assert.equal(first.operation, "query");
+    assert.equal(second.operation, "query");
+    assert.ok(activationInspectionCount > 0);
+    assert.equal(inspections.length, activationInspectionCount);
+
+    await backend.runtimeManager.evict(await realpath(root));
+    const afterEviction = await backend.planSearchAuthorization(
+      searchInput(root, "answer", "eventual"),
+    );
+    assert.equal(afterEviction.operation, "query");
+    assert.ok(inspections.length > activationInspectionCount);
+  } finally {
     await backend.close();
     await rm(temporaryDirectory, { recursive: true, force: true });
   }

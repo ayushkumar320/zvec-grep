@@ -91,6 +91,7 @@ export type DaemonBackendOptions = {
   watchManagerFactory?: (options: WatchManagerOptions) => WatchManager;
   logger?: DaemonLogger;
   authorizationStore?: RemoteEmbeddingAuthorizationStore;
+  inspectRoot?: typeof inspectRoot;
 };
 
 type DaemonIndexInput = ZvecGrepIndexInput & {
@@ -132,7 +133,11 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
       serviceOptions: options.serviceOptions,
       readCollectionIdleTtlMs: options.readCollectionIdleTtlMs,
       runtimeIdleTtlMs: options.runtimeIdleTtlMs,
-      onRuntimeEvicted: (root) => this.closeWatcher(root),
+      onRuntimeEvicted: async (root) => {
+        this.statusCache.delete(root);
+        this.workspaceRuntimeCache.delete(root);
+        await this.closeWatcher(root);
+      },
     });
     this.scheduler = new JobScheduler({
       ...options.schedulerOptions,
@@ -212,20 +217,27 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
     ) {
       return undefined;
     }
+    const cachedInfo = activeRuntime
+      ? this.statusCache.get(requestedRoot)
+      : undefined;
     let info: ZvecGrepInfoResult;
-    try {
-      info = await inspectRoot(input.root, this.options.serviceOptions);
-      this.statusCache.set(requestedRoot, info);
-    } catch (error) {
-      const cached = this.statusCache.get(requestedRoot);
-      if (
-        !cached ||
-        !isEngineError(error) ||
-        error.code !== "ZVEC_GREP.ENGINE.LOCK.BUSY"
-      ) {
-        throw error;
+    if (cachedInfo) {
+      info = cachedInfo;
+    } else {
+      try {
+        info = await this.inspectRoot(input.root, true);
+        this.statusCache.set(requestedRoot, info);
+      } catch (error) {
+        const cached = this.statusCache.get(requestedRoot);
+        if (
+          !cached ||
+          !isEngineError(error) ||
+          error.code !== "ZVEC_GREP.ENGINE.LOCK.BUSY"
+        ) {
+          throw error;
+        }
+        info = cached;
       }
-      info = cached;
     }
     const canonicalRoot = await resolveRequestedRoot(info.root, false);
     const schema = info.collection?.embedding;
@@ -424,10 +436,7 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
       this.ensureWatcher(runtime);
       await runtime.probeInitialFreshness(
         async () => {
-          const info = await inspectRoot(
-            runtime.canonicalRoot,
-            this.options.serviceOptions,
-          );
+          const info = await this.inspectRoot(runtime.canonicalRoot, true);
           this.statusCache.set(runtime.canonicalRoot, info);
           return indexStatusIsFresh(info);
         },
@@ -1210,21 +1219,36 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
   private async inspectRootWithCache(
     root: string,
   ): Promise<ZvecGrepInfoResult> {
+    const cached = this.statusCache.get(root);
+    if (cached) {
+      return cached;
+    }
     try {
-      const info = await inspectRoot(root, this.options.serviceOptions);
+      const info = await this.inspectRoot(root, false);
       this.statusCache.set(root, info);
       return info;
     } catch (error) {
-      const cached = this.statusCache.get(root);
+      const fallback = this.statusCache.get(root);
       if (
-        cached &&
+        fallback &&
         isEngineError(error) &&
         error.code === "ZVEC_GREP.ENGINE.LOCK.BUSY"
       ) {
-        return cached;
+        return fallback;
       }
       throw error;
     }
+  }
+
+  private async inspectRoot(
+    root: string,
+    includeStatus: boolean,
+  ): Promise<ZvecGrepInfoResult> {
+    return await (this.options.inspectRoot ?? inspectRoot)(
+      root,
+      this.options.serviceOptions,
+      includeStatus,
+    );
   }
 }
 
