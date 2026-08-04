@@ -2528,12 +2528,17 @@ function agentGuidanceBlock(toolNames?: {
   return `${ZVEC_GREP_AGENTS_START}
 ## zvec-grep
 
-Route repository search through zvec-grep instead of raw grep, rg, or broad file reads. Choose the tool by intent; indexed search does not need to run before exact search.
+Choose the initial search tool by the scope of the requested answer, not merely by whether the question contains an identifier.
 
-- **MCP tools**: Use \`${rgTool}\` first when an exact keyword, text, symbol, filename, path, configuration key, error message, source fragment, literal, or regex anchor is known. Pass the rg command you would otherwise run; it is exhaustive by default and enriches matches with code structure. Append \`| head -N\` only when intentionally requesting bounded output. Use \`${searchTool}\` only when the exact anchor is unknown and conceptual discovery is needed.
-- **Shell fallback**: If the MCP server is unavailable, use \`zg query "<query>"\` and \`zg query --rg "<pattern>"\`.
+Use \`${rgTool}\` first only when the answer can be obtained by locating a specific definition, reference, filename, configuration key, error message, literal, source fragment, or regex.
 
-Prefer focused -g/--glob and -t/--type filters, and exclude dependencies, generated output, caches, build artifacts, and logs unless the task is about those files.
+Use \`${searchTool}\` first when the answer requires architecture, lifecycle, system design, conceptual discovery, data or control flow, comparison across implementations, design rationale, or performance analysis.
+
+When exact symbols are present but the answer spans multiple components, files, stages, or implementations, treat it as a mixed task: search using the concept and known symbols, then use rg for focused follow-up.
+
+Before using native Grep, Glob, shell rg, broad file reads, or a sub-agent for repository discovery, make at least one appropriate zvec-grep call.
+
+Do not launch a sub-agent solely to locate code. Stop discovery when the evidence covers all components requested by the question.
 ${ZVEC_GREP_AGENTS_END}`;
 }
 function resolveIndexRoot(root: string | undefined): string {

@@ -209,12 +209,12 @@ export interface ZvecGrepDaemonBackend {
 }
 
 const ZVEC_GREP_SEARCH_MCP_INSTRUCTIONS = [
-  "Use zvec-grep for local workspace search instead of raw grep, rg, or equivalent local text-search tools.",
-  "zvec-grep is a more capable superset replacement for rg.",
-  "When the exact keyword, text, or symbol is unknown, start with zvec_grep_search to quickly identify relevant concepts, files, and locations.",
-  "When the exact keyword, text, or symbol is known, use zvec_grep_rg. Pass the rg command you would otherwise run; it is exhaustive by default, and a trailing | head -N explicitly bounds returned matches.",
-  "Scope zvec_grep_rg with command paths, -g/--glob, or -t/--type; scope zvec_grep_search with path or glob filters, and refine broad or noisy searches by narrowing the query and search scope.",
-  "Trust zvec-grep results; if results are too broad, sparse, or low-quality, refine the query, scope, or search options and try zvec-grep again instead of switching to another local text-search tool.",
+  "Choose the initial search tool by the scope of the requested answer, not merely by whether the question contains an identifier.",
+  "Use zvec_grep_rg first only when the answer can be obtained by locating a specific definition, reference, filename, configuration key, error message, literal, source fragment, or regex.",
+  "Use zvec_grep_search first when the answer requires architecture, lifecycle, system design, conceptual discovery, data or control flow, comparison across implementations, design rationale, or performance analysis.",
+  "When exact symbols are present but the answer spans multiple components, files, stages, or implementations, treat it as a mixed task: search using the concept and known symbols, then use rg for focused follow-up.",
+  "Before using native Grep, Glob, shell rg, broad file reads, or a sub-agent for repository discovery, make at least one appropriate zvec-grep call.",
+  "Do not launch a sub-agent solely to locate code. Stop discovery when the evidence covers all components requested by the question.",
 ];
 
 export const ZVEC_GREP_AGENT_MCP_INSTRUCTIONS = [
@@ -370,8 +370,8 @@ export function registerZvecGrepTools(
     {
       title: "Search with zvec-grep",
       description: full
-        ? "Search an existing repository index only when the exact keyword, text, symbol, filename, or path is unknown and conceptual discovery is needed. A known class, function, or symbol name is an exact anchor even when its file or definition location is unknown; use the managed ripgrep tool instead. Read freshness and indexing from the response; use zvec_grep_index_status only for missing indexes, failed or cancelled indexing, diagnostics, or explicit progress monitoring."
-        : "Search an existing repository index only when the exact keyword, text, symbol, filename, or path is unknown and conceptual discovery is needed. A known class, function, or symbol name is an exact anchor even when its file or definition location is unknown; use the managed ripgrep tool instead. Read freshness and indexing directly from the response without a status preflight. When an index is unavailable, use the returned diagnostics to decide whether managed ripgrep can answer the task.",
+        ? "Search an existing repository index when the answer requires architecture, lifecycle, system design, conceptual discovery, data or control flow, comparison across implementations, design rationale, or performance analysis. Use search for mixed tasks whose question names exact symbols but whose answer spans multiple components, files, stages, or implementations; use managed ripgrep for focused follow-up. Read freshness and indexing from the response; use zvec_grep_index_status only for missing indexes, failed or cancelled indexing, diagnostics, or explicit progress monitoring."
+        : "Search an existing repository index when the answer requires architecture, lifecycle, system design, conceptual discovery, data or control flow, comparison across implementations, design rationale, or performance analysis. Use search for mixed tasks whose question names exact symbols but whose answer spans multiple components, files, stages, or implementations; use managed ripgrep for focused follow-up. Read freshness and indexing directly from the response without a status preflight. When an index is unavailable, use the returned diagnostics to decide whether managed ripgrep can answer the task.",
       inputSchema: zvecGrepSearchInputSchema,
       annotations: {
         readOnlyHint: false,
@@ -464,7 +464,7 @@ export function registerZvecGrepTools(
     {
       title: "Search with managed ripgrep",
       description:
-        "Run exhaustive, AST-enriched managed ripgrep locally without requiring an index. Use it instead of raw grep or rg for exact keywords, text, symbols, filenames, paths, configuration keys, errors, source fragments, literals, or regex anchors. Pass the rg command you would otherwise run. Results are exhaustive by default; append `| head -N` only when you intentionally want a bounded result set. Scope broad matches with command paths, `-g`/`--glob`, or `-t`/`--type` filters.",
+        "Run exhaustive, AST-enriched managed ripgrep locally without requiring an index. Use it first only when the answer can be obtained by locating a specific definition, reference, filename, configuration key, error message, literal, source fragment, or regex. Pass the rg command you would otherwise run. Results are exhaustive by default; append `| head -N` only when you intentionally want a bounded result set. Scope broad matches with command paths, `-g`/`--glob`, or `-t`/`--type` filters.",
       inputSchema: zvecGrepRgInputSchema,
       annotations: {
         readOnlyHint: true,
