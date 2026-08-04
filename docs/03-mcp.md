@@ -24,11 +24,11 @@ The default `agent` toolset intentionally exposes only search:
 
 | Tool | Use it when | Index required |
 | --- | --- | --- |
-| `zvec_grep_search` | The intent is known but the exact word, symbol, filename, or path is not | Yes |
-| `zvec_grep_rg` | An exact word, symbol, filename, path, source fragment, or regex is known | No |
+| `zvec_grep_search` | The answer requires conceptual discovery, architecture, lifecycle, or cross-component flow | Yes |
 
-Agents should remain within these two zg tools. If a result is too broad, they
-should narrow the query, path, glob, or file type and try again.
+Agents use native grep or rg when locating an exact word, symbol, filename, path,
+source fragment, or regex is sufficient. For mixed tasks, start with
+`zvec_grep_search`, then use native grep or rg for focused follow-up.
 
 Every repository tool input uses an absolute `root` visible to the daemon.
 
@@ -100,6 +100,10 @@ authorization. See
 [Embedding models](./07-embedding.md#remote-embedding-and-authorization).
 
 ## `zvec_grep_rg`
+
+This tool is retained in the optional `full` MCP toolset and is not registered
+in the default `agent` toolset. The CLI equivalent, `zg query --rg`, remains
+available without changing the MCP toolset.
 
 Pass the ripgrep command you would otherwise run. The command is parsed into
 arguments and is never executed by a shell:

@@ -23,12 +23,9 @@ test("zvec-grep skill triggers by task and selects the available transport", asy
   );
   assert.match(
     skill,
-    /Route repository investigation through zvec-grep instead of raw `grep` or\s+`rg`/,
+    /Use zvec-grep indexed search for conceptual repository investigation/,
   );
-  assert.match(
-    skill,
-    /this does not mean indexed search\s+must run before an exact search/,
-  );
+  assert.match(skill, /Use native\s+`grep` or `rg` for exact lexical searches/);
   assert.match(
     skill,
     /Use the public native HTTP MCP search tools as the primary interface when the matching `zvec_grep_\*` tool is present/,
@@ -39,7 +36,7 @@ test("zvec-grep skill triggers by task and selects the available transport", asy
   );
   assert.match(
     skill,
-    /default public MCP endpoint intentionally exposes only search and managed\s+ripgrep/,
+    /default public MCP endpoint intentionally exposes only indexed search/,
   );
   assert.match(skill, /default Auto mode can select Server or Direct/);
   assert.match(
@@ -48,17 +45,17 @@ test("zvec-grep skill triggers by task and selects the available transport", asy
   );
   assert.match(
     skill,
-    /Call `zvec_grep_rg` when an exact keyword, text, symbol, filename/,
+    /Use native `grep` or `rg` when an exact keyword, text, symbol, filename/,
+  );
+  assert.match(skill, /optional full MCP toolset exposes\s+`zvec_grep_rg`/);
+  assert.match(
+    skill,
+    /Call `zvec_grep_search` when the answer requires conceptual discovery/,
   );
   assert.match(
     skill,
-    /It is exhaustive by\s+default and enriches matches with code structure/,
+    /call `zvec_grep_search` first with the\s+concept and known symbols/,
   );
-  assert.match(
-    skill,
-    /Call `zvec_grep_search` when the exact anchor is unknown and conceptual\s+discovery is needed/,
-  );
-  assert.doesNotMatch(skill, /Call `zvec_grep_search` first/);
   assert.match(skill, /`freshness` and `indexing`/);
   assert.match(skill, /After authorization, use the CLI lifecycle workflow/);
   assert.doesNotMatch(skill, /zvec_grep_index(?:_drop|_status)?/);

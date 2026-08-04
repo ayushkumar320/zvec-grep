@@ -402,16 +402,19 @@ test("Codex installer refreshes legacy managed guidance", async (t) => {
   assert.match(agents, /# Existing instructions/);
   assert.match(
     agents,
-    /Use `zvec_grep_rg` first when an exact keyword, text, symbol, filename/,
+    /Use native Grep or rg first when the answer can be obtained by locating a specific definition/,
   );
   assert.match(
     agents,
-    /Use `zvec_grep_search` only when the exact anchor is unknown and conceptual discovery is needed/,
+    /Use `zvec_grep_search` first when the answer requires architecture, lifecycle, system design/,
   );
   assert.match(
     agents,
-    /exhaustive by default and enriches matches with code structure/,
+    /Choose the initial search tool by the scope of the requested answer/,
   );
+  assert.match(agents, /treat it as a mixed task/);
+  assert.match(agents, /Do not launch a sub-agent solely to locate code/);
+  assert.doesNotMatch(agents, /zvec_grep_rg/);
   assert.doesNotMatch(agents, /indexed search first/);
   assert.doesNotMatch(agents, /Indexing and status/);
   assert.doesNotMatch(agents, /Remote data authorization/);
@@ -465,7 +468,8 @@ test("Claude Code installer configures MCP trust and guidance", async (t) => {
   });
   assert.ok(settings.permissions.allow.includes("mcp__zvec_grep__*"));
   assert.match(guidance, /zvec_grep_search/);
-  assert.match(guidance, /zvec_grep_rg/);
+  assert.doesNotMatch(guidance, /zvec_grep_rg/);
+  assert.match(guidance, /Use native Grep or rg first/);
   assert.doesNotMatch(guidance, /Indexing and status/);
   assert.doesNotMatch(guidance, /Remote data authorization/);
   assert.doesNotMatch(guidance, /zg status/);
@@ -660,16 +664,18 @@ test("OpenCode installer preserves config and manages a remote MCP server", asyn
   assert.match(guidance, /# Existing OpenCode guidance/);
   assert.match(
     guidance,
-    /Use `zvec_grep_zvec_grep_rg` first when an exact keyword, text, symbol, filename/,
+    /Use native Grep or rg first when the answer can be obtained by locating a specific definition/,
   );
   assert.match(
     guidance,
-    /Use `zvec_grep_zvec_grep_search` only when the exact anchor is unknown and conceptual discovery is needed/,
+    /Use `zvec_grep_zvec_grep_search` first when the answer requires architecture, lifecycle, system design/,
   );
   assert.match(
     guidance,
-    /exhaustive by default and enriches matches with code structure/,
+    /Choose the initial search tool by the scope of the requested answer/,
   );
+  assert.match(guidance, /treat it as a mixed task/);
+  assert.doesNotMatch(guidance, /zvec_grep_rg/);
   assert.equal(countOccurrences(guidance, "<!-- ZVEC_GREP_START -->"), 1);
   assert.equal(countOccurrences(guidance, "<!-- ZVEC_GREP_END -->"), 1);
 

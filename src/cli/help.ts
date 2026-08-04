@@ -188,10 +188,10 @@ configure a provider but do not grant permission.`;
 
 The server listens on loopback. Authentication is disabled by default; pass a
 token file or set ZVEC_GREP_SERVER_TOKEN to require Bearer authentication.
-The public MCP endpoint defaults to the agent toolset (search and rg only).
-Use --mcp-toolset full, or ZVEC_GREP_MCP_TOOLSET=full, for compatibility with
-clients that require the four index and status tools. CLI index and status
-commands continue to use the daemon's internal administration endpoint.
+The public MCP endpoint defaults to the agent toolset (indexed search only).
+Use --mcp-toolset full, or ZVEC_GREP_MCP_TOOLSET=full, to expose managed rg and
+the four index and status tools. CLI managed rg, index, and status commands
+continue to use the daemon's internal administration endpoint.
 --check-ready exits non-zero unless the server is ready.`;
     case "install":
       return `Usage:

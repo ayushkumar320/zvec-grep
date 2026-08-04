@@ -208,25 +208,34 @@ export interface ZvecGrepDaemonBackend {
   serverStatus(): Promise<ZvecGrepServerStatusResult>;
 }
 
-const ZVEC_GREP_SEARCH_MCP_INSTRUCTIONS = [
+const ZVEC_GREP_AGENT_SEARCH_MCP_INSTRUCTIONS = [
+  "Choose the initial search tool by the scope of the requested answer, not merely by whether the question contains an identifier.",
+  "Use native Grep or rg first when the answer can be obtained by locating a specific definition, reference, filename, configuration key, error message, literal, source fragment, or regex.",
+  "Use zvec_grep_search first when the answer requires architecture, lifecycle, system design, conceptual discovery, data or control flow, comparison across implementations, design rationale, or performance analysis.",
+  "When exact symbols are present but the answer spans multiple components, files, stages, or implementations, treat it as a mixed task: use zvec_grep_search with the concept and known symbols, then use native Grep or rg for focused follow-up.",
+  "Before using broad file reads or a sub-agent for conceptual repository discovery, make at least one appropriate zvec_grep_search call.",
+  "Do not launch a sub-agent solely to locate code. Stop discovery when the evidence covers all components requested by the question.",
+];
+
+const ZVEC_GREP_FULL_SEARCH_MCP_INSTRUCTIONS = [
   "Choose the initial search tool by the scope of the requested answer, not merely by whether the question contains an identifier.",
   "Use zvec_grep_rg first only when the answer can be obtained by locating a specific definition, reference, filename, configuration key, error message, literal, source fragment, or regex.",
   "Use zvec_grep_search first when the answer requires architecture, lifecycle, system design, conceptual discovery, data or control flow, comparison across implementations, design rationale, or performance analysis.",
-  "When exact symbols are present but the answer spans multiple components, files, stages, or implementations, treat it as a mixed task: search using the concept and known symbols, then use rg for focused follow-up.",
+  "When exact symbols are present but the answer spans multiple components, files, stages, or implementations, treat it as a mixed task: search using the concept and known symbols, then use zvec_grep_rg for focused follow-up.",
   "Before using native Grep, Glob, shell rg, broad file reads, or a sub-agent for repository discovery, make at least one appropriate zvec-grep call.",
   "Do not launch a sub-agent solely to locate code. Stop discovery when the evidence covers all components requested by the question.",
 ];
 
 export const ZVEC_GREP_AGENT_MCP_INSTRUCTIONS = [
-  ...ZVEC_GREP_SEARCH_MCP_INSTRUCTIONS,
+  ...ZVEC_GREP_AGENT_SEARCH_MCP_INSTRUCTIONS,
   "Every repository operation requires an absolute root path visible to the daemon.",
   "Read freshness and indexing directly from zvec_grep_search responses without a status preflight.",
   "Use possibly_stale search results immediately when they are sufficient; do not perform extra diagnostics merely because a background update is active.",
-  "Use zvec_grep_rg when an index is missing and literal or regex search can answer the task.",
+  "When an index is missing and literal or regex search can answer the task, use native Grep or rg.",
 ].join(" ");
 
 export const ZVEC_GREP_FULL_MCP_INSTRUCTIONS = [
-  ...ZVEC_GREP_SEARCH_MCP_INSTRUCTIONS,
+  ...ZVEC_GREP_FULL_SEARCH_MCP_INSTRUCTIONS,
   "Every repository operation requires an absolute root path visible to the daemon.",
   "Use the zvec_grep_* tools directly for repository search, status, indexing, deletion, and exhaustive lexical search.",
   "Use freshness and indexing from zvec_grep_search without a status preflight; call zvec_grep_index_status only for a missing index, failed or cancelled indexing, diagnostics, or explicit progress monitoring.",
@@ -371,7 +380,7 @@ export function registerZvecGrepTools(
       title: "Search with zvec-grep",
       description: full
         ? "Search an existing repository index when the answer requires architecture, lifecycle, system design, conceptual discovery, data or control flow, comparison across implementations, design rationale, or performance analysis. Use search for mixed tasks whose question names exact symbols but whose answer spans multiple components, files, stages, or implementations; use managed ripgrep for focused follow-up. Read freshness and indexing from the response; use zvec_grep_index_status only for missing indexes, failed or cancelled indexing, diagnostics, or explicit progress monitoring."
-        : "Search an existing repository index when the answer requires architecture, lifecycle, system design, conceptual discovery, data or control flow, comparison across implementations, design rationale, or performance analysis. Use search for mixed tasks whose question names exact symbols but whose answer spans multiple components, files, stages, or implementations; use managed ripgrep for focused follow-up. Read freshness and indexing directly from the response without a status preflight. When an index is unavailable, use the returned diagnostics to decide whether managed ripgrep can answer the task.",
+        : "Search an existing repository index when the answer requires architecture, lifecycle, system design, conceptual discovery, data or control flow, comparison across implementations, design rationale, or performance analysis. Use search for mixed tasks whose question names exact symbols but whose answer spans multiple components, files, stages, or implementations; use native Grep or rg for focused follow-up. Read freshness and indexing directly from the response without a status preflight. When an index is unavailable, use the returned diagnostics and native Grep or rg for exact fallback.",
       inputSchema: zvecGrepSearchInputSchema,
       annotations: {
         readOnlyHint: false,
@@ -459,29 +468,31 @@ export function registerZvecGrepTools(
     );
   }
 
-  server.registerTool(
-    "zvec_grep_rg",
-    {
-      title: "Search with managed ripgrep",
-      description:
-        "Run exhaustive, AST-enriched managed ripgrep locally without requiring an index. Use it first only when the answer can be obtained by locating a specific definition, reference, filename, configuration key, error message, literal, source fragment, or regex. Pass the rg command you would otherwise run. Results are exhaustive by default; append `| head -N` only when you intentionally want a bounded result set. Scope broad matches with command paths, `-g`/`--glob`, or `-t`/`--type` filters.",
-      inputSchema: zvecGrepRgInputSchema,
-      annotations: {
-        readOnlyHint: true,
-        destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: true,
+  if (full) {
+    server.registerTool(
+      "zvec_grep_rg",
+      {
+        title: "Search with managed ripgrep",
+        description:
+          "Run exhaustive, AST-enriched managed ripgrep locally without requiring an index. Use it first only when the answer can be obtained by locating a specific definition, reference, filename, configuration key, error message, literal, source fragment, or regex. Pass the rg command you would otherwise run. Results are exhaustive by default; append `| head -N` only when you intentionally want a bounded result set. Scope broad matches with command paths, `-g`/`--glob`, or `-t`/`--type` filters.",
+        inputSchema: zvecGrepRgInputSchema,
+        annotations: {
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: true,
+        },
       },
-    },
-    async (input) => {
-      const response = await backend.rg(input);
-      return textToolResult(
-        `${formatAgentContextResult(response.result, {})}${rgCoverageHint(
-          response.result,
-        )}`,
-      );
-    },
-  );
+      async (input) => {
+        const response = await backend.rg(input);
+        return textToolResult(
+          `${formatAgentContextResult(response.result, {})}${rgCoverageHint(
+            response.result,
+          )}`,
+        );
+      },
+    );
+  }
 
   if (full) {
     server.registerTool(

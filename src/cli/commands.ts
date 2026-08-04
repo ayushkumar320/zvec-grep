@@ -537,7 +537,6 @@ async function installOpenCodeIntegration(
     startMarker: ZVEC_GREP_AGENTS_START,
     endMarker: ZVEC_GREP_AGENTS_END,
     block: agentGuidanceBlock({
-      rg: "zvec_grep_zvec_grep_rg",
       search: "zvec_grep_zvec_grep_search",
     }),
     force: true,
@@ -2519,24 +2518,20 @@ default_tools_approval_mode = "approve"
 ${ZVEC_GREP_CONFIG_END}`;
 }
 
-function agentGuidanceBlock(toolNames?: {
-  rg: string;
-  search: string;
-}): string {
-  const rgTool = toolNames?.rg ?? "zvec_grep_rg";
+function agentGuidanceBlock(toolNames?: { search: string }): string {
   const searchTool = toolNames?.search ?? "zvec_grep_search";
   return `${ZVEC_GREP_AGENTS_START}
 ## zvec-grep
 
 Choose the initial search tool by the scope of the requested answer, not merely by whether the question contains an identifier.
 
-Use \`${rgTool}\` first only when the answer can be obtained by locating a specific definition, reference, filename, configuration key, error message, literal, source fragment, or regex.
+Use native Grep or rg first when the answer can be obtained by locating a specific definition, reference, filename, configuration key, error message, literal, source fragment, or regex.
 
 Use \`${searchTool}\` first when the answer requires architecture, lifecycle, system design, conceptual discovery, data or control flow, comparison across implementations, design rationale, or performance analysis.
 
-When exact symbols are present but the answer spans multiple components, files, stages, or implementations, treat it as a mixed task: search using the concept and known symbols, then use rg for focused follow-up.
+When exact symbols are present but the answer spans multiple components, files, stages, or implementations, treat it as a mixed task: use \`${searchTool}\` with the concept and known symbols, then use native Grep or rg for focused follow-up.
 
-Before using native Grep, Glob, shell rg, broad file reads, or a sub-agent for repository discovery, make at least one appropriate zvec-grep call.
+Before using broad file reads or a sub-agent for conceptual repository discovery, make at least one appropriate \`${searchTool}\` call.
 
 Do not launch a sub-agent solely to locate code. Stop discovery when the evidence covers all components requested by the question.
 ${ZVEC_GREP_AGENTS_END}`;

@@ -56,20 +56,19 @@ Restart the selected agent, or open a new session, after installation.
 
 ## How the agent searches
 
-The default MCP surface gives the agent two complementary tools:
+The default MCP surface gives the agent one indexed search tool and leaves exact
+lexical lookup to the agent's native tools:
 
 | Intent | Tool |
 | --- | --- |
-| The words, symbol, filename, path, or regex are known | `zvec_grep_rg` |
-| The intent is known but the exact anchor is not | `zvec_grep_search` |
+| Locating known words, symbols, filenames, paths, or regexes is sufficient | Native grep or rg |
+| The answer requires conceptual discovery, architecture, lifecycle, or cross-component flow | `zvec_grep_search` |
+| Exact symbols are known but the answer spans components, files, or stages | `zvec_grep_search`, then native grep or rg |
 
-Both tools stay behind zg. The agent should refine the query or scope and try zg
-again when a result is broad, instead of falling back to another local search
-layer.
-
-`zvec_grep_search` needs an existing index. `zvec_grep_rg` is local,
-exhaustive, and works without one. See the [Pipeline guide](./04-pipeline.md) for
-the distinction and the [MCP guide](./03-mcp.md) for tool inputs.
+`zvec_grep_search` needs an existing index. Managed rg remains available through
+`zg query --rg` and through the optional `full` MCP toolset. See the
+[Pipeline guide](./04-pipeline.md) for the distinction and the
+[MCP guide](./03-mcp.md) for tool inputs.
 
 ## Verify the setup
 
@@ -79,9 +78,9 @@ Check the server first:
 zg server status --check-ready
 ```
 
-Then start a new agent session and confirm that the `zvec_grep_search` and
-`zvec_grep_rg` tools are available. If the MCP connection is unavailable, the
-same search layer remains available from the shell:
+Then start a new agent session and confirm that `zvec_grep_search` is available.
+If the MCP connection is unavailable, the same indexed search and optional
+managed-rg route remain available from the shell:
 
 ```bash
 zg query "where theme preferences are restored"

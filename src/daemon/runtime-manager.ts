@@ -87,7 +87,7 @@ export class RuntimeManager {
     if (!info.indexed || !info.collection?.embedding) {
       throw new DaemonError(
         "INDEX_MISSING",
-        `Indexed search requires a built zvec-grep index for ${info.root}. Use zvec_grep_rg for exhaustive literal or regex search, or call zvec_grep_index only when persistent indexing is authorized.`,
+        `Indexed search requires a built zvec-grep index for ${info.root}. Use native grep or rg for exhaustive literal or regex search, or call zvec_grep_index only when persistent indexing is authorized.`,
       );
     }
     const canonicalRoot = await realpath(info.root);

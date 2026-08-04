@@ -100,9 +100,10 @@ rebuilds.
 My app forgets dark mode every time I refresh. Find out why.
 ```
 
-The agent stays within zg for semantic discovery, ranked keyword retrieval, and
-exhaustive exact matching. You do not need to choose or invoke another search
-tool. The [MCP guide](./docs/03-mcp.md) describes the two tools exposed to agents.
+The agent uses zg for semantic discovery and ranked keyword retrieval, while
+exact lexical lookup stays with native grep or rg. The
+[MCP guide](./docs/03-mcp.md) describes the default search tool and the optional
+full toolset, which retains managed rg.
 
 To search directly from the terminal, use the same local layer. See the
 [CLI guide](./docs/02-cli.md) for routes, filters, and output controls.

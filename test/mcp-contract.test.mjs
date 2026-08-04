@@ -168,7 +168,7 @@ test("MCP toolset resolution prefers explicit configuration and defaults to agen
   assert.throws(() => parseMcpToolset("all"), /Expected "agent" or "full"/);
 });
 
-test("default agent contract exposes only search and rg", async (t) => {
+test("default agent contract exposes only indexed search", async (t) => {
   const backend = createBackend();
   let managementCalls = 0;
   backend.index = async (input) => {
@@ -195,7 +195,6 @@ test("default agent contract exposes only search and rg", async (t) => {
 
   const listed = await client.listTools();
   assert.deepEqual(listed.tools.map((tool) => tool.name).toSorted(), [
-    "zvec_grep_rg",
     "zvec_grep_search",
   ]);
 
@@ -204,27 +203,21 @@ test("default agent contract exposes only search and rg", async (t) => {
   assert.equal(instructions, ZVEC_GREP_MCP_INSTRUCTIONS);
   assert.doesNotMatch(
     instructions,
-    /zvec_grep_(?:index|index_drop|index_status|server_status)/,
+    /zvec_grep_(?:rg|index|index_drop|index_status|server_status)/,
   );
   const search = listed.tools.find((tool) => tool.name === "zvec_grep_search");
   assert.ok(search);
-  assert.match(search.description, /exact keyword, text, symbol/);
-  assert.match(
-    search.description,
-    /unknown and conceptual discovery is needed/,
-  );
-  assert.match(
-    search.description,
-    /known class, function, or symbol name is an exact anchor/,
-  );
-  assert.match(search.description, /use the managed ripgrep tool instead/);
+  assert.match(search.description, /answer requires architecture, lifecycle/);
+  assert.match(search.description, /mixed tasks/);
+  assert.match(search.description, /native Grep or rg for focused follow-up/);
   assert.doesNotMatch(search.description, /index first/);
   assert.doesNotMatch(
     search.description,
-    /zvec_grep_(?:index|index_drop|index_status|server_status)/,
+    /zvec_grep_(?:rg|index|index_drop|index_status|server_status)/,
   );
 
   for (const [name, arguments_] of [
+    ["zvec_grep_rg", { root, command: "rg query" }],
     ["zvec_grep_index", { root }],
     ["zvec_grep_index_drop", { root }],
     ["zvec_grep_index_status", { root }],
@@ -273,25 +266,12 @@ test("full server contract exposes all tools with stable annotations", async (t)
   );
   assert.doesNotMatch(toolContracts, /\bCLI\b/i);
   assert.doesNotMatch(toolContracts, /`?zg(?:\s|`)/i);
-  assert.match(instructions, /local workspace search/);
-  assert.match(
-    instructions,
-    /instead of raw grep, rg, or equivalent local text-search tools/,
-  );
-  assert.match(instructions, /superset replacement for rg/);
-  assert.match(instructions, /exact keyword, text, or symbol is unknown/);
-  assert.match(instructions, /start with zvec_grep_search/);
-  assert.match(instructions, /exact keyword, text, or symbol is known/);
-  assert.match(instructions, /use zvec_grep_rg/);
-  assert.match(instructions, /exhaustive by default/);
-  assert.match(instructions, /trailing \| head -N explicitly bounds/);
-  assert.match(instructions, /Scope zvec_grep_rg with command paths/);
-  assert.match(instructions, /refine broad or noisy searches/);
-  assert.match(instructions, /Trust zvec-grep results/);
-  assert.match(
-    instructions,
-    /try zvec-grep again instead of switching to another local text-search tool/,
-  );
+  assert.match(instructions, /scope of the requested answer/);
+  assert.match(instructions, /Use zvec_grep_rg first only when/);
+  assert.match(instructions, /Use zvec_grep_search first when/);
+  assert.match(instructions, /treat it as a mixed task/);
+  assert.match(instructions, /make at least one appropriate zvec-grep call/);
+  assert.match(instructions, /Do not launch a sub-agent solely to locate code/);
   assert.match(instructions, /repository search, status, indexing, deletion/);
   assert.match(instructions, /zvec_grep_index_status/);
   assert.match(instructions, /zvec_grep_server_status/);
@@ -315,16 +295,9 @@ test("full server contract exposes all tools with stable annotations", async (t)
   assert.match(index.description, /Do not call this tool/);
   assert.match(index.description, /index deletion/);
   const search = tools.find((tool) => tool.name === "zvec_grep_search");
-  assert.match(search.description, /exact keyword, text, symbol/);
-  assert.match(
-    search.description,
-    /unknown and conceptual discovery is needed/,
-  );
-  assert.match(
-    search.description,
-    /known class, function, or symbol name is an exact anchor/,
-  );
-  assert.match(search.description, /use the managed ripgrep tool instead/);
+  assert.match(search.description, /answer requires architecture, lifecycle/);
+  assert.match(search.description, /mixed tasks/);
+  assert.match(search.description, /managed ripgrep for focused follow-up/);
   assert.doesNotMatch(search.description, /index first/);
   assert.match(search.description, /missing indexes/);
   for (const tool of [index, search]) {
@@ -347,7 +320,10 @@ test("full server contract exposes all tools with stable annotations", async (t)
   }
   const rg = tools.find((tool) => tool.name === "zvec_grep_rg");
   assert.match(rg.description, /exhaustive, AST-enriched managed ripgrep/);
-  assert.match(rg.description, /Use it instead of raw grep or rg/);
+  assert.match(
+    rg.description,
+    /Use it first only when the answer can be obtained/,
+  );
   assert.match(rg.description, /exhaustive by default/);
   assert.match(rg.description, /append `\| head -N` only/);
   assert.deepEqual(Object.keys(rg.inputSchema.properties).toSorted(), [
@@ -877,14 +853,14 @@ test("search can return the current index without scheduling an update", async (
   assert.equal(received.autoUpdate, false);
 });
 
-test("rg forwards a managed ripgrep command before calling the backend", async (t) => {
+test("full toolset rg forwards a managed ripgrep command before calling the backend", async (t) => {
   let received;
   const backend = createBackend();
   backend.rg = async (input) => {
     received = input;
     return createBackend().rg(input);
   };
-  const { client, server } = await connect(backend);
+  const { client, server } = await connectFull(backend);
   t.after(async () => {
     await client.close();
     await server.close();
@@ -912,14 +888,14 @@ test("rg forwards a managed ripgrep command before calling the backend", async (
   assert.doesNotMatch(result.content[0].text, /rank=|matchedBy=|source:/);
 });
 
-test("rg reports truncation only for an explicit output bound", async (t) => {
+test("full toolset rg reports truncation only for an explicit output bound", async (t) => {
   const backend = createBackend();
   backend.rg = async (input) => {
     const response = await createBackend().rg(input);
     response.result.coverage = "rg_truncated";
     return response;
   };
-  const { client, server } = await connect(backend);
+  const { client, server } = await connectFull(backend);
   t.after(async () => {
     await client.close();
     await server.close();
@@ -938,8 +914,8 @@ test("rg reports truncation only for an explicit output bound", async (t) => {
   assert.doesNotMatch(result.content[0].text, /inspect.*before searching/i);
 });
 
-test("rg command input is required and bounded", async (t) => {
-  const { client, server } = await connect();
+test("full toolset rg command input is required and bounded", async (t) => {
+  const { client, server } = await connectFull();
   t.after(async () => {
     await client.close();
     await server.close();

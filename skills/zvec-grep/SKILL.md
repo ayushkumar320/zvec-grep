@@ -7,9 +7,9 @@ description: Repository code search and indexing with zvec-grep. Use when explor
 
 ## Select the transport
 
-Route repository investigation through zvec-grep instead of raw `grep` or
-`rg`. Choose the MCP tool by search intent; this does not mean indexed search
-must run before an exact search.
+Use zvec-grep indexed search for conceptual repository investigation. Use native
+`grep` or `rg` for exact lexical searches unless the optional managed-rg MCP tool
+is explicitly available.
 
 Use the public native HTTP MCP search tools as the primary interface when the matching `zvec_grep_*` tool is present. Call them directly; do not run `zg`, probe the daemon through shell, or choose CLI for convenience.
 
@@ -28,29 +28,31 @@ Do not retry a submitted indexing write through another transport after a connec
 
 Pass the repository's daemon-visible absolute path as `root` on every repository call.
 
-1. Call `zvec_grep_rg` when an exact keyword, text, symbol, filename, path,
-   configuration key, error message, source fragment, literal, or regex anchor
-   is known. Pass the rg command you would otherwise run. It is exhaustive by
-   default and enriches matches with code structure; append `| head -N` only
-   when intentionally requesting bounded output.
-2. Call `zvec_grep_search` when the exact anchor is unknown and conceptual
-   discovery is needed. Search defaults to `freshness: "eventual"`; use
+1. Use native `grep` or `rg` when an exact keyword, text, symbol, filename,
+   path, configuration key, error message, source fragment, literal, or regex
+   anchor is known and locating it is sufficient to answer the question.
+2. Call `zvec_grep_search` when the answer requires conceptual discovery,
+   architecture, lifecycle, data or control flow, comparison, design rationale,
+   or performance analysis. Search defaults to `freshness: "eventual"`; use
    `freshness: "wait_for_fresh"` only when the result must include all pending
    changes. Use hybrid `queries` for concepts plus known lexical constraints,
    `fts` for indexed lexical-only intent, and `vector` for semantic-only intent.
-3. Read the indexed search response's `freshness` and `indexing` fields. Use
+3. When exact symbols are present but the answer spans multiple components,
+   files, stages, or implementations, call `zvec_grep_search` first with the
+   concept and known symbols, then use native `grep` or `rg` for focused follow-up.
+4. Read the indexed search response's `freshness` and `indexing` fields. Use
    `possibly_stale` results immediately when they are sufficient; do not call
    status merely because a background update is active.
-4. Apply focused path and file-type filters early. Exclude dependencies,
+5. Apply focused path and file-type filters early. Exclude dependencies,
    generated output, caches, build artifacts, fixtures, and logs unless the
    task concerns them.
 
-The default public MCP endpoint intentionally exposes only search and managed
-ripgrep. If the index is missing, explain that indexed search requires an index
-and ask before creating one. After authorization, use the CLI lifecycle workflow;
-never silently create, rebuild, or drop an index. For exhaustive literal or regex
-search without an index, use `zvec_grep_rg` when present; otherwise use the
-explicit no-index CLI fallback.
+The default public MCP endpoint intentionally exposes only indexed search. If the
+index is missing, explain that indexed search requires an index and ask before
+creating one. After authorization, use the CLI lifecycle workflow; never silently
+create, rebuild, or drop an index. The optional full MCP toolset exposes
+`zvec_grep_rg`; the CLI `zg query --rg` route remains available for explicit
+managed-ripgrep fallback.
 
 Use multiple queries when comparing related concepts.
 

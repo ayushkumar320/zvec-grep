@@ -156,7 +156,6 @@ test("Streamable HTTP serves health, MCP contracts and a real cached index searc
   t.after(async () => publicClient.close());
   const publicTools = await publicClient.listTools();
   assert.deepEqual(publicTools.tools.map((tool) => tool.name).toSorted(), [
-    "zvec_grep_rg",
     "zvec_grep_search",
   ]);
   await assert.rejects(
@@ -181,7 +180,7 @@ test("Streamable HTTP serves health, MCP contracts and a real cached index searc
   assert.equal(modernPublicTools.cacheScope, "private");
   assert.deepEqual(
     modernPublicTools.tools.map((tool) => tool.name).toSorted(),
-    ["zvec_grep_rg", "zvec_grep_search"],
+    ["zvec_grep_search"],
   );
 
   const legacyAdmin = await fetch(adminMcpUrl, {
@@ -311,7 +310,7 @@ test("Streamable HTTP serves health, MCP contracts and a real cached index searc
   });
   assert.equal(missing.isError, true);
   assert.match(missing.content[0].text, /INDEX_MISSING/);
-  assert.match(missing.content[0].text, /zvec_grep_rg/);
+  assert.match(missing.content[0].text, /native grep or rg/);
   assert.match(missing.content[0].text, /persistent indexing is authorized/);
   await assert.rejects(access(join(unindexedRoot, ".zvec-grep")));
 
