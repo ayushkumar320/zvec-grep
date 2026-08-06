@@ -1,8 +1,8 @@
 import { homedir } from "node:os";
 import { isAbsolute, relative, sep } from "node:path";
 import type {
-  CollectionIndexStatus,
-  CollectionInfo,
+  WorkspaceIndexStatus,
+  WorkspaceIndexInfo,
   IndexResult,
   ZvecGrepInfoResult,
 } from "../../index.js";
@@ -36,14 +36,14 @@ export type WorkspaceIndexState =
   | "unindexed"
   | "undecided";
 
-type WorkspaceRootPath = CollectionInfo["rootPaths"][number];
+type WorkspaceRootPath = WorkspaceIndexInfo["rootPaths"][number];
 
 type WorkspaceStatusView = {
   root: string;
   indexPath: string;
   policy: "enabled" | "disabled" | "undecided";
   state: WorkspaceIndexState;
-  embedding?: CollectionInfo["embedding"];
+  embedding?: WorkspaceIndexInfo["embedding"];
   roots?: readonly WorkspaceRootPath[];
   files?: {
     indexed: number;
@@ -91,7 +91,7 @@ type ServerIndexInfo = {
   persistent: {
     home: string;
     index_path: string;
-    collection?: {
+    workspace_index?: {
       root_paths: ServerRootPath[];
       embedding?: {
         provider: string;
@@ -223,8 +223,8 @@ export function printWorkspaceInfo(
     indexPath: info.indexPath,
     policy: info.indexPolicy,
     state,
-    embedding: info.collection?.embedding,
-    roots: info.collection?.rootPaths,
+    embedding: info.workspaceIndex?.embedding,
+    roots: info.workspaceIndex?.rootPaths,
     files: status
       ? {
           indexed: completion?.completed ?? 0,
@@ -256,8 +256,9 @@ export function printServerIndexInfo(
 ): WorkspaceIndexState {
   const theme = createStatusTheme(options);
   const state = serverIndexState(info);
-  const embedding = info.persistent.collection?.embedding;
-  const roots = info.persistent.collection?.root_paths.map(mapServerRootPath);
+  const embedding = info.persistent.workspace_index?.embedding;
+  const roots =
+    info.persistent.workspace_index?.root_paths.map(mapServerRootPath);
   const files = info.persistent.files;
   const completion = info.runtime?.completion;
 
@@ -583,7 +584,7 @@ function workspaceState(
     return "disabled";
   }
 
-  if (!info.collection) {
+  if (!info.workspaceIndex) {
     return "undecided";
   }
 
@@ -606,7 +607,7 @@ export function printIndexResult(
   label: string,
   result: IndexResult,
   options: CliOptions,
-  rootPaths?: CollectionInfo["rootPaths"],
+  rootPaths?: WorkspaceIndexInfo["rootPaths"],
 ): void {
   const theme = createStatusTheme(options);
 
@@ -659,7 +660,7 @@ export function printIndexPathFilterTip(options: CliOptions): void {
 }
 
 function summarizeFailedFileReasons(
-  files: CollectionIndexStatus["failedFiles"],
+  files: WorkspaceIndexStatus["failedFiles"],
   retryCommand: string,
 ): string | undefined {
   const withReasons = files.filter((file) => file.indexStatus?.error);
@@ -759,7 +760,7 @@ function createStatusTheme(options: CliOptions): StatusTheme {
   };
 }
 
-function formatRootPath(root: CollectionInfo["rootPaths"][number]): string {
+function formatRootPath(root: WorkspaceIndexInfo["rootPaths"][number]): string {
   const filters = [
     root.include && root.include.length > 0
       ? `include=${root.include.join("|")}`

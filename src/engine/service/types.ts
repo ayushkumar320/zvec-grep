@@ -1,9 +1,9 @@
 import type { EmbeddingModel } from "../models/index.js";
 import type {
   CodeSymbolType,
-  CollectionIndexPolicy,
-  CollectionIndexStatus,
-  CollectionInfo,
+  WorkspaceIndexPolicy,
+  WorkspaceIndexStatus,
+  WorkspaceIndexInfo,
   Content,
   EntityMetadata,
   IndexProgress,
@@ -69,12 +69,12 @@ export type ZvecGrepInfoOptions = {
 export type ZvecGrepInfoResult = {
   root: string;
   indexed: boolean;
-  indexPolicy: CollectionIndexPolicy | "undecided";
+  indexPolicy: WorkspaceIndexPolicy | "undecided";
   home: string;
   indexPath: string;
   source: "index" | "unindexed";
-  collection?: CollectionInfo;
-  status?: CollectionIndexStatus | null;
+  workspaceIndex?: WorkspaceIndexInfo;
+  status?: WorkspaceIndexStatus | null;
   suggestion?: string;
 };
 
@@ -161,7 +161,7 @@ export type ZvecGrepContextItem = {
   trace?: SearchHitTrace;
 };
 
-export type ZvecGrepContextCollection = {
+export type ZvecGrepContextWorkspaceIndex = {
   id: string;
   name: string;
   path: string;
@@ -211,7 +211,7 @@ export type ZvecGrepContextResult = {
   root: string;
   source: ZvecGrepContextSource;
   coverage: ZvecGrepContextCoverage;
-  collection?: ZvecGrepContextCollection;
+  workspaceIndex?: ZvecGrepContextWorkspaceIndex;
   items: ZvecGrepContextItem[];
   diagnostics: ZvecGrepContextDiagnostics;
 };

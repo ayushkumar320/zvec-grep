@@ -52,8 +52,6 @@ async function captureConsole(callback) {
 
 function status(overrides = {}) {
   return {
-    collectionId: "collection-1",
-    collectionName: "docs",
     filesScanned: 4,
     filesStored: 3,
     filesIndexed: 2,
@@ -74,10 +72,10 @@ function status(overrides = {}) {
   };
 }
 
-function collection(overrides = {}) {
+function workspaceIndex(overrides = {}) {
   return {
-    id: "collection-1",
-    name: "docs collection",
+    id: "workspace-index-1",
+    name: "docs workspace index",
     path: "/tmp/index",
     rootPaths: [
       {
@@ -112,8 +110,8 @@ function contextResult(overrides = {}) {
     root: "/repo",
     source: "index",
     coverage: "ranked_sample",
-    collection: {
-      id: "collection-1",
+    workspaceIndex: {
+      id: "workspace-index-1",
       name: "docs",
       path: "/tmp/index",
     },
@@ -292,7 +290,7 @@ test("context formatters render indexed, lexical, metadata, preview, trace, and 
     const empty = contextResult({
       source: "rg",
       coverage: "rg_exhaustive",
-      collection: undefined,
+      workspaceIndex: undefined,
       items: [],
       diagnostics: {
         emptyReason: reason,
@@ -336,7 +334,7 @@ test("managed rg uses a compact file and adaptive symbol hierarchy", () => {
   const result = contextResult({
     source: "rg",
     coverage: "rg_exhaustive",
-    collection: undefined,
+    workspaceIndex: undefined,
     items: [
       {
         kind: "lexical_match",
@@ -495,7 +493,7 @@ test("debug formatter reports every diagnostic and trace availability state", as
     printDebug(contextResult(), { trace: true }),
   );
   const text = full.errors.join("\n");
-  assert.match(text, /collection=docs/);
+  assert.match(text, /workspace_index=docs/);
   assert.match(text, /rg_command=/);
   assert.match(text, /structural_enrichment=full/);
   assert.match(text, /timings=search:12ms\(2x\)/);
@@ -503,7 +501,7 @@ test("debug formatter reports every diagnostic and trace availability state", as
 
   const rg = await captureConsole(() =>
     printDebug(
-      contextResult({ source: "rg", collection: undefined, items: [] }),
+      contextResult({ source: "rg", workspaceIndex: undefined, items: [] }),
       { trace: true },
     ),
   );
@@ -520,7 +518,6 @@ test("debug formatter reports every diagnostic and trace availability state", as
 test("status formatters cover workspace states, failures, filters, and color", async () => {
   const failedFile = {
     id: "failed",
-    collectionId: "collection-1",
     absolutePath: "/repo/fail.ts",
     relativePath: "fail.ts",
     rootPath: "/repo",
@@ -536,7 +533,7 @@ test("status formatters cover workspace states, failures, filters, and color", a
     },
   };
   const stale = status({ failedFiles: [failedFile] });
-  const info = collection();
+  const info = workspaceIndex();
   const output = await captureConsole(() => {
     printWorkspaceInfo(
       {
@@ -546,7 +543,7 @@ test("status formatters cover workspace states, failures, filters, and color", a
         source: "index",
         home: "/repo/.zvec-grep",
         indexPath: "/repo/.zvec-grep/index.zvec",
-        collection: info,
+        workspaceIndex: info,
         status: stale,
         suggestion: "zg index",
       },
@@ -555,8 +552,6 @@ test("status formatters cover workspace states, failures, filters, and color", a
     printIndexResult(
       "Indexed",
       {
-        collectionId: "collection-1",
-        collectionName: "docs",
         filesScanned: 4,
         filesAdded: 1,
         filesModified: 1,
@@ -577,8 +572,6 @@ test("status formatters cover workspace states, failures, filters, and color", a
     printIndexResult(
       "Quick",
       {
-        collectionId: "collection-1",
-        collectionName: "docs",
         filesScanned: 0,
         filesAdded: 0,
         filesModified: 0,
@@ -602,7 +595,7 @@ test("status formatters cover workspace states, failures, filters, and color", a
         persistent: {
           home: "/repo/.zvec-grep",
           index_path: "/repo/.zvec-grep/index.zvec",
-          collection: {
+          workspace_index: {
             root_paths: [
               {
                 absolute_path: "/repo",
@@ -683,31 +676,31 @@ test("status formatters cover workspace states, failures, filters, and color", a
     {
       indexPolicy: "disabled",
       indexed: false,
-      collection: undefined,
+      workspaceIndex: undefined,
       status: null,
     },
     {
       indexPolicy: "undecided",
       indexed: false,
-      collection: undefined,
+      workspaceIndex: undefined,
       status: null,
     },
     {
       indexPolicy: "enabled",
       indexed: false,
-      collection: info,
+      workspaceIndex: info,
       status: null,
     },
     {
       indexPolicy: "enabled",
       indexed: true,
-      collection: info,
+      workspaceIndex: info,
       status: stale,
     },
     {
       indexPolicy: "enabled",
       indexed: true,
-      collection: info,
+      workspaceIndex: info,
       status: status({
         filesPending: 0,
         filesFailed: 0,
@@ -724,7 +717,7 @@ test("status formatters cover workspace states, failures, filters, and color", a
       source: stateInfo.indexed ? "index" : "unindexed",
       home: "/repo/.zvec-grep",
       indexPath: "/repo/.zvec-grep/index.zvec",
-      collection: stateInfo.collection,
+      workspaceIndex: stateInfo.workspaceIndex,
       status: stateInfo.status,
       suggestion: "zg index",
     };
@@ -748,7 +741,7 @@ test("workspace status uses a status-first grouped layout", async () => {
           source: "index",
           home: "/repo/.zvec-grep",
           indexPath: "/repo/.zvec-grep/index.zvec",
-          collection: collection({
+          workspaceIndex: workspaceIndex({
             rootPaths: [{ absolutePath: "/repo", recursive: true }],
           }),
           status: status({
@@ -794,7 +787,7 @@ test("workspace status uses a status-first grouped layout", async () => {
           persistent: {
             home: "/repo/.zvec-grep",
             index_path: "/repo/.zvec-grep/index.zvec",
-            collection: {
+            workspace_index: {
               root_paths: [{ absolute_path: "/repo", recursive: true }],
               embedding: {
                 provider: "qwen",
@@ -848,7 +841,7 @@ test("server workspace status reports changed files as stale", async () => {
         persistent: {
           home: "/repo/.zvec-grep",
           index_path: "/repo/.zvec-grep/index.zvec",
-          collection: {
+          workspace_index: {
             root_paths: [{ absolute_path: "/repo", recursive: true }],
             embedding: {
               provider: "qwen",
@@ -897,7 +890,7 @@ test("direct workspace status excludes changed files from coverage", async () =>
         source: "index",
         home: "/repo/.zvec-grep",
         indexPath: "/repo/.zvec-grep/index.zvec",
-        collection: collection({
+        workspaceIndex: workspaceIndex({
           rootPaths: [{ absolutePath: "/repo", recursive: true }],
         }),
         status: status({
@@ -1047,7 +1040,7 @@ test("error formatter renders engine context, causes, plain values, and color", 
   const engineError = new EngineError("Index failed", {
     code: "ZVEC_GREP.ENGINE.TEST.FAILURE",
     context:
-      "collection=workspace file=src/a.ts\nstage=embedding\nplain detail",
+      "workspaceIndex=workspace file=src/a.ts\nstage=embedding\nplain detail",
     cause: new Error("network unavailable"),
   });
   const output = await captureConsole(() => {
@@ -1060,7 +1053,7 @@ test("error formatter renders engine context, causes, plain values, and color", 
   const text = output.errors.join("\n");
   assert.match(text, /Code:/);
   assert.match(text, /file: src\/a\.ts/);
-  assert.match(text, /collection: workspace/);
+  assert.match(text, /workspaceIndex: workspace/);
   assert.match(text, /network unavailable/);
   assert.match(text, /string cause/);
   assert.match(text, /plain value/);

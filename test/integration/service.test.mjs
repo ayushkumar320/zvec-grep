@@ -150,13 +150,13 @@ test("workspace rebuild recreates unsupported index metadata", async (t) => {
   await assert.rejects(
     service.info(),
     (error) =>
-      error.code === "ZVEC_GREP.ENGINE.COLLECTION.INDEX_VERSION_MISMATCH" &&
+      error.code === "ZVEC_GREP.ENGINE.WORKSPACE_INDEX.VERSION_MISMATCH" &&
       error.context.includes("zg index --rebuild"),
   );
 
   await service.index({ rebuild: true });
   const rebuilt = await service.info();
-  assert.equal(rebuilt.collection?.indexVersion, CURRENT_INDEX_VERSION);
+  assert.equal(rebuilt.workspaceIndex?.indexVersion, CURRENT_INDEX_VERSION);
   await assert.rejects(access(filesMarker), { code: "ENOENT" });
   await assert.rejects(access(indexMarker), { code: "ENOENT" });
   assert.equal(await readFile(authorizationPath, "utf8"), "preserve");
