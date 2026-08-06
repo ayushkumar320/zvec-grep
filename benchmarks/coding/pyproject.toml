@@ -3,7 +3,7 @@ requires = ["hatchling>=1.27,<2"]
 build-backend = "hatchling.build"
 
 [project]
-name = "zvec-grep-benchmarks"
+name = "zvec-grep-coding-benchmarks"
 version = "0.1.0"
 description = "Harbor-based benchmarks for zvec-grep"
 requires-python = ">=3.12,<3.14"

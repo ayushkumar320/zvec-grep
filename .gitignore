@@ -29,9 +29,12 @@ pnpm-debug.log*
 .vite/
 __pycache__/
 *.py[cod]
-benchmarks/.venv/
-benchmarks/runs/
+benchmarks/coding/.venv/
+benchmarks/coding/runs/
 benchmarks/coir-zg/work/
+benchmarks/browse-comp-plus/.venv/
+benchmarks/browse-comp-plus/work/
+benchmarks/browse-comp-plus/plan.md
 
 
 # Package manager metadata

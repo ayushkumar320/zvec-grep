@@ -133,7 +133,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--jobs-dir",
         type=Path,
         default=DEFAULT_RUNS_DIR,
-        help="directory for Harbor job output (default: benchmarks/runs)",
+        help="directory for Harbor job output (default: benchmarks/coding/runs)",
     )
     run.add_argument(
         "--job-name",

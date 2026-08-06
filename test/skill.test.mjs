@@ -91,7 +91,10 @@ test("zvec-grep skill triggers by task and selects the available transport", asy
 });
 
 test("benchmark skill routes exact and conceptual searches by intent", async () => {
-  const skill = await readFile("benchmarks/skills/zvec-grep/SKILL.md", "utf8");
+  const skill = await readFile(
+    "benchmarks/coding/skills/zvec-grep/SKILL.md",
+    "utf8",
+  );
 
   assert.match(
     skill,
