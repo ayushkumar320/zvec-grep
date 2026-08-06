@@ -69,7 +69,12 @@ export class DaemonHttpServer {
     this.adminMcpEndpoint = new McpHttpEndpoint(
       options.backend,
       options.version,
-      { toolset: "full", requestStateCodec, requestStateReplayGuard },
+      {
+        toolset: "full",
+        acceptEmbeddingEnvironmentMeta: true,
+        requestStateCodec,
+        requestStateReplayGuard,
+      },
       { modernOnly: true },
     );
   }

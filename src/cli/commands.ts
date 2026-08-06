@@ -253,6 +253,7 @@ async function runIndex(parsed: ParsedArgs): Promise<void> {
                 progress.report(update.progress);
               }
             },
+            embeddingEnvironment: process.env.ZVEC_GREP_EMBEDDING?.trim(),
           },
         );
       } finally {

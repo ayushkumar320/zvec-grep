@@ -70,7 +70,8 @@ zg config model set local/potion-code-16m-v2 --default
 zg index
 ```
 
-`ZVEC_GREP_EMBEDDING` provides an environment-level default instead:
+`ZVEC_GREP_EMBEDDING` provides a process-level default that takes priority over
+the configured global default for new indexes:
 
 ```bash
 export ZVEC_GREP_EMBEDDING=local/potion-code-16m-v2
@@ -78,7 +79,9 @@ zg index
 ```
 
 An existing index always reuses its stored provider, model, dimensions, and
-metric unless a rebuild explicitly changes them.
+metric unless `--embedding` and `--rebuild` explicitly change them. `zg index`
+forwards the current CLI environment default in server and auto modes; direct
+MCP calls use the environment inherited by the daemon.
 
 ## Local runtime and device
 

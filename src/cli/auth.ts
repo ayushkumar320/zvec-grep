@@ -13,6 +13,7 @@ import {
 import {
   getEmbeddingModelCatalogEntry,
   listEmbeddingModels,
+  resolveEmbeddingReference,
 } from "../engine/models/index.js";
 import { readWorkspaceManifest } from "../engine/manifest.js";
 import {
@@ -252,12 +253,11 @@ export function configuredEmbeddingReference(
   options: CliOptions,
   existing?: WorkspaceIndexEmbeddingSchema | null,
 ): string | undefined {
-  return (
-    options.embedding ??
-    (existing ? `${existing.provider}/${existing.model}` : undefined) ??
-    readGlobalConfig().defaults?.embedding ??
-    process.env.ZVEC_GREP_EMBEDDING
-  );
+  return resolveEmbeddingReference({
+    explicit: options.embedding,
+    existing: existing ? `${existing.provider}/${existing.model}` : undefined,
+    globalDefault: readGlobalConfig().defaults?.embedding,
+  });
 }
 
 export function requireEmbeddingModelCatalogEntry(reference: string) {

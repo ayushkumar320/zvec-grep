@@ -8,6 +8,7 @@ import {
   resolveEmbeddingRuntimeOptions,
   updateGlobalConfig,
 } from "../dist/engine/config.js";
+import { resolveEmbeddingReference } from "../dist/engine/models/index.js";
 
 test("global config v1 is created securely and merged incrementally", async (t) => {
   const temporaryDirectory = await mkdtemp(join(tmpdir(), "zvec-grep-config-"));
@@ -164,6 +165,55 @@ test("embedding runtime resolver preserves every precedence layer", () => {
       apiKey: "env-key",
       device: "metal",
     },
+  );
+});
+
+test("embedding reference resolver prefers the environment over the global default", () => {
+  assert.equal(
+    resolveEmbeddingReference({
+      explicit: "qwen/qwen3.7-text-embedding",
+      existing: "local/qwen3-embedding-0.6b",
+      environment: {
+        ZVEC_GREP_EMBEDDING: "local/embeddinggemma-300m",
+      },
+      globalDefault: "local/potion-code-16m-v2",
+    }),
+    "qwen/qwen3.7-text-embedding",
+  );
+  assert.equal(
+    resolveEmbeddingReference({
+      environment: {
+        ZVEC_GREP_EMBEDDING: "local/embeddinggemma-300m",
+      },
+      globalDefault: "local/potion-code-16m-v2",
+    }),
+    "local/embeddinggemma-300m",
+  );
+  assert.equal(
+    resolveEmbeddingReference({
+      environment: { ZVEC_GREP_EMBEDDING: "   " },
+      globalDefault: "local/potion-code-16m-v2",
+    }),
+    "local/potion-code-16m-v2",
+  );
+});
+
+test("embedding reference resolver validates only a selected environment model", () => {
+  assert.throws(
+    () =>
+      resolveEmbeddingReference({
+        environment: { ZVEC_GREP_EMBEDDING: "unknown/model" },
+        globalDefault: "local/potion-code-16m-v2",
+      }),
+    /Invalid ZVEC_GREP_EMBEDDING: unsupported model unknown\/model/,
+  );
+  assert.equal(
+    resolveEmbeddingReference({
+      existing: "local/embeddinggemma-300m",
+      environment: { ZVEC_GREP_EMBEDDING: "unknown/model" },
+      globalDefault: "local/potion-code-16m-v2",
+    }),
+    "local/embeddinggemma-300m",
   );
 });
 

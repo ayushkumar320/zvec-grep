@@ -523,6 +523,9 @@ export const zvecGrepServerStatusOutputSchema = z.object({
 });
 
 export type ZvecGrepIndexInput = z.infer<typeof zvecGrepIndexInputSchema>;
+export type ZvecGrepIndexRequest = ZvecGrepIndexInput & {
+  embeddingEnvironment?: string;
+};
 export type ZvecGrepIndexDropInput = z.infer<
   typeof zvecGrepIndexDropInputSchema
 >;

@@ -9,9 +9,11 @@ import {
   LONG_RUNNING_MCP_TIMEOUT_MS,
   withProgressHeartbeat,
 } from "../mcp/progress-heartbeat.js";
+import { EMBEDDING_ENVIRONMENT_META_KEY } from "../mcp/request-metadata.js";
 
 type DaemonToolCallOptions = {
   onProgress?: (progress: Progress) => void;
+  embeddingEnvironment?: string;
 };
 
 export class DaemonClient {
@@ -152,7 +154,18 @@ export class DaemonClient {
     try {
       await client.connect(transport);
       const result = await client.callTool(
-        { name, arguments: args },
+        {
+          name,
+          arguments: args,
+          ...(callOptions.embeddingEnvironment
+            ? {
+                _meta: {
+                  [EMBEDDING_ENVIRONMENT_META_KEY]:
+                    callOptions.embeddingEnvironment,
+                },
+              }
+            : {}),
+        },
         {
           signal: abortController.signal,
           timeout: LONG_RUNNING_MCP_TIMEOUT_MS,

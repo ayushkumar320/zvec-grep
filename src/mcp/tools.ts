@@ -31,12 +31,13 @@ import {
   zvecGrepSearchInputSchema,
   zvecGrepServerStatusInputSchema,
   zvecGrepServerStatusOutputSchema,
-  type ZvecGrepIndexInput,
+  type ZvecGrepIndexRequest,
   type ZvecGrepIndexDropInput,
   type ZvecGrepIndexStatusInput,
   type ZvecGrepRgInput,
   type ZvecGrepSearchIndexing,
 } from "./schemas.js";
+import { embeddingEnvironmentFromRequestMeta } from "./request-metadata.js";
 import { textToolResult, toolResult } from "./result-format.js";
 import type {
   RemoteEmbeddingAuthorizationPlan,
@@ -177,7 +178,7 @@ export type ZvecGrepRgResult = {
 
 export interface ZvecGrepDaemonBackend {
   index(
-    input: ZvecGrepIndexInput,
+    input: ZvecGrepIndexRequest,
     options?: {
       authorization?: RemoteEmbeddingOperationPermit;
       onProgress?: (progress: IndexProgress) => void;
@@ -189,7 +190,7 @@ export interface ZvecGrepDaemonBackend {
     options?: { authorization?: RemoteEmbeddingOperationPermit },
   ): Promise<ZvecGrepSearchResult>;
   planIndexAuthorization?(
-    input: ZvecGrepIndexInput,
+    input: ZvecGrepIndexRequest,
   ): Promise<RemoteEmbeddingAuthorizationPlan | undefined>;
   planSearchAuthorization?(
     input: NormalizedSearchInput,
@@ -250,6 +251,7 @@ export const ZVEC_GREP_FULL_MCP_INSTRUCTIONS = [
 export const ZVEC_GREP_MCP_INSTRUCTIONS = ZVEC_GREP_AGENT_MCP_INSTRUCTIONS;
 
 export type ZvecGrepMcpServerOptions = {
+  acceptEmbeddingEnvironmentMeta?: boolean;
   requestStateCodec?: RequestStateCodec<RemoteEmbeddingRequestState>;
   requestStateReplayGuard?: RemoteEmbeddingRequestStateReplayGuard;
   toolset?: McpToolset;
@@ -318,7 +320,13 @@ export function registerZvecGrepTools(
         await runWithTraceContext(
           traceContextFromMcpMeta(ctx.mcpReq._meta),
           async () => {
-            const plan = await backend.planIndexAuthorization?.(input);
+            const request: ZvecGrepIndexRequest = {
+              ...input,
+              embeddingEnvironment: options.acceptEmbeddingEnvironmentMeta
+                ? embeddingEnvironmentFromRequestMeta(ctx.mcpReq._meta)
+                : undefined,
+            };
+            const plan = await backend.planIndexAuthorization?.(request);
             const resolution = plan
               ? await resolveRemoteEmbeddingAuthorization(
                   backend,
@@ -326,7 +334,7 @@ export function registerZvecGrepTools(
                   undefined,
                   ctx,
                   "zvec_grep_index",
-                  input,
+                  request,
                   options,
                 )
               : { kind: "ready" as const };
@@ -334,7 +342,7 @@ export function registerZvecGrepTools(
             const progress = createMcpIndexProgressReporter(ctx);
             let result: ZvecGrepIndexResult;
             try {
-              result = await backend.index(input, {
+              result = await backend.index(request, {
                 authorization: resolution.authorization,
                 onProgress: progress.report,
               });

@@ -15,6 +15,7 @@ import type {
   EmbeddingModel,
   EmbeddingModelInfo,
 } from "../engine/models/index.js";
+import { resolveEmbeddingReference } from "../engine/models/index.js";
 import type {
   WorkspaceIndexEmbeddingSchema,
   IndexProgress,
@@ -39,6 +40,7 @@ import type {
 } from "../mcp/tools.js";
 import type {
   ZvecGrepIndexInput,
+  ZvecGrepIndexRequest,
   ZvecGrepIndexDropInput,
   ZvecGrepIndexStatusInput,
   ZvecGrepRgInput,
@@ -94,7 +96,7 @@ export type DaemonBackendOptions = {
   inspectRoot?: typeof inspectRoot;
 };
 
-type DaemonIndexInput = ZvecGrepIndexInput & {
+type DaemonIndexInput = ZvecGrepIndexRequest & {
   changedPaths?: readonly string[];
   runtimeOverridesAreEphemeral?: boolean;
 };
@@ -146,7 +148,7 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
   }
 
   async planIndexAuthorization(
-    input: ZvecGrepIndexInput,
+    input: ZvecGrepIndexRequest,
   ): Promise<RemoteEmbeddingAuthorizationPlan | undefined> {
     if (input.drop === true) {
       return undefined;
@@ -272,7 +274,7 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
   }
 
   async index(
-    input: ZvecGrepIndexInput,
+    input: ZvecGrepIndexRequest,
     options: {
       authorization?: RemoteEmbeddingOperationPermit;
       onProgress?: (progress: IndexProgress) => void;
@@ -1085,7 +1087,7 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
 
   private indexModel(
     info: ZvecGrepInfoResult,
-    input: ZvecGrepIndexInput,
+    input: Pick<ZvecGrepIndexRequest, "embedding" | "embeddingEnvironment">,
   ): EmbeddingModelLoadRequest["model"] {
     if (info.workspaceIndex?.embedding && !input.embedding) {
       return {
@@ -1093,14 +1095,17 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
         name: info.workspaceIndex.embedding.model,
       };
     }
-    const reference =
-      input.embedding ??
-      this.options.serviceOptions?.embedding ??
-      readGlobalConfig().defaults?.embedding ??
-      nonEmptyEnvironmentValue(process.env.ZVEC_GREP_EMBEDDING) ??
-      (this.options.serviceOptions?.defaultEmbedding
+    const reference = resolveEmbeddingReference({
+      explicit: input.embedding ?? this.options.serviceOptions?.embedding,
+      environment: {
+        ZVEC_GREP_EMBEDDING:
+          input.embeddingEnvironment ?? process.env.ZVEC_GREP_EMBEDDING,
+      },
+      globalDefault: readGlobalConfig().defaults?.embedding,
+      fallback: this.options.serviceOptions?.defaultEmbedding
         ? DEFAULT_LOCAL_EMBEDDING
-        : undefined);
+        : undefined,
+    });
     if (!reference) {
       throw new DaemonError(
         "MODEL_LOAD_FAILED",
@@ -1114,10 +1119,15 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
     info: ZvecGrepInfoResult,
     input: Pick<
       DaemonIndexInput,
-      "embedding" | "apiKey" | "endpoint" | "device" | "rebuild"
+      | "embedding"
+      | "embeddingEnvironment"
+      | "apiKey"
+      | "endpoint"
+      | "device"
+      | "rebuild"
     >,
   ): EmbeddingModelLoadRequest {
-    const model = this.indexModel(info, input as ZvecGrepIndexInput);
+    const model = this.indexModel(info, input);
     const workspaceRuntime =
       info.workspaceIndex?.embedding?.provider === model.provider
         ? this.readWorkspaceEmbeddingRuntime(info)
@@ -1258,13 +1268,6 @@ function readWorkspaceEmbeddingRuntime(
   if (!info.workspaceIndex) return {};
   const location = workspaceIndexLocation(info.root);
   return readWorkspaceManifest(location.home)?.embeddingRuntime ?? {};
-}
-
-function nonEmptyEnvironmentValue(
-  value: string | undefined,
-): string | undefined {
-  const normalized = value?.trim();
-  return normalized ? normalized : undefined;
 }
 
 function indexStatusIsFresh(info: ZvecGrepInfoResult): boolean {

@@ -231,7 +231,7 @@ Manage the signed Remote Embedding grant stored in the Workspace under
 
 --embedding selects the Remote Embedding model to authorize; it does not run
 embedding. If omitted, auth grant uses the existing Workspace index model, then
-the global default, then ZVEC_GREP_EMBEDDING.
+ZVEC_GREP_EMBEDDING, then the global default.
 
 Scopes used during operations:
   once                              Current CLI command or Agent tool call only
@@ -367,17 +367,17 @@ ${formatEnvironmentVariables([
 
 Precedence:
   Embedding runtime                 CLI > Workspace snapshot > Global config > Environment
-  New-index model                  --embedding > Global config > ZVEC_GREP_EMBEDDING
+  New-index model                  --embedding > ZVEC_GREP_EMBEDDING > Global config
   Client mode                      --mode > ZVEC_GREP_MODE > Global config
   Qwen environment credential      ZVEC_GREP_API_KEY > DASHSCOPE_API_KEY > QWEN_API_KEY
 
 Server scope:
-  A running daemon uses the embedding environment inherited when it started.
-  Restart it after changing ZVEC_GREP_EMBEDDING, ZVEC_GREP_API_KEY,
-  ZVEC_GREP_ENDPOINT, ZVEC_GREP_MODEL_CACHE, or ZVEC_GREP_DEVICE.
+  zg index forwards its ZVEC_GREP_EMBEDDING default to Server and auto modes.
+  Direct MCP calls use the embedding environment inherited by the daemon.
+  Restart the daemon after changing its embedding runtime environment.
 
-Environment variables provide fallbacks; explicit CLI options never print or
-store their values in help output.`;
+Explicit CLI options take priority. Help output never prints or stores
+environment values.`;
 }
 
 function formatEnvironmentVariables(

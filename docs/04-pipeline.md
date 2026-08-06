@@ -107,8 +107,9 @@ not list each skipped path or reason.
 
 ## 2. Build and maintain the index
 
-A new index needs an explicit model, `ZVEC_GREP_EMBEDDING`, or a configured
-default. Existing indexes reuse their stored model and file-selection settings:
+A new index resolves its model from explicit `--embedding`,
+`ZVEC_GREP_EMBEDDING`, then the configured default. Existing indexes reuse their
+stored model and file-selection settings:
 
 ```bash
 # First build

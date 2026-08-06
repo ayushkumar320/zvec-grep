@@ -35,6 +35,14 @@ test("server-mode index reports Workspace progress", async (t) => {
     ZVEC_GREP_HOME: home,
     ZVEC_GREP_SERVER_URL: `http://127.0.0.1:${port}/mcp`,
   };
+  await mkdir(join(home, ".zvec-grep"), { recursive: true });
+  await writeFile(
+    join(home, ".zvec-grep", "config.json"),
+    `${JSON.stringify({
+      version: 1,
+      defaults: { embedding: "qwen/text-embedding-v4" },
+    })}\n`,
+  );
   t.after(async () => {
     await runCli(["server", "off", "--home", home], {
       cwd: root,
@@ -48,21 +56,71 @@ test("server-mode index reports Workspace progress", async (t) => {
   );
 
   const indexed = await runCli(
+    ["index", "--mode", "server", "--allow-remote", root],
+    {
+      cwd: root,
+      env: {
+        ...env,
+        ZVEC_GREP_EMBEDDING: "qwen/qwen3.7-text-embedding",
+      },
+      timeout: 120_000,
+    },
+  );
+
+  assert.match(indexed.stdout, /Workspace index: succeeded/);
+  assert.match(indexed.stderr, /Scanning/);
+  assert.match(indexed.stderr, /Indexing complete/);
+  const indexedStatus = await runCli(["status", "--mode", "server", root], {
+    cwd: root,
+    env,
+  });
+  assert.match(indexedStatus.stdout, /qwen\/qwen3\.7-text-embedding/);
+  await runCli(["index", "--mode", "server", "--allow-remote", root], {
+    cwd: root,
+    env: {
+      ...env,
+      ZVEC_GREP_EMBEDDING: "qwen/text-embedding-v4",
+    },
+    timeout: 120_000,
+  });
+  const reusedStatus = await runCli(["status", "--mode", "server", root], {
+    cwd: root,
+    env,
+  });
+  assert.match(reusedStatus.stdout, /qwen\/qwen3\.7-text-embedding/);
+  await assert.rejects(
+    runCli(
+      [
+        "index",
+        "--mode",
+        "server",
+        "--embedding",
+        "qwen/text-embedding-v4",
+        "--allow-remote",
+        root,
+      ],
+      { cwd: root, env, timeout: 120_000 },
+    ),
+    /does not match requested model.*use rebuild/i,
+  );
+  await runCli(
     [
       "index",
       "--mode",
       "server",
       "--embedding",
       "qwen/text-embedding-v4",
+      "--rebuild",
       "--allow-remote",
       root,
     ],
     { cwd: root, env, timeout: 120_000 },
   );
-
-  assert.match(indexed.stdout, /Workspace index: succeeded/);
-  assert.match(indexed.stderr, /Scanning/);
-  assert.match(indexed.stderr, /Indexing complete/);
+  const rebuiltStatus = await runCli(["status", "--mode", "server", root], {
+    cwd: root,
+    env,
+  });
+  assert.match(rebuiltStatus.stdout, /qwen\/text-embedding-v4/);
 
   const dropped = await runCli(
     ["index", "--drop", "--yes", "--mode", "server", root],
@@ -91,7 +149,12 @@ test("CLI completes index, search, explicit refresh, status, and rg workflows", 
   );
 
   const endpoint = await createFakeEmbeddingServer(t);
-  const env = { HOME: home, USERPROFILE: home, NO_COLOR: "1" };
+  const env = {
+    HOME: home,
+    USERPROFILE: home,
+    NO_COLOR: "1",
+    ZVEC_GREP_EMBEDDING: "qwen/qwen3.7-text-embedding",
+  };
   await mkdir(join(home, ".zvec-grep"), { recursive: true });
   await writeFile(
     join(home, ".zvec-grep", "config.json"),
@@ -104,8 +167,6 @@ test("CLI completes index, search, explicit refresh, status, and rg workflows", 
   const indexed = await runCli(
     [
       "index",
-      "--embedding",
-      "qwen/qwen3.7-text-embedding",
       "--api-key",
       "test-key",
       "--endpoint",
@@ -204,9 +265,31 @@ test("CLI completes index, search, explicit refresh, status, and rg workflows", 
 
   const status = await runCli(["status", root], { cwd: root, env });
   assert.match(status.stdout, /Workspace index is ready/i);
+  assert.match(status.stdout, /qwen\/qwen3\.7-text-embedding/);
   assert.match(status.stdout, /Coverage\s+.*100%\s+1 \/ 1 files/i);
   assert.match(status.stdout, /glob=src\/\*\*/);
   assert.match(status.stdout, /type=ts/);
+  const existingAuth = await runCli(
+    [
+      "auth",
+      "grant",
+      root,
+      "--capability",
+      "embedding",
+      "--scope",
+      "workspace",
+    ],
+    {
+      cwd: root,
+      env: {
+        ...env,
+        ZVEC_GREP_API_KEY: "test-key",
+        ZVEC_GREP_EMBEDDING: "qwen/text-embedding-v4",
+      },
+    },
+  );
+  assert.match(existingAuth.stdout, /qwen\/qwen3\.7-text-embedding/);
+  assert.doesNotMatch(existingAuth.stdout, /qwen\/text-embedding-v4/);
   const checkedStatus = await runCli(["status", "--check-ready", root], {
     cwd: root,
     env,
@@ -286,7 +369,48 @@ test("CLI completes index, search, explicit refresh, status, and rg workflows", 
   assert.match(droppedStatus.stdout, /Workspace index is not configured/i);
 });
 
-test("CLI exposes stable help, version, and failure behavior", async () => {
+test("auth grant uses the environment model before the global default", async (t) => {
+  const temporaryDirectory = await createTemporaryDirectory(
+    t,
+    "zvec-grep-auth-environment-",
+  );
+  const root = join(temporaryDirectory, "repo");
+  const home = join(temporaryDirectory, "home");
+  await mkdir(join(root, "src"), { recursive: true });
+  await mkdir(join(home, ".zvec-grep"), { recursive: true });
+  await writeFile(
+    join(home, ".zvec-grep", "config.json"),
+    `${JSON.stringify({
+      version: 1,
+      defaults: { embedding: "qwen/text-embedding-v4" },
+    })}\n`,
+  );
+  const env = {
+    HOME: home,
+    USERPROFILE: home,
+    NO_COLOR: "1",
+    ZVEC_GREP_API_KEY: "test-key",
+    ZVEC_GREP_EMBEDDING: "qwen/qwen3.7-text-embedding",
+  };
+
+  const granted = await runCli(
+    [
+      "auth",
+      "grant",
+      root,
+      "--capability",
+      "embedding",
+      "--scope",
+      "workspace",
+    ],
+    { cwd: root, env },
+  );
+
+  assert.match(granted.stdout, /qwen\/qwen3\.7-text-embedding/);
+  assert.doesNotMatch(granted.stdout, /qwen\/text-embedding-v4/);
+});
+
+test("CLI exposes stable help, version, and failure behavior", async (t) => {
   const help = await runCli(["help"]);
   assert.match(help.stdout, /Usage:/);
   assert.match(help.stdout, /zg help environment/);
@@ -304,6 +428,7 @@ test("CLI exposes stable help, version, and failure behavior", async () => {
     /selects the Remote Embedding model to authorize/,
   );
   assert.match(authHelp.stdout, /existing Workspace index model/);
+  assert.match(authHelp.stdout, /ZVEC_GREP_EMBEDDING, then the global default/);
   const environmentHelp = await runCli(["help", "environment"], {
     env: {
       ...process.env,
@@ -314,7 +439,11 @@ test("CLI exposes stable help, version, and failure behavior", async () => {
   assert.match(environmentHelp.stdout, /ZVEC_GREP_AUTHORIZATION_KEY_FILE/);
   assert.match(environmentHelp.stdout, /DASHSCOPE_API_KEY/);
   assert.match(environmentHelp.stdout, /CLI > Workspace snapshot/);
-  assert.match(environmentHelp.stdout, /inherited when it started/);
+  assert.match(
+    environmentHelp.stdout,
+    /--embedding > ZVEC_GREP_EMBEDDING > Global config/,
+  );
+  assert.match(environmentHelp.stdout, /forwards its ZVEC_GREP_EMBEDDING/);
   assert.doesNotMatch(environmentHelp.stdout, /environment-help-secret/);
   assert.doesNotMatch(environmentHelp.stdout, /server-help-secret/);
   const environmentAliasHelp = await runCli(["help", "env"]);
@@ -335,6 +464,23 @@ test("CLI exposes stable help, version, and failure behavior", async () => {
       assert.match(error.stderr, /Unsupported embedding model: unknown\/model/);
       assert.match(error.stderr, /local\/embeddinggemma-300m/);
       assert.match(error.stderr, /qwen\/text-embedding-v4/);
+      return true;
+    },
+  );
+  const invalidEnvironmentRoot = await createTemporaryDirectory(
+    t,
+    "zvec-grep-invalid-embedding-environment-",
+  );
+  await assert.rejects(
+    runCli(["index", invalidEnvironmentRoot], {
+      cwd: invalidEnvironmentRoot,
+      env: { ZVEC_GREP_EMBEDDING: "unknown/model" },
+    }),
+    (error) => {
+      assert.match(
+        error.stderr,
+        /Invalid ZVEC_GREP_EMBEDDING: unsupported model unknown\/model/,
+      );
       return true;
     },
   );

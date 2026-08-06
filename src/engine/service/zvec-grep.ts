@@ -19,6 +19,7 @@ import {
 import {
   createEmbeddingModel,
   EmbeddingPurpose,
+  resolveEmbeddingReference,
   type CreateEmbeddingModelOptions,
   type EmbeddingModel,
   type EmbeddingModelInfo,
@@ -775,13 +776,14 @@ class ZvecGrepService implements ZvecGrep {
     }
 
     const config = readGlobalConfig();
-    const reference =
-      this.options.embedding ??
-      config.defaults?.embedding ??
-      nonEmptyEnvironmentValue(process.env.ZVEC_GREP_EMBEDDING) ??
-      (this.options.defaultEmbedding === true
-        ? DEFAULT_LOCAL_EMBEDDING
-        : undefined);
+    const reference = resolveEmbeddingReference({
+      explicit: this.options.embedding,
+      globalDefault: config.defaults?.embedding,
+      fallback:
+        this.options.defaultEmbedding === true
+          ? DEFAULT_LOCAL_EMBEDDING
+          : undefined,
+    });
     const referenceIdentity = reference
       ? parseEmbeddingModelReference(reference)
       : undefined;
@@ -1618,13 +1620,6 @@ function assertSearchEndpointMatchesWorkspace(
       ]),
     },
   );
-}
-
-function nonEmptyEnvironmentValue(
-  value: string | undefined,
-): string | undefined {
-  const normalized = value?.trim();
-  return normalized ? normalized : undefined;
 }
 
 function assertWorkspaceEmbeddingMatchesCurrentModel(

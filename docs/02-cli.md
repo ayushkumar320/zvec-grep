@@ -180,8 +180,8 @@ Workspace grants are stored under `.zvec-grep/authorization.json` and shared by
 the CLI and MCP server. `--allow-remote` is the non-persistent alternative for
 one `query` or `index` command. `--embedding` selects the Remote Embedding model
 to authorize; it does not run embedding. It may be omitted when the model can be
-resolved from the existing Workspace index, the global default, or
-`ZVEC_GREP_EMBEDDING`, in that order.
+resolved from the existing Workspace index, `ZVEC_GREP_EMBEDDING`, or the global
+default, in that order.
 
 ## `zg server`
 
@@ -218,7 +218,12 @@ refresh, authentication, and logs. See [MCP](./03-mcp.md) for the tool contract.
 | `QWEN_API_KEY` | Qwen API-key fallback after `DASHSCOPE_API_KEY` |
 
 Run `zg help environment` for advanced variables, agent integration paths,
-scope, and detailed precedence. Embedding runtime values currently resolve in
-this order: explicit command option, Workspace snapshot, global configuration,
-then environment. A running daemon keeps the embedding environment inherited
-when it started; restart it after changing those variables.
+scope, and detailed precedence. A new index selects its model in this order:
+explicit `--embedding`, `ZVEC_GREP_EMBEDDING`, then the global default. Existing
+indexes continue to use their stored model unless `--embedding` and `--rebuild`
+explicitly change it.
+
+Embedding runtime values such as endpoint and device retain this order: explicit
+command option, Workspace snapshot, global configuration, then environment.
+`zg index` forwards its `ZVEC_GREP_EMBEDDING` value in server and auto modes;
+direct MCP calls use the environment inherited when the daemon started.

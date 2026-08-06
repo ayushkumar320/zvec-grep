@@ -13,6 +13,7 @@ import {
   parseMcpToolset,
   resolveMcpToolset,
 } from "../dist/mcp/toolset.js";
+import { EMBEDDING_ENVIRONMENT_META_KEY } from "../dist/mcp/request-metadata.js";
 import { indexProgressFromMessage } from "../dist/index-progress.js";
 import { formatAgentContextResult } from "../dist/cli/format/context.js";
 
@@ -372,6 +373,38 @@ test("index contract documents background submission as the default", async (t) 
   );
   assert.match(index.inputSchema.properties.rebuild.description, /requested/);
   assert.ok(index.outputSchema.properties.error);
+});
+
+test("only the CLI administration endpoint accepts the embedding environment metadata", async (t) => {
+  for (const [acceptEmbeddingEnvironmentMeta, expected] of [
+    [false, undefined],
+    [true, "qwen/qwen3.7-text-embedding"],
+  ]) {
+    let received;
+    const backend = createBackend();
+    backend.index = async (input) => {
+      received = input;
+      return await createBackend().index(input);
+    };
+    const { client, server } = await connect(backend, {
+      toolset: "full",
+      acceptEmbeddingEnvironmentMeta,
+    });
+    t.after(async () => {
+      await client.close();
+      await server.close();
+    });
+
+    await client.callTool({
+      name: "zvec_grep_index",
+      arguments: { root },
+      _meta: {
+        [EMBEDDING_ENVIRONMENT_META_KEY]: "qwen/qwen3.7-text-embedding",
+      },
+    });
+
+    assert.equal(received.embeddingEnvironment, expected);
+  }
 });
 
 test("index drop returns the daemon deletion result", async (t) => {

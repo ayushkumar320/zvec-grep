@@ -11,3 +11,7 @@ export {
   getEmbeddingModelCatalogEntry,
   listEmbeddingModels,
 } from "./catalog.js";
+export {
+  resolveEmbeddingReference,
+  type ResolveEmbeddingReferenceOptions,
+} from "./resolution.js";
