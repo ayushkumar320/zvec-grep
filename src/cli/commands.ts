@@ -30,6 +30,7 @@ import {
   printAgentContextResult,
   printHumanContextResult,
 } from "./format/context.js";
+import { createHighlighter, shouldUseColor } from "./format/highlight.js";
 import { printDebug } from "./format/debug.js";
 import { createIndexProgressReporter } from "./format/progress.js";
 import {
@@ -697,7 +698,13 @@ async function runServerQuery(
       autoUpdate: searchPolicy.autoUpdate,
     },
   );
-  console.log(response);
+  const highlighter = createHighlighter(
+    [...queries, ...fts, ...vector].join(" "),
+    shouldUseColor(options),
+  );
+  for (const line of response.split("\n")) {
+    console.log(highlighter(line));
+  }
 }
 
 function printStaleIndexStatus(

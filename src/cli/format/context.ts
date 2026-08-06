@@ -61,10 +61,12 @@ function agentContextLines(
   options: CliOptions,
 ): string[] {
   if (result.source === "rg") {
-    return agentRgContextLines(result);
+    return agentRgContextLines(result, options);
   }
 
-  const highlighter = plainText;
+  const highlighter = shouldUseColor(options)
+    ? createHighlighter(result.query, true)
+    : plainText;
   const groups = groupContextItems(result.items);
   const preview = previewMode(result, options);
   const lines: string[] = [];
@@ -112,11 +114,17 @@ function agentContextLines(
   return lines;
 }
 
-function agentRgContextLines(result: ZvecGrepContextResult): string[] {
+function agentRgContextLines(
+  result: ZvecGrepContextResult,
+  options: CliOptions,
+): string[] {
   if (result.items.length === 0) {
     return [emptyContextLabel(result), ...emptyContextDetailLines(result)];
   }
 
+  const highlighter = shouldUseColor(options)
+    ? createHighlighter(result.query, true)
+    : plainText;
   const lines: string[] = [];
 
   for (const group of groupContextItems(result.items)) {
@@ -124,9 +132,9 @@ function agentRgContextLines(result: ZvecGrepContextResult): string[] {
 
     for (const block of groupAgentRgItems(group)) {
       if (block.kind === "symbol" && !isRedundantDeclarationBlock(block)) {
-        lines.push(...agentRgSymbolBlockLines(block));
+        lines.push(...agentRgSymbolBlockLines(block, highlighter));
       } else {
-        lines.push(...block.items.flatMap(agentRgFileSourceLines));
+        lines.push(...block.items.flatMap((item) => agentRgFileSourceLines(item, highlighter)));
       }
     }
   }
@@ -136,8 +144,9 @@ function agentRgContextLines(result: ZvecGrepContextResult): string[] {
 
 function agentRgSymbolBlockLines(
   block: Extract<AgentRgBlock, { kind: "symbol" }>,
+  highlighter: (value: string) => string,
 ): string[] {
-  const sourceLines = agentRgSymbolSourceLines(block.items, "    ");
+  const sourceLines = agentRgSymbolSourceLines(block.items, "    ", highlighter);
   const header = `  ${rangeLabel(block.range)} [${block.label}]`;
   if (block.items.length === 1 && sourceLines.length === 1) {
     return [`${header} ${sourceLines[0]!.trimStart()}`];
@@ -244,6 +253,7 @@ function agentRgSymbol(
 function agentRgSymbolSourceLines(
   items: readonly ZvecGrepContextItem[],
   indent: string,
+  highlighter: (value: string) => string,
 ): string[] {
   const byLine = new Map<number, AgentRgSourceLine>();
   const unnumbered: AgentRgSourceLine[] = [];
@@ -279,7 +289,7 @@ function agentRgSymbolSourceLines(
     )
     .map(
       (entry) =>
-        `${indent}${formatSourceLine(entry, plainText, undefined, entry.marker)}`,
+        `${indent}${formatSourceLine(entry, highlighter, undefined, entry.marker)}`,
     );
 }
 
@@ -312,12 +322,15 @@ function isRedundantDeclarationBlock(
   );
 }
 
-function agentRgFileSourceLines(item: ZvecGrepContextItem): string[] {
+function agentRgFileSourceLines(
+  item: ZvecGrepContextItem,
+  highlighter: (value: string) => string,
+): string[] {
   return sourceLineEntries(item).map(
     (entry) =>
       `  ${formatSourceLine(
         entry,
-        plainText,
+        highlighter,
         undefined,
         sourceLineMarker(item, entry),
       )}`,
