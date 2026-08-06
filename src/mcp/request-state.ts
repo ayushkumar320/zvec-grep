@@ -62,7 +62,7 @@ export class InMemoryRemoteEmbeddingRequestStateReplayGuard implements RemoteEmb
   private expire(now: number): void {
     const expiresBefore = now - REQUEST_STATE_TTL_SECONDS * 1_000;
     for (const [nonce, consumedAt] of this.consumed) {
-      if (consumedAt >= expiresBefore) break;
+      if (consumedAt >= expiresBefore) continue;
       this.consumed.delete(nonce);
     }
   }
@@ -117,6 +117,8 @@ export class PersistentRemoteEmbeddingRequestStateReplayGuard implements RemoteE
       await file.close();
     } catch (error) {
       if (isExistingFile(error)) return false;
+      // Force reload on next call if filesystem state is uncertain.
+      this.loaded = false;
       throw error;
     }
     this.consumed.set(state.nonce, Number(state.nonce.slice(0, 13)));
