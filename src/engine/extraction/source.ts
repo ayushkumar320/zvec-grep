@@ -1,4 +1,4 @@
-import { EngineError } from "../errors/index.js";
+import { EngineError } from "../errors.js";
 import type { FileInfo, ImageFormat } from "../types.js";
 
 export type SourceKind = "text" | "image";

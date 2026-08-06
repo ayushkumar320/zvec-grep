@@ -1,5 +1,5 @@
 import { basename, extname } from "node:path";
-import type { FileFormat, FileKind, ImageFormat } from "../types.js";
+import type { FileFormat, FileKind, ImageFormat } from "./types.js";
 
 const CODE_FORMATS: Record<string, string> = {
   ".c": "c",

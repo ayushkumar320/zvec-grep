@@ -15,10 +15,14 @@ import {
   shouldUseColor,
 } from "../../dist/cli/format/highlight.js";
 import { rangeLabel, rangeStartLine } from "../../dist/cli/format/range.js";
-import { detail, errorDetails } from "../../dist/engine/errors/details.js";
-import { EngineError, isEngineError } from "../../dist/engine/errors/index.js";
+import {
+  detail,
+  EngineError,
+  errorDetails,
+  isEngineError,
+} from "../../dist/engine/errors.js";
 import { makeEntityId } from "../../dist/engine/extraction/ids.js";
-import { detectFileType } from "../../dist/engine/files/file-type.js";
+import { detectFileType } from "../../dist/engine/file-type.js";
 import {
   getEmbeddingModelCatalogEntry,
   listEmbeddingModels,

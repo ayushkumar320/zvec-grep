@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
-import { detail, EngineError, errorDetails } from "../errors/index.js";
+import { detail, EngineError, errorDetails } from "../errors.js";
 
 export type FileLock = {
   readonly path: string;

@@ -7,7 +7,7 @@ import type {
   ZvecGrepContextContainer,
   ZvecGrepContextItem,
 } from "./types.js";
-import { detectFileType } from "../files/file-type.js";
+import { detectFileType } from "../file-type.js";
 import { normalizePath, toDisplayPath } from "../utils/path.js";
 import { sha256Text } from "../utils/hash.js";
 

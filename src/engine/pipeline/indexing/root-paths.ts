@@ -1,6 +1,6 @@
 import { realpathSync, statSync, type Stats } from "node:fs";
 import { dirname, relative } from "node:path";
-import { EngineError } from "../../errors/index.js";
+import { EngineError } from "../../errors.js";
 import type { RootPath } from "../../types.js";
 import { pathPatternMatches } from "../../utils/glob.js";
 import {

@@ -5,7 +5,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { ReadableStream as NodeReadableStream } from "node:stream/web";
 import { AutoTokenizer } from "@huggingface/transformers";
-import { EngineError } from "../../errors/index.js";
+import { EngineError } from "../../errors.js";
 import type { Content, TextContent } from "../../types.js";
 import { defaultHome } from "../../utils/path.js";
 import {

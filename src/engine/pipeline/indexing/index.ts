@@ -5,7 +5,7 @@ import {
   EngineError,
   errorDetails,
   isEngineError,
-} from "../../errors/index.js";
+} from "../../errors.js";
 import type { EmbeddingModel, EmbeddingResult } from "../../models/index.js";
 import type { CollectionStorage } from "../../storage/index.js";
 import type {

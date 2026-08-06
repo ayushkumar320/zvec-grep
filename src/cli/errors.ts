@@ -1,4 +1,4 @@
-import { isEngineError } from "../engine/errors/index.js";
+import { isEngineError } from "../engine/errors.js";
 import type { ColorMode } from "./types.js";
 
 export type ErrorPrintOptions = {

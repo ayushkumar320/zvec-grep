@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { EngineError } from "../errors/index.js";
+import { EngineError } from "../errors.js";
 import { workspaceHome } from "../service/root.js";
 
 export type DaemonLeaseRecord = {

@@ -17,7 +17,7 @@ import {
   printServerIndexInfo,
   printWorkspaceInfo,
 } from "../../dist/cli/format/status.js";
-import { EngineError } from "../../dist/engine/errors/index.js";
+import { EngineError } from "../../dist/engine/errors.js";
 
 function progressBarGlyphs() {
   return process.platform !== "win32" && process.env.TERM !== "linux"

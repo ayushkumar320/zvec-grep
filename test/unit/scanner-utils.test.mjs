@@ -10,7 +10,7 @@ import {
 import { hostname } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { detectFileType } from "../../dist/engine/files/file-type.js";
+import { detectFileType } from "../../dist/engine/file-type.js";
 import {
   fileBelongsToRootPath,
   matchesRootExcludePatterns,

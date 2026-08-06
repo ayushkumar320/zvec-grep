@@ -15,7 +15,7 @@ import {
 } from "@zvec/zvec";
 import { closeSync, existsSync, mkdirSync, openSync } from "node:fs";
 import { dirname, join, sep } from "node:path";
-import { EngineError } from "../errors/index.js";
+import { EngineError } from "../errors.js";
 import type {
   CodeEntityModifier,
   CodeSymbolType,

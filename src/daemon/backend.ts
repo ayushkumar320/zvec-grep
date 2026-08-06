@@ -3,7 +3,7 @@ import type {
   CreateZvecGrepOptions,
   ZvecGrepInfoResult,
 } from "../engine/service/types.js";
-import { isEngineError } from "../engine/errors/index.js";
+import { isEngineError } from "../engine/errors.js";
 import {
   readGlobalConfig,
   resolveEmbeddingRuntimeOptions,

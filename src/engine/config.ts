@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { EngineError } from "./errors/index.js";
+import { EngineError } from "./errors.js";
 import { readJsonFileSync, writeJsonFileSync } from "./utils/json.js";
 import { acquireReadWriteLock } from "./utils/lock.js";
 

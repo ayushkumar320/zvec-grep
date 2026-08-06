@@ -1,5 +1,5 @@
 import { globalConfigPath } from "../../config.js";
-import { EngineError, type EngineErrorCode } from "../../errors/index.js";
+import { EngineError, type EngineErrorCode } from "../../errors.js";
 import type { Content, ImageFormat, TextContent } from "../../types.js";
 import {
   BaseEmbeddingModel,

@@ -15,7 +15,7 @@ import {
   detail,
   EngineError,
   errorDetails,
-} from "../errors/index.js";
+} from "../errors.js";
 import {
   createEmbeddingModel,
   EmbeddingPurpose,

@@ -16,7 +16,7 @@ import {
   sep,
 } from "node:path";
 import type { FileInfo, RootPath } from "../../../types.js";
-import { detectFileType } from "../../../files/file-type.js";
+import { detectFileType } from "../../../file-type.js";
 import { sha256Text } from "../../../utils/hash.js";
 import {
   matchesFileSelection,

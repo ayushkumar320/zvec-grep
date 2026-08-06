@@ -8,7 +8,7 @@ import {
   unlinkSync,
 } from "node:fs";
 import { join } from "node:path";
-import { EngineError } from "../../errors/index.js";
+import { EngineError } from "../../errors.js";
 import type { Content, TextContent } from "../../types.js";
 import { defaultHome } from "../../utils/path.js";
 import {

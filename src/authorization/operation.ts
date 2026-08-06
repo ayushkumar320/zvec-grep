@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
-import { EngineError } from "../engine/errors/index.js";
+import { EngineError } from "../engine/errors.js";
 import { RemoteEmbeddingAuthorizationStore } from "./store.js";
 import {
   REMOTE_EMBEDDING_CAPABILITY,

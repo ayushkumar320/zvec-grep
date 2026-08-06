@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import type { EmbeddingRuntimeConfig } from "./config.js";
-import { EngineError } from "./errors/index.js";
+import { EngineError } from "./errors.js";
 import type { CollectionInfo } from "./types.js";
 import { readJsonFileSync, writeJsonFileSync } from "./utils/json.js";
 

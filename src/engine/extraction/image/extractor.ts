@@ -1,4 +1,4 @@
-import { EngineError } from "../../errors/index.js";
+import { EngineError } from "../../errors.js";
 import type { EntityFragment } from "../../types.js";
 import { makeEntityId } from "../ids.js";
 import { validateSourceFile, type Source } from "../source.js";

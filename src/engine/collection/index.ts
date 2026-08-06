@@ -4,7 +4,7 @@ import {
   detail,
   EngineError,
   errorDetails,
-} from "../errors/index.js";
+} from "../errors.js";
 import type { EmbeddingModel } from "../models/index.js";
 import {
   getCollectionIndexStatus,
