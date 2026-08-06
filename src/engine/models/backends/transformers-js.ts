@@ -5,11 +5,16 @@ import { defaultHome } from "../../utils/path.js";
 import {
   BaseEmbeddingModel,
   type CreateEmbeddingModelOptions,
+  type EmbeddingModelProgress,
   type EmbeddingModelInfo,
   type EmbeddingResult,
   type NormalizedEmbeddingOptions,
 } from "../embeddings.js";
 import type { TransformersJsEmbeddingCatalogEntry } from "../catalog.js";
+import {
+  createModelDownloadProgressReporter,
+  type ModelDownloadProgressReporter,
+} from "../download-progress.js";
 
 type TensorLike = {
   data: ArrayLike<number>;
@@ -66,11 +71,19 @@ type TransformersJsModule = {
       cache_dir: string;
       revision: string;
       dtype: "fp32" | "q8" | "q4";
+      progress_callback?: (progress: TransformersJsProgressInfo) => void;
       session_options?: {
         executionProviders: TransformersJsExecutionProvider[];
       };
     },
   ): Promise<FeatureExtractionPipeline>;
+};
+
+type TransformersJsProgressInfo = {
+  status: "initiate" | "download" | "progress" | "done" | "ready";
+  file?: string;
+  loaded?: number;
+  total?: number;
 };
 
 type TransformersJsLoader = () => Promise<TransformersJsModule>;
@@ -159,7 +172,7 @@ export class TransformersJsEmbeddingModel extends BaseEmbeddingModel {
     );
     let pipeline: FeatureExtractionPipeline;
     try {
-      pipeline = await this.ensurePipeline();
+      pipeline = await this.ensurePipeline(options.onProgress);
     } catch (cause) {
       throw new EngineError("Transformers.js embedding failed", {
         code: "ZVEC_GREP.ENGINE.MODELS.TRANSFORMERS_JS_EMBED_FAILED",
@@ -189,10 +202,10 @@ export class TransformersJsEmbeddingModel extends BaseEmbeddingModel {
       failure = cause;
     }
 
-    if (await this.fallbackToCpu(failure)) {
+    if (await this.fallbackToCpu(failure, options.onProgress)) {
       try {
         return await this.embedTexts(
-          await this.ensurePipeline(),
+          await this.ensurePipeline(options.onProgress),
           texts,
           truncatedInputIndexes,
         );
@@ -219,7 +232,9 @@ export class TransformersJsEmbeddingModel extends BaseEmbeddingModel {
     await pipeline?.dispose();
   }
 
-  private async ensurePipeline(): Promise<FeatureExtractionPipeline> {
+  private async ensurePipeline(
+    onProgress?: (progress: EmbeddingModelProgress) => void,
+  ): Promise<FeatureExtractionPipeline> {
     if (this.pipeline) {
       return this.pipeline;
     }
@@ -227,7 +242,7 @@ export class TransformersJsEmbeddingModel extends BaseEmbeddingModel {
       return await this.pipelineLoadPromise;
     }
 
-    this.pipelineLoadPromise = this.loadPipeline();
+    this.pipelineLoadPromise = this.loadPipeline(onProgress);
     try {
       this.pipeline = await this.pipelineLoadPromise;
       return this.pipeline;
@@ -236,7 +251,14 @@ export class TransformersJsEmbeddingModel extends BaseEmbeddingModel {
     }
   }
 
-  private async loadPipeline(): Promise<FeatureExtractionPipeline> {
+  private async loadPipeline(
+    onProgress?: (progress: EmbeddingModelProgress) => void,
+  ): Promise<FeatureExtractionPipeline> {
+    const downloadProgress = createModelDownloadProgressReporter(
+      this.entry.reference,
+      onProgress,
+    );
+    downloadProgress.start();
     const runtime = await this.dependencies.loadRuntime();
     let pipeline: FeatureExtractionPipeline;
     const executionProvider = this.usingCpuFallback
@@ -244,20 +266,26 @@ export class TransformersJsEmbeddingModel extends BaseEmbeddingModel {
       : this.executionProvider;
 
     try {
-      pipeline = await this.createPipeline(runtime, executionProvider);
+      pipeline = await this.createPipeline(
+        runtime,
+        executionProvider,
+        downloadProgress,
+      );
     } catch (cause) {
       if (!executionProvider || executionProvider === "cpu") {
         throw cause;
       }
 
-      process.stderr.write(
-        `zvec-grep warning: Transformers.js ${executionProvider} embedding initialization failed (${formatErrorMessage(cause)}), falling back to CPU.\n`,
-      );
+      const warning = `Transformers.js ${executionProvider} embedding initialization failed (${formatErrorMessage(cause)}), falling back to CPU.`;
+      if (!downloadProgress.warning(warning)) {
+        process.stderr.write(`zvec-grep warning: ${warning}\n`);
+      }
       this.usingCpuFallback = true;
-      pipeline = await this.createPipeline(runtime, "cpu");
+      pipeline = await this.createPipeline(runtime, "cpu", downloadProgress);
     }
 
     pipeline.tokenizer.model_max_length = this.entry.maxInputTokens;
+    downloadProgress.finish();
     return pipeline;
   }
 
@@ -278,7 +306,10 @@ export class TransformersJsEmbeddingModel extends BaseEmbeddingModel {
     };
   }
 
-  private async fallbackToCpu(cause: unknown): Promise<boolean> {
+  private async fallbackToCpu(
+    cause: unknown,
+    onProgress?: (progress: EmbeddingModelProgress) => void,
+  ): Promise<boolean> {
     if (
       this.usingCpuFallback ||
       !this.executionProvider ||
@@ -287,9 +318,16 @@ export class TransformersJsEmbeddingModel extends BaseEmbeddingModel {
       return false;
     }
 
-    process.stderr.write(
-      `zvec-grep warning: Transformers.js ${this.executionProvider} embedding inference failed (${formatErrorMessage(cause)}), falling back to CPU.\n`,
-    );
+    const warning = `Transformers.js ${this.executionProvider} embedding inference failed (${formatErrorMessage(cause)}), falling back to CPU.`;
+    if (onProgress) {
+      onProgress({
+        stage: "warning",
+        model: this.entry.reference,
+        message: warning,
+      });
+    } else {
+      process.stderr.write(`zvec-grep warning: ${warning}\n`);
+    }
     this.usingCpuFallback = true;
     const pipeline = this.pipeline;
     this.pipeline = null;
@@ -301,11 +339,33 @@ export class TransformersJsEmbeddingModel extends BaseEmbeddingModel {
   private async createPipeline(
     runtime: TransformersJsModule,
     executionProvider: TransformersJsExecutionProvider | null,
+    downloadProgress: ModelDownloadProgressReporter,
   ): Promise<FeatureExtractionPipeline> {
     return await runtime.pipeline("feature-extraction", this.entry.repo, {
       cache_dir: this.modelCacheDir,
       revision: this.entry.revision,
       dtype: this.entry.dtype,
+      progress_callback: (progress) => {
+        if (
+          progress.status === "initiate" &&
+          typeof progress.file === "string"
+        ) {
+          downloadProgress.register(progress.file);
+          return;
+        }
+        if (
+          progress.status !== "progress" ||
+          typeof progress.file !== "string" ||
+          typeof progress.loaded !== "number"
+        ) {
+          return;
+        }
+        downloadProgress.report({
+          artifact: progress.file,
+          downloadedBytes: progress.loaded,
+          totalBytes: progress.total,
+        });
+      },
       ...(executionProvider
         ? { session_options: { executionProviders: [executionProvider] } }
         : {}),

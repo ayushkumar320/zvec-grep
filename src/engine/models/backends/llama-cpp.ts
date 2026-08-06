@@ -7,18 +7,23 @@ import {
   statSync,
   unlinkSync,
 } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { EngineError } from "../../errors.js";
 import type { Content, TextContent } from "../../types.js";
 import { defaultHome } from "../../utils/path.js";
 import {
   BaseEmbeddingModel,
   type CreateEmbeddingModelOptions,
+  type EmbeddingModelProgress,
   type EmbeddingModelInfo,
   type EmbeddingResult,
   type NormalizedEmbeddingOptions,
 } from "../embeddings.js";
 import type { LlamaCppEmbeddingCatalogEntry } from "../catalog.js";
+import {
+  createModelDownloadProgressReporter,
+  type ModelDownloadProgressReporter,
+} from "../download-progress.js";
 
 type LlamaEmbedding = {
   vector: ArrayLike<number>;
@@ -58,7 +63,14 @@ type NodeLlamaCppModule = {
   getLlama(options: Record<string, unknown>): Promise<Llama>;
   resolveModelFile(
     model: string,
-    options: { directory: string; cli?: boolean },
+    options: {
+      directory: string;
+      cli?: boolean;
+      onProgress?: (status: {
+        totalSize: number;
+        downloadedSize: number;
+      }) => void;
+    },
   ): Promise<string>;
   LlamaLogLevel?: { error?: unknown };
 };
@@ -193,7 +205,7 @@ export class LlamaCppEmbeddingModel extends BaseEmbeddingModel {
     );
 
     try {
-      return await this.embedTexts(texts);
+      return await this.embedTexts(texts, options.onProgress);
     } catch (cause) {
       throw new EngineError("llama.cpp embedding failed", {
         code: "ZVEC_GREP.ENGINE.MODELS.LLAMA_CPP_EMBED_FAILED",
@@ -214,8 +226,14 @@ export class LlamaCppEmbeddingModel extends BaseEmbeddingModel {
     this.contextsCreatePromise = null;
   }
 
-  private async embedTexts(texts: readonly string[]): Promise<EmbeddingResult> {
-    const contexts = await this.ensureEmbeddingContexts(texts.length);
+  private async embedTexts(
+    texts: readonly string[],
+    onProgress?: (progress: EmbeddingModelProgress) => void,
+  ): Promise<EmbeddingResult> {
+    const contexts = await this.ensureEmbeddingContexts(
+      texts.length,
+      onProgress,
+    );
     const truncatedInputIndexes: number[] = [];
     const safeTexts = texts.map((text, index) => {
       const result = this.truncateToContextSize(text);
@@ -249,7 +267,9 @@ export class LlamaCppEmbeddingModel extends BaseEmbeddingModel {
     };
   }
 
-  private async ensureLlama(): Promise<Llama> {
+  private async ensureLlama(
+    downloadProgress?: ModelDownloadProgressReporter,
+  ): Promise<Llama> {
     if (this.llama) {
       return this.llama;
     }
@@ -258,7 +278,7 @@ export class LlamaCppEmbeddingModel extends BaseEmbeddingModel {
       return await this.llamaLoadPromise;
     }
 
-    this.llamaLoadPromise = this.loadLlamaWithFallback();
+    this.llamaLoadPromise = this.loadLlamaWithFallback(downloadProgress);
 
     try {
       return await this.llamaLoadPromise;
@@ -272,7 +292,9 @@ export class LlamaCppEmbeddingModel extends BaseEmbeddingModel {
     return await this.runtimeImport;
   }
 
-  private async loadLlamaWithFallback(): Promise<Llama> {
+  private async loadLlamaWithFallback(
+    downloadProgress?: ModelDownloadProgressReporter,
+  ): Promise<Llama> {
     const runtime = await this.loadRuntime();
     const requestedGpu = this.usingCpuFallback ? false : this.gpu;
     const load = (gpu: LlamaGpuSelection) =>
@@ -286,16 +308,17 @@ export class LlamaCppEmbeddingModel extends BaseEmbeddingModel {
       });
 
     if (requestedGpu === false) {
-      this.llama = await this.loadCpuCompatibleLlama(load);
+      this.llama = await this.loadCpuCompatibleLlama(load, downloadProgress);
       return this.llama;
     }
 
     if (this.dependencies.runtimeState.failedGpuInitModes.has(requestedGpu)) {
-      process.stderr.write(
-        `zvec-grep warning: skipping previously failed llama.cpp GPU init${requestedGpu === "auto" ? "" : ` for device=${requestedGpu}`}, using CPU.\n`,
+      reportLlamaWarning(
+        downloadProgress,
+        `skipping previously failed llama.cpp GPU init${requestedGpu === "auto" ? "" : ` for device=${requestedGpu}`}, using CPU.`,
       );
       this.usingCpuFallback = true;
-      this.llama = await this.loadCpuCompatibleLlama(load);
+      this.llama = await this.loadCpuCompatibleLlama(load, downloadProgress);
       return this.llama;
     }
 
@@ -303,11 +326,12 @@ export class LlamaCppEmbeddingModel extends BaseEmbeddingModel {
       this.llama = await load(requestedGpu);
     } catch (error) {
       this.dependencies.runtimeState.failedGpuInitModes.add(requestedGpu);
-      process.stderr.write(
-        `zvec-grep warning: llama.cpp GPU init failed (${formatErrorMessage(error)}), falling back to CPU.\n`,
+      reportLlamaWarning(
+        downloadProgress,
+        `llama.cpp GPU init failed (${formatErrorMessage(error)}), falling back to CPU.`,
       );
       this.usingCpuFallback = true;
-      this.llama = await this.loadCpuCompatibleLlama(load);
+      this.llama = await this.loadCpuCompatibleLlama(load, downloadProgress);
     }
 
     return this.llama;
@@ -315,21 +339,25 @@ export class LlamaCppEmbeddingModel extends BaseEmbeddingModel {
 
   private async loadCpuCompatibleLlama(
     load: (gpu: LlamaGpuSelection) => Promise<Llama>,
+    downloadProgress?: ModelDownloadProgressReporter,
   ): Promise<Llama> {
     try {
       return await load(false);
     } catch (error) {
       if (!this.dependencies.runtimeState.cpuCompatibleFallbackWarningShown) {
         this.dependencies.runtimeState.cpuCompatibleFallbackWarningShown = true;
-        process.stderr.write(
-          `zvec-grep warning: CPU-only llama.cpp backend unavailable (${formatErrorMessage(error)}); using packaged backend with GPU model offloading disabled.\n`,
+        reportLlamaWarning(
+          downloadProgress,
+          `CPU-only llama.cpp backend unavailable (${formatErrorMessage(error)}); using packaged backend with GPU model offloading disabled.`,
         );
       }
       return await load("auto");
     }
   }
 
-  private async ensureModel(): Promise<LlamaModel> {
+  private async ensureModel(
+    onProgress?: (progress: EmbeddingModelProgress) => void,
+  ): Promise<LlamaModel> {
     if (this.model) {
       return this.model;
     }
@@ -338,7 +366,7 @@ export class LlamaCppEmbeddingModel extends BaseEmbeddingModel {
       return await this.modelLoadPromise;
     }
 
-    this.modelLoadPromise = this.loadModelWithFallback();
+    this.modelLoadPromise = this.loadModelWithFallback(onProgress);
 
     try {
       return await this.modelLoadPromise;
@@ -347,26 +375,41 @@ export class LlamaCppEmbeddingModel extends BaseEmbeddingModel {
     }
   }
 
-  private async loadModelWithFallback(): Promise<LlamaModel> {
+  private async loadModelWithFallback(
+    onProgress?: (progress: EmbeddingModelProgress) => void,
+  ): Promise<LlamaModel> {
+    const downloadProgress = createModelDownloadProgressReporter(
+      this.entry.reference,
+      onProgress,
+      [basename(this.entry.uri)],
+    );
+    downloadProgress.start();
     try {
-      return await this.loadModel();
+      const model = await this.loadModel(downloadProgress);
+      downloadProgress.finish();
+      return model;
     } catch (error) {
       if (!this.canRetryGpuOperationOnCpu()) {
         throw error;
       }
 
-      process.stderr.write(
-        `zvec-grep warning: llama.cpp GPU model load failed (${formatErrorMessage(error)}), falling back to CPU.\n`,
-      );
+      const warning = `llama.cpp GPU model load failed (${formatErrorMessage(error)}), falling back to CPU.`;
+      if (!downloadProgress.warning(warning)) {
+        process.stderr.write(`zvec-grep warning: ${warning}\n`);
+      }
       this.usingCpuFallback = true;
       await this.disposeLoadedRuntime();
-      return await this.loadModel();
+      const model = await this.loadModel(downloadProgress);
+      downloadProgress.finish();
+      return model;
     }
   }
 
-  private async loadModel(): Promise<LlamaModel> {
-    const llama = await this.ensureLlama();
-    const modelPath = await this.resolveModelPath();
+  private async loadModel(
+    downloadProgress: ModelDownloadProgressReporter,
+  ): Promise<LlamaModel> {
+    const modelPath = await this.resolveModelPath(downloadProgress);
+    const llama = await this.ensureLlama(downloadProgress);
     const model = await llama.loadModel(this.modelLoadOptions(modelPath));
     this.model = model;
     return model;
@@ -384,6 +427,7 @@ export class LlamaCppEmbeddingModel extends BaseEmbeddingModel {
 
   private async ensureEmbeddingContexts(
     textCount: number,
+    onProgress?: (progress: EmbeddingModelProgress) => void,
   ): Promise<LlamaEmbeddingContext[]> {
     const targetParallelism = await this.resolveEffectiveParallelism(textCount);
     if (this.contexts.length >= targetParallelism) {
@@ -397,8 +441,10 @@ export class LlamaCppEmbeddingModel extends BaseEmbeddingModel {
       }
     }
 
-    this.contextsCreatePromise =
-      this.createEmbeddingContextsWithFallback(targetParallelism);
+    this.contextsCreatePromise = this.createEmbeddingContextsWithFallback(
+      targetParallelism,
+      onProgress,
+    );
 
     try {
       await this.contextsCreatePromise;
@@ -410,9 +456,10 @@ export class LlamaCppEmbeddingModel extends BaseEmbeddingModel {
 
   private async createEmbeddingContextsWithFallback(
     targetParallelism: number,
+    onProgress?: (progress: EmbeddingModelProgress) => void,
   ): Promise<LlamaEmbeddingContext[]> {
     try {
-      return await this.createEmbeddingContexts(targetParallelism);
+      return await this.createEmbeddingContexts(targetParallelism, onProgress);
     } catch (error) {
       if (!this.canRetryGpuOperationOnCpu()) {
         throw error;
@@ -423,14 +470,15 @@ export class LlamaCppEmbeddingModel extends BaseEmbeddingModel {
       );
       this.usingCpuFallback = true;
       await this.disposeLoadedRuntime();
-      return await this.createEmbeddingContexts(targetParallelism);
+      return await this.createEmbeddingContexts(targetParallelism, onProgress);
     }
   }
 
   private async createEmbeddingContexts(
     targetParallelism: number,
+    onProgress?: (progress: EmbeddingModelProgress) => void,
   ): Promise<LlamaEmbeddingContext[]> {
-    const model = await this.ensureModel();
+    const model = await this.ensureModel(onProgress);
     const threads = await this.resolveThreadsPerContext(targetParallelism);
     const initialContextCount = this.contexts.length;
 
@@ -485,13 +533,22 @@ export class LlamaCppEmbeddingModel extends BaseEmbeddingModel {
     this.llamaLoadPromise = null;
   }
 
-  private async resolveModelPath(): Promise<string> {
+  private async resolveModelPath(
+    downloadProgress: ModelDownloadProgressReporter,
+  ): Promise<string> {
     mkdirSync(this.modelCacheDir, { recursive: true });
 
     const runtime = await this.loadRuntime();
     const modelPath = await runtime.resolveModelFile(this.entry.uri, {
       directory: this.modelCacheDir,
       cli: false,
+      onProgress: ({ downloadedSize, totalSize }) => {
+        downloadProgress.report({
+          artifact: basename(this.entry.uri),
+          downloadedBytes: downloadedSize,
+          totalBytes: totalSize,
+        });
+      },
     });
     validateGgufFile(modelPath, this.entry.uri);
     return modelPath;
@@ -583,6 +640,15 @@ export class LlamaCppEmbeddingModel extends BaseEmbeddingModel {
 
 function formatErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function reportLlamaWarning(
+  downloadProgress: ModelDownloadProgressReporter | undefined,
+  message: string,
+): void {
+  if (!downloadProgress?.warning(message)) {
+    process.stderr.write(`zvec-grep warning: ${message}\n`);
+  }
 }
 
 function llamaCppLogger(_level: unknown, message: string): void {

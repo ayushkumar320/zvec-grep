@@ -466,6 +466,38 @@ test("index streams daemon progress through MCP", async (t) => {
     });
     options.onProgress({
       phase: "indexing",
+      filesIndexed: 0,
+      filesTotal: 5,
+      embedding: {
+        stage: "downloading",
+        model: "local/test-download",
+        downloadedBytes: 25,
+        totalBytes: 100,
+      },
+    });
+    options.onProgress({
+      phase: "indexing",
+      filesIndexed: 1,
+      filesTotal: 5,
+      detail: "must not replace model download progress",
+    });
+    options.onProgress({
+      phase: "indexing",
+      embedding: {
+        stage: "warning",
+        model: "local/test-download",
+        message: "GPU initialization failed, falling back to CPU.",
+      },
+    });
+    options.onProgress({
+      phase: "indexing",
+      embedding: {
+        stage: "ready",
+        model: "local/test-download",
+      },
+    });
+    options.onProgress({
+      phase: "indexing",
       filesIndexed: 2,
       filesTotal: 5,
       detail: "embedding src/example.ts",
@@ -505,10 +537,39 @@ test("index streams daemon progress through MCP", async (t) => {
   assert.equal(result.structuredContent.state, "succeeded");
   assert.deepEqual(progressLines, [
     "Scanning workspace...",
+    "Downloading local/test-download · 25% · 25 B/100 B",
+    "zvec-grep warning: GPU initialization failed, falling back to CPU.",
+    "Model ready: local/test-download",
     "Indexing files: 2/5 embedding src/example.ts",
     "Indexing complete",
   ]);
   assert.deepEqual(progressUpdates[1], {
+    phase: "indexing",
+    filesIndexed: 0,
+    filesTotal: 5,
+    embedding: {
+      stage: "downloading",
+      model: "local/test-download",
+      downloadedBytes: 25,
+      totalBytes: 100,
+    },
+  });
+  assert.deepEqual(progressUpdates[2], {
+    phase: "indexing",
+    embedding: {
+      stage: "warning",
+      model: "local/test-download",
+      message: "GPU initialization failed, falling back to CPU.",
+    },
+  });
+  assert.deepEqual(progressUpdates[3], {
+    phase: "indexing",
+    embedding: {
+      stage: "ready",
+      model: "local/test-download",
+    },
+  });
+  assert.deepEqual(progressUpdates[4], {
     phase: "indexing",
     filesIndexed: 2,
     filesTotal: 5,

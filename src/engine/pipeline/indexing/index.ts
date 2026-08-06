@@ -6,7 +6,11 @@ import {
   errorDetails,
   isEngineError,
 } from "../../errors.js";
-import type { EmbeddingModel, EmbeddingResult } from "../../models/index.js";
+import type {
+  EmbeddingModel,
+  EmbeddingModelProgress,
+  EmbeddingResult,
+} from "../../models/index.js";
 import type { WorkspaceIndexStorage } from "../../storage/index.js";
 import type {
   WorkspaceIndexStatus,
@@ -819,6 +823,13 @@ async function embedAndCommitBatch(
         ctx.embeddingModel,
         embeddingScheduler,
         ctx.signal,
+        (progress) =>
+          reportModelDownloadProgress(
+            stats,
+            progress,
+            onProgress,
+            embeddingScheduler,
+          ),
       ),
     );
     const truncatedInputIndexes = new Set(embedding.truncated);
@@ -890,6 +901,13 @@ async function embedAndCommitFile(
         ctx.embeddingModel,
         embeddingScheduler,
         ctx.signal,
+        (progress) =>
+          reportModelDownloadProgress(
+            stats,
+            progress,
+            onProgress,
+            embeddingScheduler,
+          ),
       ),
     );
     throwIfIndexCancelled(ctx);
@@ -1027,6 +1045,7 @@ async function embedFragments(
   model: EmbeddingModel,
   embeddingScheduler: EmbeddingScheduler,
   signal?: AbortSignal,
+  onModelProgress?: (progress: EmbeddingModelProgress) => void,
 ): Promise<EmbeddingResult> {
   const batches: { start: number; fragments: EntityFragment[] }[] = [];
 
@@ -1052,6 +1071,7 @@ async function embedFragments(
         batch.start,
         embeddingScheduler,
         signal,
+        onModelProgress,
       ),
     ),
   );
@@ -1088,6 +1108,7 @@ async function embedFragmentBatch(
   startIndex: number,
   embeddingScheduler: EmbeddingScheduler,
   signal?: AbortSignal,
+  onModelProgress?: (progress: EmbeddingModelProgress) => void,
 ): Promise<EmbeddingResult> {
   const contents = fragments.map(vectorContentForFragment);
 
@@ -1097,6 +1118,7 @@ async function embedFragmentBatch(
       model,
       embeddingScheduler,
       signal,
+      onModelProgress,
     );
   } catch (error) {
     if (fragments.length === 1 || isRetryableEmbeddingError(error)) {
@@ -1109,6 +1131,7 @@ async function embedFragmentBatch(
       startIndex,
       embeddingScheduler,
       signal,
+      onModelProgress,
     );
   }
 }
@@ -1119,6 +1142,7 @@ async function embedFragmentBatchOneByOne(
   startIndex: number,
   embeddingScheduler: EmbeddingScheduler,
   signal?: AbortSignal,
+  onModelProgress?: (progress: EmbeddingModelProgress) => void,
 ): Promise<EmbeddingResult> {
   const vectors: number[][] = [];
   const truncatedInputIndexes: number[] = [];
@@ -1130,6 +1154,7 @@ async function embedFragmentBatchOneByOne(
         model,
         embeddingScheduler,
         signal,
+        onModelProgress,
       );
       vectors.push(result.vectors[0]);
       if (result.truncated.length > 0) {
@@ -1208,6 +1233,7 @@ async function embedContentsWithRetry(
   model: EmbeddingModel,
   embeddingScheduler: EmbeddingScheduler,
   signal?: AbortSignal,
+  onModelProgress?: (progress: EmbeddingModelProgress) => void,
 ): Promise<EmbeddingResult> {
   let attempt = 0;
 
@@ -1222,6 +1248,7 @@ async function embedContentsWithRetry(
           model.embed(contents, {
             purpose: "document",
             signal,
+            onProgress: onModelProgress,
           }),
         signal,
         (error) => {
@@ -1256,6 +1283,18 @@ async function embedContentsWithRetry(
       attempt++;
     }
   }
+}
+
+function reportModelDownloadProgress(
+  stats: IndexStats,
+  progress: EmbeddingModelProgress,
+  onProgress: IndexProgressReporter,
+  embeddingScheduler: EmbeddingScheduler,
+): void {
+  onProgress(stats, `downloading ${progress.model}`, {
+    ...embeddingScheduler.snapshot(),
+    ...progress,
+  });
 }
 
 function createEmbeddingScheduler(

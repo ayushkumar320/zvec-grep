@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 import {
   createTemporaryDirectory,
@@ -9,6 +10,91 @@ import {
   runCli,
 } from "../helpers/fixtures.mjs";
 import { createFakeEmbeddingServer } from "../helpers/fake-embedding.mjs";
+
+test("direct and server indexes report aggregate local model download progress", async (t) => {
+  const temporaryDirectory = await createTemporaryDirectory(
+    t,
+    "zvec-grep-local-download-progress-",
+  );
+  const root = join(temporaryDirectory, "repo");
+  const home = join(temporaryDirectory, "home");
+  const directCache = join(temporaryDirectory, "direct-models");
+  const serverCache = join(temporaryDirectory, "server-models");
+  await mkdir(join(root, "src"), { recursive: true });
+  await writeFile(
+    join(root, "src", "example.ts"),
+    "export const LocalDownloadProgress = 1;\n",
+  );
+
+  const preload = pathToFileURL(
+    resolve("test/helpers/fake-model-download.mjs"),
+  ).href;
+  const port = await availablePort();
+  const baseEnv = {
+    HOME: home,
+    USERPROFILE: home,
+    NO_COLOR: "1",
+    NODE_OPTIONS: `--import=${preload}`,
+    ZVEC_GREP_HOME: home,
+    ZVEC_GREP_SERVER_URL: `http://127.0.0.1:${port}/mcp`,
+  };
+
+  await assert.rejects(
+    runCli(
+      [
+        "index",
+        "--mode",
+        "direct",
+        "--embedding",
+        "local/potion-base-8m",
+        "--model-cache",
+        directCache,
+        root,
+      ],
+      { cwd: root, env: baseEnv, timeout: 120_000 },
+    ),
+    (error) => {
+      assert.match(error.stderr, /Preparing local\/potion-base-8m/);
+      assert.match(error.stderr, /Downloading local\/potion-base-8m/);
+      assert.doesNotMatch(error.stderr, /model\.safetensors|tokenizer\.json/);
+      return true;
+    },
+  );
+
+  const serverEnv = {
+    ...baseEnv,
+    ZVEC_GREP_MODEL_CACHE: serverCache,
+  };
+  t.after(async () => {
+    await runCli(["server", "off", "--home", home], {
+      cwd: root,
+      env: serverEnv,
+    }).catch(() => undefined);
+  });
+  await runCli(
+    ["server", "on", "--listen", `127.0.0.1:${port}`, "--home", home],
+    { cwd: root, env: serverEnv },
+  );
+  await assert.rejects(
+    runCli(
+      [
+        "index",
+        "--mode",
+        "server",
+        "--embedding",
+        "local/potion-base-8m",
+        root,
+      ],
+      { cwd: root, env: serverEnv, timeout: 120_000 },
+    ),
+    (error) => {
+      assert.match(error.stderr, /Preparing local\/potion-base-8m/);
+      assert.match(error.stderr, /Downloading local\/potion-base-8m/);
+      assert.doesNotMatch(error.stderr, /model\.safetensors|tokenizer\.json/);
+      return true;
+    },
+  );
+});
 
 test("server-mode index reports Workspace progress", async (t) => {
   const temporaryDirectory = await createTemporaryDirectory(

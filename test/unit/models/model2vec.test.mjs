@@ -59,6 +59,7 @@ async function writeSafetensors(path, dtype, values, shape) {
 test("Model2Vec downloads pinned Safetensors assets and performs normalized static lookup", async (t) => {
   const root = await createTemporaryDirectory(t, "zvec-model2vec-");
   const calls = { downloads: [], tokenizerLoads: [], tableLoads: [] };
+  const downloadProgress = [];
   const tokenizer = Object.assign(
     async (text, options) => {
       calls.tokenizerCalls ??= [];
@@ -91,8 +92,9 @@ test("Model2Vec downloads pinned Safetensors assets and performs normalized stat
         rows: 3,
       };
     },
-    async download(url, destination) {
+    async download(url, destination, onProgress) {
       calls.downloads.push(url);
+      onProgress?.({ downloadedBytes: 4, totalBytes: 8 });
       await writeFile(
         destination,
         url.endsWith("tokenizer.json") ? "{}" : "weights",
@@ -114,7 +116,10 @@ test("Model2Vec downloads pinned Safetensors assets and performs normalized stat
       { kind: "text", text: "unknown-only" },
       { kind: "text", text: "third token" },
     ],
-    { purpose: "query" },
+    {
+      purpose: "query",
+      onProgress: (progress) => downloadProgress.push(progress),
+    },
   );
 
   assert.ok(Math.abs(vectors[0][0] - Math.SQRT1_2) < 1e-7);
@@ -134,6 +139,27 @@ test("Model2Vec downloads pinned Safetensors assets and performs normalized stat
   assert.equal(calls.downloads.length, 2);
   assert.ok(calls.downloads.some((url) => url.endsWith("model.safetensors")));
   assert.ok(calls.downloads.some((url) => url.endsWith("tokenizer.json")));
+  assert.deepEqual(downloadProgress, [
+    {
+      stage: "preparing",
+      model: "local/test-potion",
+    },
+    {
+      stage: "downloading",
+      model: "local/test-potion",
+      downloadedBytes: 4,
+    },
+    {
+      stage: "downloading",
+      model: "local/test-potion",
+      downloadedBytes: 8,
+      totalBytes: 16,
+    },
+    {
+      stage: "ready",
+      model: "local/test-potion",
+    },
+  ]);
   assert.equal(calls.tokenizerLoads[0].options.local_files_only, true);
   assert.match(calls.tokenizerLoads[0].source, /tokenizer$/);
   assert.deepEqual(calls.tableLoads[0], {
@@ -236,6 +262,69 @@ test("Model2Vec parses real F32 and F16 Safetensors embedding tables", async (t)
     );
     await model.dispose();
   }
+});
+
+test("Model2Vec excludes cached artifacts from overall download progress", async (t) => {
+  const root = await createTemporaryDirectory(t, "zvec-model2vec-partial-");
+  const tokenizerPath = join(
+    root,
+    "model2vec",
+    "test--potion",
+    "0123456789abcdef",
+    "tokenizer",
+    "tokenizer.json",
+  );
+  await mkdir(dirname(tokenizerPath), { recursive: true });
+  await writeFile(tokenizerPath, "{}");
+
+  const dependencies = {
+    async loadTokenizer() {
+      return Object.assign(
+        async () => ({ input_ids: { data: BigInt64Array.from([0n]) } }),
+        { unk_token_id: 99 },
+      );
+    },
+    async loadSafetensors() {
+      return {
+        data: Float32Array.from([1, 0, 0]),
+        dimension: 3,
+        dtype: "F32",
+        rows: 1,
+      };
+    },
+    async download(_url, destination, onProgress) {
+      onProgress?.({ downloadedBytes: 4, totalBytes: 8 });
+      await writeFile(destination, "weights");
+    },
+  };
+  const model = new Model2VecEmbeddingModel(
+    entry(),
+    { modelCacheDir: root },
+    dependencies,
+  );
+  const progress = [];
+
+  await model.embed([{ kind: "text", text: "cached tokenizer" }], {
+    onProgress: (event) => progress.push(event),
+  });
+
+  assert.deepEqual(progress, [
+    {
+      stage: "preparing",
+      model: "local/test-potion",
+    },
+    {
+      stage: "downloading",
+      model: "local/test-potion",
+      downloadedBytes: 4,
+      totalBytes: 8,
+    },
+    {
+      stage: "ready",
+      model: "local/test-potion",
+    },
+  ]);
+  await model.dispose();
 });
 
 test("Model2Vec reports and truncates inputs beyond the model token limit", async (t) => {

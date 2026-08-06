@@ -37,6 +37,7 @@ function createDependencies(modelPath, options = {}) {
     disposedContexts: 0,
     disposedModels: 0,
     disposedLlamas: 0,
+    lifecycle: [],
   };
   const model = {
     trainContextSize: options.trainContextSize ?? 6,
@@ -90,10 +91,16 @@ function createDependencies(modelPath, options = {}) {
   const runtime = {
     LlamaLogLevel: { error: "error" },
     resolveModelFile: async (_uri, resolveOptions) => {
+      calls.lifecycle.push("resolveModelFile");
       calls.resolveOptions = resolveOptions;
+      resolveOptions.onProgress?.({
+        downloadedSize: 25,
+        totalSize: 100,
+      });
       return modelPath;
     },
     getLlama: async (llamaOptions) => {
+      calls.lifecycle.push("getLlama");
       calls.llama.push(llamaOptions);
       if (options.failGpu && llamaOptions.gpu !== false) {
         throw new Error("GPU unavailable");
@@ -151,13 +158,17 @@ test("local embedding loads GGUF, formats and truncates text, parallelizes, cach
     },
     setup.dependencies,
   );
+  const downloadProgress = [];
   const result = await model.embed(
     [
       { kind: "text", text: "abcdefghijk" },
       { kind: "text", text: "second" },
       { kind: "text", text: "third" },
     ],
-    { purpose: "query" },
+    {
+      purpose: "query",
+      onProgress: (progress) => downloadProgress.push(progress),
+    },
   );
   const vectors = result.vectors;
   assert.equal(vectors.length, 3);
@@ -170,6 +181,26 @@ test("local embedding loads GGUF, formats and truncates text, parallelizes, cach
   );
   assert.equal(setup.calls.model[0].gpuLayers, 0);
   assert.equal(setup.calls.resolveOptions.cli, false);
+  assert.deepEqual(setup.calls.lifecycle.slice(0, 2), [
+    "resolveModelFile",
+    "getLlama",
+  ]);
+  assert.deepEqual(downloadProgress, [
+    {
+      stage: "preparing",
+      model: "local/test-model",
+    },
+    {
+      stage: "downloading",
+      model: "local/test-model",
+      downloadedBytes: 25,
+      totalBytes: 100,
+    },
+    {
+      stage: "ready",
+      model: "local/test-model",
+    },
+  ]);
 
   await model.embed([{ kind: "text", text: "cached" }]);
   assert.equal(setup.calls.model.length, 1);

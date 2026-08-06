@@ -210,6 +210,11 @@ export type IndexEmbeddingProgress = {
   concurrency?: number;
   maxConcurrency?: number;
   retryableFailures?: number;
+  stage?: "preparing" | "downloading" | "ready" | "warning";
+  model?: string;
+  downloadedBytes?: number;
+  totalBytes?: number;
+  message?: string;
 };
 
 export type IndexProgress = {

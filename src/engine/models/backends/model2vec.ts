@@ -1,7 +1,7 @@
 import { createWriteStream, existsSync, statSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import { Readable } from "node:stream";
+import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { ReadableStream as NodeReadableStream } from "node:stream/web";
 import { AutoTokenizer } from "@huggingface/transformers";
@@ -11,11 +11,16 @@ import { defaultHome } from "../../utils/path.js";
 import {
   BaseEmbeddingModel,
   type CreateEmbeddingModelOptions,
+  type EmbeddingModelProgress,
   type EmbeddingModelInfo,
   type EmbeddingResult,
   type NormalizedEmbeddingOptions,
 } from "../embeddings.js";
 import type { Model2VecEmbeddingCatalogEntry } from "../catalog.js";
+import {
+  createModelDownloadProgressReporter,
+  type ModelDownloadProgressReporter,
+} from "../download-progress.js";
 
 type TokenTensor = {
   data: ArrayLike<number | bigint>;
@@ -58,7 +63,14 @@ type Model2VecDependencies = {
     tensorName: string,
     dimension: number,
   ): Promise<StaticEmbeddingTable>;
-  download(url: string, destination: string): Promise<void>;
+  download(
+    url: string,
+    destination: string,
+    onProgress?: (progress: {
+      downloadedBytes: number;
+      totalBytes?: number;
+    }) => void,
+  ): Promise<void>;
 };
 
 const DEFAULT_MODEL_CACHE_DIR = join(defaultHome(), "models");
@@ -73,13 +85,32 @@ const defaultDependencies: Model2VecDependencies = {
   async loadSafetensors(path, tensorName, dimension) {
     return await readStaticEmbeddingTable(path, tensorName, dimension);
   },
-  async download(url, destination) {
+  async download(url, destination, onProgress) {
     const response = await fetch(url, { redirect: "follow" });
     if (!response.ok || !response.body) {
       throw new Error(`HTTP ${response.status} ${response.statusText}`);
     }
+    const contentLength = response.headers.get("content-length");
+    const parsedTotalBytes = contentLength
+      ? Number.parseInt(contentLength, 10)
+      : undefined;
+    const totalBytes =
+      parsedTotalBytes !== undefined &&
+      Number.isFinite(parsedTotalBytes) &&
+      parsedTotalBytes >= 0
+        ? parsedTotalBytes
+        : undefined;
+    let downloadedBytes = 0;
+    const progressStream = new Transform({
+      transform(chunk, _encoding, callback) {
+        downloadedBytes += Buffer.byteLength(chunk);
+        onProgress?.({ downloadedBytes, totalBytes });
+        callback(null, chunk);
+      },
+    });
     await pipeline(
       Readable.fromWeb(response.body as NodeReadableStream),
+      progressStream,
       createWriteStream(destination),
     );
   },
@@ -132,7 +163,7 @@ export class Model2VecEmbeddingModel extends BaseEmbeddingModel {
     options: NormalizedEmbeddingOptions,
   ): Promise<EmbeddingResult> {
     this.ensureNotDisposed();
-    await this.ensureLoaded();
+    await this.ensureLoaded(options.onProgress);
 
     try {
       const texts = (contents as readonly TextContent[]).map((content) =>
@@ -158,7 +189,9 @@ export class Model2VecEmbeddingModel extends BaseEmbeddingModel {
     this.loadPromise = null;
   }
 
-  private async ensureLoaded(): Promise<void> {
+  private async ensureLoaded(
+    onProgress?: (progress: EmbeddingModelProgress) => void,
+  ): Promise<void> {
     if (this.tokenizer && this.staticTable) {
       return;
     }
@@ -166,7 +199,7 @@ export class Model2VecEmbeddingModel extends BaseEmbeddingModel {
       return await this.loadPromise;
     }
 
-    this.loadPromise = this.loadModel();
+    this.loadPromise = this.loadModel(onProgress);
     try {
       await this.loadPromise;
     } finally {
@@ -174,9 +207,19 @@ export class Model2VecEmbeddingModel extends BaseEmbeddingModel {
     }
   }
 
-  private async loadModel(): Promise<void> {
-    const modelPath = await this.resolveModelPath();
-    const tokenizerSource = await this.resolveTokenizerSource();
+  private async loadModel(
+    onProgress?: (progress: EmbeddingModelProgress) => void,
+  ): Promise<void> {
+    const downloadProgress = createModelDownloadProgressReporter(
+      this.entry.reference,
+      onProgress,
+      [basename(this.entry.modelFile), basename(this.entry.tokenizerFile)],
+    );
+    downloadProgress.start();
+    const [modelPath, tokenizerSource] = await Promise.all([
+      this.resolveModelPath(downloadProgress),
+      this.resolveTokenizerSource(downloadProgress),
+    ]);
     const tokenizerPromise = this.dependencies.loadTokenizer(tokenizerSource, {
       cache_dir: this.modelCacheDir,
       revision: this.entry.revision,
@@ -195,9 +238,12 @@ export class Model2VecEmbeddingModel extends BaseEmbeddingModel {
     this.ensureNotDisposed();
     this.tokenizer = tokenizer;
     this.staticTable = staticTable;
+    downloadProgress.finish();
   }
 
-  private async resolveModelPath(): Promise<string> {
+  private async resolveModelPath(
+    downloadProgress: ModelDownloadProgressReporter,
+  ): Promise<string> {
     const modelPath = join(
       this.modelCacheDir,
       "model2vec",
@@ -205,10 +251,16 @@ export class Model2VecEmbeddingModel extends BaseEmbeddingModel {
       this.entry.revision,
       basename(this.entry.modelFile),
     );
-    return await this.resolveCachedFile(this.entry.modelFile, modelPath);
+    return await this.resolveCachedFile(
+      this.entry.modelFile,
+      modelPath,
+      downloadProgress,
+    );
   }
 
-  private async resolveTokenizerSource(): Promise<string> {
+  private async resolveTokenizerSource(
+    downloadProgress: ModelDownloadProgressReporter,
+  ): Promise<string> {
     const tokenizerDirectory = join(
       this.modelCacheDir,
       "model2vec",
@@ -219,6 +271,7 @@ export class Model2VecEmbeddingModel extends BaseEmbeddingModel {
     await this.resolveCachedFile(
       this.entry.tokenizerFile,
       join(tokenizerDirectory, "tokenizer.json"),
+      downloadProgress,
     );
     const configPath = join(tokenizerDirectory, "tokenizer_config.json");
     if (!isUsableModelFile(configPath)) {
@@ -233,8 +286,10 @@ export class Model2VecEmbeddingModel extends BaseEmbeddingModel {
   private async resolveCachedFile(
     remoteFile: string,
     localPath: string,
+    downloadProgress: ModelDownloadProgressReporter,
   ): Promise<string> {
     if (isUsableModelFile(localPath)) {
+      downloadProgress.skip(basename(remoteFile));
       return localPath;
     }
 
@@ -242,7 +297,12 @@ export class Model2VecEmbeddingModel extends BaseEmbeddingModel {
     const partialPath = `${localPath}.part-${process.pid}-${Date.now()}`;
     const url = `https://huggingface.co/${this.entry.repo}/resolve/${this.entry.revision}/${remoteFile}`;
     try {
-      await this.dependencies.download(url, partialPath);
+      await this.dependencies.download(url, partialPath, (progress) => {
+        downloadProgress.report({
+          artifact: basename(remoteFile),
+          ...progress,
+        });
+      });
       if (!isUsableModelFile(partialPath)) {
         throw new Error("Downloaded model file is empty");
       }

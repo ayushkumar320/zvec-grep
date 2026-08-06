@@ -21,6 +21,92 @@ class SelectivelyFailingEmbeddingModel extends FakeEmbeddingModel {
   }
 }
 
+class DownloadProgressEmbeddingModel extends FakeEmbeddingModel {
+  started = false;
+  finishDownload;
+
+  constructor() {
+    super();
+    this.info = {
+      ...this.info,
+      limits: { maxBatchSize: 1 },
+    };
+  }
+
+  async doEmbed(contents, options) {
+    if (!this.started) {
+      this.started = true;
+      options.onProgress?.({
+        stage: "preparing",
+        model: "local/test-download",
+      });
+      options.onProgress?.({
+        stage: "downloading",
+        model: "local/test-download",
+        downloadedBytes: 25,
+        totalBytes: 100,
+      });
+      await new Promise((resolve) => {
+        this.finishDownload = resolve;
+      });
+      options.onProgress?.({
+        stage: "ready",
+        model: "local/test-download",
+      });
+    } else {
+      this.finishDownload?.();
+    }
+    return super.doEmbed(contents, options);
+  }
+}
+
+test("service exposes embedding model download progress while indexing", async (t) => {
+  const temporaryDirectory = await createTemporaryDirectory(
+    t,
+    "zvec-grep-download-progress-",
+  );
+  const root = join(temporaryDirectory, "repo");
+  await mkdir(root, { recursive: true });
+  await writeFile(join(root, "example.ts"), "export const Example = 1;\n");
+  await writeFile(join(root, "second.ts"), "export const Second = 2;\n");
+
+  const service = await createZvecGrep({
+    root,
+    embeddingModel: new DownloadProgressEmbeddingModel(),
+  });
+  t.after(() => service.close());
+
+  const progressEvents = [];
+  await service.index({
+    embeddingConcurrency: 2,
+    onProgress: (progress) => progressEvents.push(progress),
+  });
+
+  assert.ok(
+    progressEvents.some(
+      (progress) =>
+        progress.phase === "indexing" &&
+        progress.embedding?.stage === "downloading" &&
+        progress.embedding.model === "local/test-download" &&
+        progress.embedding.downloadedBytes === 25 &&
+        progress.embedding.totalBytes === 100,
+    ),
+  );
+  const preparingIndex = progressEvents.findIndex(
+    (progress) => progress.embedding?.stage === "preparing",
+  );
+  const readyIndex = progressEvents.findIndex(
+    (progress) => progress.embedding?.stage === "ready",
+  );
+  assert.ok(preparingIndex >= 0);
+  assert.ok(readyIndex > preparingIndex);
+  assert.ok(
+    progressEvents
+      .slice(preparingIndex, readyIndex + 1)
+      .some((progress) => progress.embedding?.stage === undefined),
+  );
+});
+
 test("service indexes, searches, refreshes, and drops a workspace index", async (t) => {
   const temporaryDirectory = await createTemporaryDirectory(
     t,

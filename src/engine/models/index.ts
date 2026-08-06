@@ -2,6 +2,7 @@ export {
   EmbeddingPurpose,
   type CreateEmbeddingModelOptions,
   type EmbeddingModel,
+  type EmbeddingModelProgress,
   type EmbeddingModelInfo,
   type EmbeddingOptions,
   type EmbeddingResult,

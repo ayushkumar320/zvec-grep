@@ -19,7 +19,25 @@ export type EmbeddingPurpose =
 export type EmbeddingOptions = {
   purpose?: EmbeddingPurpose;
   signal?: AbortSignal;
+  onProgress?: (progress: EmbeddingModelProgress) => void;
 };
+
+export type EmbeddingModelProgress =
+  | {
+      stage: "preparing" | "ready";
+      model: string;
+    }
+  | {
+      stage: "downloading";
+      model: string;
+      downloadedBytes?: number;
+      totalBytes?: number;
+    }
+  | {
+      stage: "warning";
+      model: string;
+      message: string;
+    };
 
 export type EmbeddingResult = {
   vectors: number[][];
@@ -55,6 +73,7 @@ export interface EmbeddingModel {
 export type NormalizedEmbeddingOptions = {
   purpose: EmbeddingPurpose;
   signal?: AbortSignal;
+  onProgress?: (progress: EmbeddingModelProgress) => void;
 };
 
 export abstract class BaseEmbeddingModel implements EmbeddingModel {
@@ -68,6 +87,7 @@ export abstract class BaseEmbeddingModel implements EmbeddingModel {
     const result = await this.doEmbed(contents, {
       purpose: options.purpose ?? "document",
       signal: options.signal,
+      onProgress: options.onProgress,
     });
     this.validateResult(contents, result);
     return result;

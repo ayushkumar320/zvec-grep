@@ -1235,6 +1235,46 @@ test("progress reporter covers TTY and non-TTY phases, counters, truncation, and
     nonTty.report({ phase: "indexing" });
     nonTty.report({
       phase: "indexing",
+      embedding: {
+        stage: "preparing",
+        model: "local/test-download",
+      },
+    });
+    nonTty.report({
+      phase: "indexing",
+      filesIndexed: 0,
+      filesTotal: 5,
+      embedding: {
+        stage: "downloading",
+        model: "local/test-download",
+        downloadedBytes: 25,
+        totalBytes: 100,
+      },
+    });
+    nonTty.report({
+      phase: "indexing",
+      filesIndexed: 0,
+      filesTotal: 5,
+      detail: "queued indexing progress",
+    });
+    nonTty.report({
+      phase: "indexing",
+      embedding: {
+        stage: "warning",
+        model: "local/test-download",
+        message:
+          "GPU initialization failed,\n\x1b[31mforged warning\rfalling back to CPU.",
+      },
+    });
+    nonTty.report({
+      phase: "indexing",
+      embedding: {
+        stage: "ready",
+        model: "local/test-download",
+      },
+    });
+    nonTty.report({
+      phase: "indexing",
       filesIndexed: 2,
       filesTotal: 5,
       filesFailed: 1,
@@ -1260,6 +1300,46 @@ test("progress reporter covers TTY and non-TTY phases, counters, truncation, and
       value: 100,
     });
     const tty = createIndexProgressReporter({ color: "always" });
+    tty.report({
+      phase: "indexing",
+      embedding: {
+        stage: "preparing",
+        model: "local/test-download",
+      },
+    });
+    tty.report({
+      phase: "indexing",
+      filesIndexed: 0,
+      filesTotal: 10,
+      embedding: {
+        stage: "downloading",
+        model: "local/test-download",
+        downloadedBytes: 25,
+        totalBytes: 100,
+      },
+    });
+    tty.report({
+      phase: "indexing",
+      filesIndexed: 0,
+      filesTotal: 10,
+      detail: "queued indexing progress",
+    });
+    tty.report({
+      phase: "indexing",
+      embedding: {
+        stage: "warning",
+        model: "local/test-download",
+        message:
+          "GPU initialization failed,\n\x1b[31mforged warning\rfalling back to CPU.",
+      },
+    });
+    tty.report({
+      phase: "indexing",
+      embedding: {
+        stage: "ready",
+        model: "local/test-download",
+      },
+    });
     tty.report({
       phase: "indexing",
       filesIndexed: 1,
@@ -1291,6 +1371,26 @@ test("progress reporter covers TTY and non-TTY phases, counters, truncation, and
   const text = writes.join("");
   const ttyText = writes.slice(ttyStart).join("");
   assert.match(text, /Scanning workspace/);
+  assert.match(text, /Preparing local\/test-download/);
+  assert.match(text, /Downloading local\/test-download · 25% · 25 B\/100 B/);
+  assert.match(ttyText, /Downloading local\/test-download · 25% · 25 B\/100 B/);
+  assert.match(
+    text,
+    /zvec-grep warning: GPU initialization failed, forged warning falling back to CPU\.\n/,
+  );
+  assert.doesNotMatch(text, /\x1b\[31mforged warning/);
+  assert.ok(
+    text.indexOf("Downloading local/test-download") <
+      text.indexOf("zvec-grep warning: GPU initialization failed") &&
+      text.indexOf("zvec-grep warning: GPU initialization failed") <
+        text.indexOf("queued indexing progress"),
+  );
+  assert.ok(
+    ttyText.indexOf("Downloading local/test-download") <
+      ttyText.indexOf("zvec-grep warning: GPU initialization failed") &&
+      ttyText.indexOf("zvec-grep warning: GPU initialization failed") <
+        ttyText.indexOf("0%  0/10"),
+  );
   assert.match(text, /failed=1/);
   assert.match(text, /concurrency=3 retries=2/);
   assert.match(text, /Indexing complete/);

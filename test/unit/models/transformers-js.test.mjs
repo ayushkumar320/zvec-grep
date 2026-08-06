@@ -63,6 +63,7 @@ function createTokenizer(tokenCount = () => 1) {
 test("Transformers.js adapter fixes artifact recipe and formats query/document inputs", async () => {
   const loads = [];
   const calls = [];
+  const downloadProgress = [];
   let disposals = 0;
   const extractor = Object.assign(
     async (texts, options) => {
@@ -82,12 +83,46 @@ test("Transformers.js adapter fixes artifact recipe and formats query/document i
     },
   );
   const dependencies = {
-    loadRuntime: async () => ({
-      async pipeline(task, repo, options) {
-        loads.push({ task, repo, options });
-        return extractor;
-      },
-    }),
+    loadRuntime: async () => {
+      assert.deepEqual(downloadProgress, [
+        {
+          stage: "preparing",
+          model: "local/test-transformer",
+        },
+      ]);
+      return {
+        async pipeline(task, repo, options) {
+          loads.push({ task, repo, options });
+          options.progress_callback?.({
+            status: "initiate",
+            name: repo,
+            file: "model_quantized.onnx",
+          });
+          options.progress_callback?.({
+            status: "initiate",
+            name: repo,
+            file: "tokenizer.json",
+          });
+          options.progress_callback?.({
+            status: "progress",
+            name: repo,
+            file: "model_quantized.onnx",
+            progress: 25,
+            loaded: 25,
+            total: 100,
+          });
+          options.progress_callback?.({
+            status: "progress",
+            name: repo,
+            file: "tokenizer.json",
+            progress: 50,
+            loaded: 10,
+            total: 20,
+          });
+          return extractor;
+        },
+      };
+    },
   };
 
   const model = new TransformersJsEmbeddingModel(
@@ -104,7 +139,10 @@ test("Transformers.js adapter fixes artifact recipe and formats query/document i
         { kind: "text", text: "find auth" },
         { kind: "text", text: "find parser" },
       ],
-      { purpose: "query" },
+      {
+        purpose: "query",
+        onProgress: (progress) => downloadProgress.push(progress),
+      },
     ),
     {
       vectors: [
@@ -116,15 +154,47 @@ test("Transformers.js adapter fixes artifact recipe and formats query/document i
   );
   await model.embed([{ kind: "text", text: "implementation" }]);
 
-  assert.deepEqual(loads, [
-    {
-      task: "feature-extraction",
-      repo: "test/model-ONNX",
-      options: {
-        cache_dir: "/tmp/model-cache",
-        revision: "0123456789abcdef",
-        dtype: "q8",
+  assert.equal(typeof loads[0].options.progress_callback, "function");
+  const pipelineOptions = { ...loads[0].options };
+  delete pipelineOptions.progress_callback;
+  assert.deepEqual(
+    [
+      {
+        ...loads[0],
+        options: pipelineOptions,
       },
+    ],
+    [
+      {
+        task: "feature-extraction",
+        repo: "test/model-ONNX",
+        options: {
+          cache_dir: "/tmp/model-cache",
+          revision: "0123456789abcdef",
+          dtype: "q8",
+        },
+      },
+    ],
+  );
+  assert.deepEqual(downloadProgress, [
+    {
+      stage: "preparing",
+      model: "local/test-transformer",
+    },
+    {
+      stage: "downloading",
+      model: "local/test-transformer",
+      downloadedBytes: 25,
+    },
+    {
+      stage: "downloading",
+      model: "local/test-transformer",
+      downloadedBytes: 35,
+      totalBytes: 120,
+    },
+    {
+      stage: "ready",
+      model: "local/test-transformer",
     },
   ]);
   assert.equal(extractor.tokenizer.model_max_length, 512);

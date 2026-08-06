@@ -60,6 +60,7 @@ export type {
 export type {
   CreateEmbeddingModelOptions,
   EmbeddingModel,
+  EmbeddingModelProgress,
   EmbeddingModelInfo,
   EmbeddingOptions,
   EmbeddingResult,

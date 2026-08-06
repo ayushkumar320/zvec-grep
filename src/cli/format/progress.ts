@@ -1,5 +1,8 @@
 import type { IndexProgress } from "../../index.js";
-import { formatIndexProgressLine } from "../../index-progress.js";
+import {
+  formatIndexProgressLine,
+  formatModelDownloadProgress,
+} from "../../index-progress.js";
 import type { ColorMode } from "../types.js";
 
 export type IndexProgressReporter = {
@@ -49,6 +52,9 @@ export function createIndexProgressReporter(
   let ttyLineWritten = false;
   let ttyCursorHidden = false;
   let lastIndexingProgress: IndexProgress | undefined;
+  let modelPreparationActive = false;
+  let lastModelStage: "preparing" | "downloading" | undefined;
+  let currentTtyLine = "";
   let currentNonTtyLine = "";
   let lastNonTtyWriteTime = 0;
   let heartbeat: NodeJS.Timeout | null = null;
@@ -60,6 +66,7 @@ export function createIndexProgressReporter(
         ttyCursorHidden = true;
       }
       writeTtyProgressLine(line);
+      currentTtyLine = line;
       ttyLineWritten = true;
       return;
     }
@@ -97,22 +104,83 @@ export function createIndexProgressReporter(
     heartbeat.unref?.();
   };
 
+  const writePersistentLine = (line: string): void => {
+    if (!process.stderr.isTTY) {
+      writeNonTtyProgressLine(line);
+      lastNonTtyWriteTime = Date.now();
+      return;
+    }
+
+    if (!ttyCursorHidden) {
+      process.stderr.write(ANSI_HIDE_CURSOR);
+      ttyCursorHidden = true;
+    }
+    process.stderr.write(`${ANSI_CLEAR_LINE}${line}\n`);
+    ttyLineWritten = true;
+    if (currentTtyLine) {
+      writeTtyProgressLine(currentTtyLine);
+    }
+  };
+
   return {
     report(progress) {
-      if (process.stderr.isTTY) {
-        if (progress.phase === "indexing") {
-          lastIndexingProgress = progress;
+      const modelStage = progress.embedding?.stage;
+      if (modelStage === "warning") {
+        const line = formatModelDownloadProgress(progress);
+        if (line) {
+          writePersistentLine(line);
         }
-        const line = formatTtyProgressLine(
-          progress,
-          lastIndexingProgress,
-          color,
-        );
-        if (line) writeLine(line);
         return;
       }
 
-      const line = formatIndexProgressLine(progress);
+      if (modelStage === "preparing" || modelStage === "downloading") {
+        const enteringModelStage = lastModelStage !== modelStage;
+        modelPreparationActive = true;
+        lastModelStage = modelStage;
+        const line = process.stderr.isTTY
+          ? formatTtyProgressLine(progress, lastIndexingProgress, color)
+          : formatIndexProgressLine(progress);
+        if (line) {
+          writeLine(line, enteringModelStage);
+        }
+        return;
+      }
+
+      if (progress.phase === "indexing" && modelStage === undefined) {
+        lastIndexingProgress = progress;
+        if (modelPreparationActive) {
+          return;
+        }
+      }
+
+      if (modelStage === "ready") {
+        modelPreparationActive = false;
+        lastModelStage = undefined;
+        if (lastIndexingProgress) {
+          const line = process.stderr.isTTY
+            ? formatTtyProgressLine(
+                lastIndexingProgress,
+                lastIndexingProgress,
+                color,
+              )
+            : formatIndexProgressLine(lastIndexingProgress);
+          if (line) {
+            writeLine(line);
+          }
+        } else {
+          currentNonTtyLine = "";
+          currentTtyLine = "";
+        }
+        return;
+      }
+
+      if (progress.phase === "done") {
+        modelPreparationActive = false;
+        lastModelStage = undefined;
+      }
+      const line = process.stderr.isTTY
+        ? formatTtyProgressLine(progress, lastIndexingProgress, color)
+        : formatIndexProgressLine(progress);
       if (line) writeLine(line, progress.phase === "done");
     },
     reportLine(line, force = false) {
@@ -161,6 +229,15 @@ function formatTtyProgressLine(
       ? `  ${formatCount(progress.filesTotal)} files`
       : "";
     return `${dim(glyphs.rail, color)}  ${green(glyphs.spinner[0]!, color)} Scanning workspace${count}`;
+  }
+
+  const modelDownload = formatModelDownloadProgress(progress);
+  if (modelDownload) {
+    const downloadedBytes = progress.embedding?.downloadedBytes ?? 0;
+    const glyph =
+      glyphs.spinner[downloadedBytes % glyphs.spinner.length] ??
+      glyphs.spinner[0]!;
+    return `${dim(glyphs.rail, color)}  ${green(glyph, color)} ${modelDownload}`;
   }
 
   const effectiveProgress =

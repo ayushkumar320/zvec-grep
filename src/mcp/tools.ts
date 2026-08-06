@@ -579,8 +579,21 @@ function createMcpIndexProgressReporter(extra: ServerContext): {
   const progressToken = extra.mcpReq._meta?.progressToken;
   let progressValue = Date.now();
   let pending = Promise.resolve();
+  let modelPreparationActive = false;
   return {
     report(progress) {
+      const modelStage = progress.embedding?.stage;
+      if (modelStage === "preparing" || modelStage === "downloading") {
+        modelPreparationActive = true;
+      } else if (modelStage === "ready" || progress.phase === "done") {
+        modelPreparationActive = false;
+      } else if (
+        modelPreparationActive &&
+        modelStage === undefined &&
+        progress.phase === "indexing"
+      ) {
+        return;
+      }
       const message = indexProgressMessage(progress);
       if (
         progressToken === undefined ||
