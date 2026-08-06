@@ -1,12 +1,35 @@
 # Benchmarks
 
-Each benchmark is a self-contained project with its own protocol, run
-instructions, and generated-output boundary.
+Each benchmark is maintained as a self-contained project in a dedicated
+subdirectory. Its README describes the methodology, dependencies, runner, setup,
+execution, and generated artifacts.
 
-- [`coir-zg/`](coir-zg/README.md): information-retrieval evaluation on CoIR.
+## Benchmark Suites
+
 - [`browse-comp-plus/`](browse-comp-plus/README.md): knowledge-base retrieval
-  and answer-quality evaluation on BrowseComp-Plus.
-- [`coding/`](coding/README.md): SWE-bench Verified and Terminal-Bench paired
-  agent evaluations.
+  and end-to-end answer evaluation on BrowseComp-Plus.
+- [`coir-zg/`](coir-zg/README.md): information-retrieval evaluation on CoIR.
+- [`coding/`](coding/README.md): paired agent evaluations on SWE-bench Verified
+  and Terminal-Bench 2.1.
 
-See each project README for setup and run instructions.
+## What We Measure
+
+Our agent benchmarks use paired experiments. The baseline and treatment use the
+same task, dataset, model, agent, environment, and limits.
+
+- **Baseline:** uses the agent's default tools and instructions.
+- **Treatment:** additionally includes **zvec-grep** and its standard usage
+  instructions (this integration is the only intended difference between the two
+  conditions).
+
+We record, where applicable:
+
+- result quality;
+- token usage;
+- cost;
+- wall-clock time;
+- tool-call counts.
+
+> **Note:** Index construction time and resources are reported separately from
+> agent or query execution so one-time setup cost is not confused with
+> steady-state use.
