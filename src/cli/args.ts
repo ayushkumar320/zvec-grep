@@ -567,7 +567,7 @@ function parseCommand(args: readonly string[]): {
       throw new Error(`${first} does not accept arguments`);
     }
     if (first === "help" && rest.length > 1) {
-      throw new Error("zg help accepts at most one command name");
+      throw new Error("zg help accepts at most one command or topic");
     }
     return {
       command: "help",

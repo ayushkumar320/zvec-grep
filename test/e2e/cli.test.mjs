@@ -289,12 +289,36 @@ test("CLI completes index, search, explicit refresh, status, and rg workflows", 
 test("CLI exposes stable help, version, and failure behavior", async () => {
   const help = await runCli(["help"]);
   assert.match(help.stdout, /Usage:/);
+  assert.match(help.stdout, /zg help environment/);
+  assert.match(help.stdout, /ZVEC_GREP_MODE/);
   const indexHelp = await runCli(["index", "-h"]);
   assert.match(indexHelp.stdout, /qwen\/text-embedding-v4/);
   assert.doesNotMatch(indexHelp.stdout, /qwen3\.7-text-embedding/);
+  assert.match(indexHelp.stdout, /ZVEC_GREP_EMBEDDING/);
   const configHelp = await runCli(["config", "--help"]);
   assert.match(configHelp.stdout, /Default API key for the provider/);
   assert.match(configHelp.stdout, /Existing indexes continue to use/);
+  const authHelp = await runCli(["auth", "--help"]);
+  assert.match(
+    authHelp.stdout,
+    /selects the Remote Embedding model to authorize/,
+  );
+  assert.match(authHelp.stdout, /existing Workspace index model/);
+  const environmentHelp = await runCli(["help", "environment"], {
+    env: {
+      ...process.env,
+      ZVEC_GREP_API_KEY: "environment-help-secret",
+      ZVEC_GREP_SERVER_TOKEN: "server-help-secret".repeat(3),
+    },
+  });
+  assert.match(environmentHelp.stdout, /ZVEC_GREP_AUTHORIZATION_KEY_FILE/);
+  assert.match(environmentHelp.stdout, /DASHSCOPE_API_KEY/);
+  assert.match(environmentHelp.stdout, /CLI > Workspace snapshot/);
+  assert.match(environmentHelp.stdout, /inherited when it started/);
+  assert.doesNotMatch(environmentHelp.stdout, /environment-help-secret/);
+  assert.doesNotMatch(environmentHelp.stdout, /server-help-secret/);
+  const environmentAliasHelp = await runCli(["help", "env"]);
+  assert.equal(environmentAliasHelp.stdout, environmentHelp.stdout);
   const version = await runCli(["version"]);
   assert.match(version.stdout.trim(), /^\d+\.\d+\.\d+/);
   const verboseVersion = await runCli(["version", "-v"]);

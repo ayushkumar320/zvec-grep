@@ -295,6 +295,8 @@ test("CLI parser covers utility commands, provider controls, routes, and equals 
   assert.throws(() => parseArgs(["serve", "--mcp"]), /removed/i);
   assert.equal(parseArgs(["-h"]).command, "help");
   assert.equal(parseArgs(["help", "query"]).helpTopic, "query");
+  assert.equal(parseArgs(["help", "environment"]).helpTopic, "environment");
+  assert.equal(parseArgs(["help", "env"]).helpTopic, "env");
   assert.equal(parseArgs(["-v"]).command, "version");
   assert.equal(parseArgs(["version", "-v"]).command, "version");
   assert.equal(parseArgs(["version", "--version"]).command, "version");

@@ -11,6 +11,46 @@ export function printHelp(version: string, topic?: string): void {
   console.log(help);
 }
 
+const ENVIRONMENT_VARIABLES = {
+  ZVEC_GREP_HOME:
+    "Runtime and daemon state directory; Workspace indexes stay under <root>/.zvec-grep",
+  ZVEC_GREP_MODE: "Default client mode: direct, server, or auto",
+  ZVEC_GREP_SERVER_URL: "MCP server URL used by CLI clients",
+  ZVEC_GREP_SERVER_TOKEN: "Server/client Bearer token",
+  ZVEC_GREP_SERVER_TOKEN_FILE: "File containing the Server/client Bearer token",
+  ZVEC_GREP_MCP_TOOLSET: "Server MCP surface: agent or full",
+  ZVEC_GREP_EMBEDDING: "Default model for new indexes and auth grant",
+  ZVEC_GREP_API_KEY: "Embedding provider credential fallback",
+  ZVEC_GREP_ENDPOINT: "Remote Embedding endpoint fallback",
+  ZVEC_GREP_MODEL_CACHE: "Local embedding model cache directory",
+  ZVEC_GREP_DEVICE: "Local embedding device: auto, cpu, metal, vulkan, or cuda",
+  DASHSCOPE_API_KEY: "Qwen credential fallback after ZVEC_GREP_API_KEY",
+  QWEN_API_KEY: "Qwen credential fallback after DASHSCOPE_API_KEY",
+  ZVEC_GREP_AUTHORIZATION_KEY_FILE:
+    "Workspace grant signing-key file (advanced)",
+  ZVEC_GREP_INSTALL_SKIP_SERVER:
+    "Set to 1 to keep zg install from starting the Server (advanced)",
+  ZVEC_GREP_METAL_KEEP_RESIDENCY:
+    "Set to 1 to keep llama.cpp Metal residency enabled (advanced)",
+  ZVEC_GREP_LLAMA_CONTEXT_PARALLELISM:
+    "Positive llama.cpp context parallelism override (advanced)",
+  NO_COLOR: "Disable terminal colors",
+  CODEX_HOME: "Codex configuration directory used by zg install",
+  CLAUDE_CONFIG_DIR: "Claude configuration directory used by zg install",
+  OPENCODE_CONFIG: "OpenCode configuration file used by zg install",
+  CURSOR_CONFIG_DIR: "Cursor configuration directory used by zg install",
+} as const;
+
+type EnvironmentVariableName = keyof typeof ENVIRONMENT_VARIABLES;
+
+const MAIN_ENVIRONMENT_VARIABLES: readonly EnvironmentVariableName[] = [
+  "ZVEC_GREP_HOME",
+  "ZVEC_GREP_MODE",
+  "ZVEC_GREP_EMBEDDING",
+  "ZVEC_GREP_API_KEY",
+  "ZVEC_GREP_SERVER_URL",
+];
+
 function mainHelp(version: string): string {
   return `zvec-grep ${version}
 
@@ -26,7 +66,7 @@ Commands:
   server         Start, stop, inspect, or run the shared MCP server
   install        Install agent integrations
   uninstall      Remove agent integrations
-  help           Show help for a command
+  help           Show help for a command or topic
   version        Print the installed version
 
 Examples:
@@ -40,6 +80,10 @@ Examples:
   zg config model set local/embeddinggemma-300m --device metal
   zg install
 
+Environment:
+${formatEnvironmentVariables(MAIN_ENVIRONMENT_VARIABLES)}
+
+Run zg help environment for all variables, scopes, aliases, and precedence.
 Run zg help <command> or zg <command> --help for command-specific help.
 Use zg -h/--help for this page and zg -v/--version for the version.`;
 }
@@ -89,7 +133,18 @@ File filters:
 
 Managed --rg supports common ripgrep matching, context, engine, encoding,
 discovery, glob, and type flags. Use -e when a pattern begins with "-".
-Options that replace rg's output format are rejected.`;
+Options that replace rg's output format are rejected.
+
+Environment:
+${formatEnvironmentVariables([
+  "ZVEC_GREP_MODE",
+  "ZVEC_GREP_API_KEY",
+  "ZVEC_GREP_ENDPOINT",
+  "ZVEC_GREP_MODEL_CACHE",
+  "ZVEC_GREP_DEVICE",
+])}
+
+See zg help environment for precedence and Server-mode scope.`;
     case "index":
       return `Usage:
   zg index [root] [options]
@@ -125,7 +180,19 @@ File selection:
   --reset-paths                     Clear inherited file-selection settings
 
 New indexes require --embedding, ZVEC_GREP_EMBEDDING, or a configured default.
-Existing indexes reuse their stored embedding schema.`;
+Existing indexes reuse their stored embedding schema.
+
+Environment:
+${formatEnvironmentVariables([
+  "ZVEC_GREP_MODE",
+  "ZVEC_GREP_EMBEDDING",
+  "ZVEC_GREP_API_KEY",
+  "ZVEC_GREP_ENDPOINT",
+  "ZVEC_GREP_MODEL_CACHE",
+  "ZVEC_GREP_DEVICE",
+])}
+
+See zg help environment for precedence and Server-mode scope.`;
     case "status":
       return `Usage:
   zg status [root] [--mode <direct|server|auto>] [--check-ready]
@@ -162,13 +229,25 @@ Global configuration is stored in ~/.zvec-grep/config.json.`;
 Manage the signed Remote Embedding grant stored in the Workspace under
 .zvec-grep/authorization.json. Workspace grants are shared by zg CLI and zg MCP.
 
+--embedding selects the Remote Embedding model to authorize; it does not run
+embedding. If omitted, auth grant uses the existing Workspace index model, then
+the global default, then ZVEC_GREP_EMBEDDING.
+
 Scopes used during operations:
   once                              Current CLI command or Agent tool call only
   workspace                         Persisted in this Workspace
 
 Use --allow-remote on zg query or zg index to authorize Remote Embedding for
 that command only. This authorization is not persisted. API credentials
-configure a provider but do not grant permission.`;
+configure a provider but do not grant permission.
+
+Environment used by auth grant:
+${formatEnvironmentVariables([
+  "ZVEC_GREP_EMBEDDING",
+  "ZVEC_GREP_API_KEY",
+  "ZVEC_GREP_ENDPOINT",
+  "ZVEC_GREP_AUTHORIZATION_KEY_FILE",
+])}`;
     case "server":
       return `Usage:
   zg server on [--listen 127.0.0.1:7999] [--token-file <path>] [--mcp-toolset <agent|full>]
@@ -182,7 +261,18 @@ The public MCP endpoint defaults to the agent toolset (indexed search only).
 Use --mcp-toolset full, or ZVEC_GREP_MCP_TOOLSET=full, to expose managed rg and
 the four index and status tools. CLI managed rg, index, and status commands
 continue to use the daemon's internal administration endpoint.
---check-ready exits non-zero unless the server is ready.`;
+--check-ready exits non-zero unless the server is ready.
+
+Environment:
+${formatEnvironmentVariables([
+  "ZVEC_GREP_HOME",
+  "ZVEC_GREP_SERVER_URL",
+  "ZVEC_GREP_SERVER_TOKEN",
+  "ZVEC_GREP_SERVER_TOKEN_FILE",
+  "ZVEC_GREP_MCP_TOOLSET",
+])}
+
+See zg help environment for daemon startup scope.`;
     case "install":
       return `Usage:
   zg install [--target codex|claude|opencode|cursor|all|auto] [--yes] [--force]
@@ -206,10 +296,16 @@ use. This does not install the npm package.`;
 Removes zvec-grep-managed MCP configuration, trust, and guidance.`;
     case "help":
       return `Usage:
-  zg help [command]
+  zg help [command|topic]
   zg <command> --help
   zg -h
-  zg --help`;
+  zg --help
+
+Topics:
+  environment, env                   Environment variables and precedence`;
+    case "environment":
+    case "env":
+      return environmentHelp();
     case "version":
       return `Usage:
   zg version
@@ -219,4 +315,76 @@ Removes zvec-grep-managed MCP configuration, trust, and guidance.`;
     default:
       return undefined;
   }
+}
+
+function environmentHelp(): string {
+  return `Usage:
+  zg help environment
+  zg help env
+
+Client and Server:
+${formatEnvironmentVariables([
+  "ZVEC_GREP_MODE",
+  "ZVEC_GREP_SERVER_URL",
+  "ZVEC_GREP_SERVER_TOKEN",
+  "ZVEC_GREP_SERVER_TOKEN_FILE",
+  "ZVEC_GREP_MCP_TOOLSET",
+])}
+
+Embedding:
+${formatEnvironmentVariables([
+  "ZVEC_GREP_EMBEDDING",
+  "ZVEC_GREP_API_KEY",
+  "ZVEC_GREP_ENDPOINT",
+  "ZVEC_GREP_MODEL_CACHE",
+  "ZVEC_GREP_DEVICE",
+])}
+
+Qwen credential aliases:
+${formatEnvironmentVariables(["DASHSCOPE_API_KEY", "QWEN_API_KEY"])}
+
+State and authorization:
+${formatEnvironmentVariables([
+  "ZVEC_GREP_HOME",
+  "ZVEC_GREP_AUTHORIZATION_KEY_FILE",
+])}
+
+Advanced:
+${formatEnvironmentVariables([
+  "ZVEC_GREP_INSTALL_SKIP_SERVER",
+  "ZVEC_GREP_METAL_KEEP_RESIDENCY",
+  "ZVEC_GREP_LLAMA_CONTEXT_PARALLELISM",
+  "NO_COLOR",
+])}
+
+Agent integration paths:
+${formatEnvironmentVariables([
+  "CODEX_HOME",
+  "CLAUDE_CONFIG_DIR",
+  "OPENCODE_CONFIG",
+  "CURSOR_CONFIG_DIR",
+])}
+
+Precedence:
+  Embedding runtime                 CLI > Workspace snapshot > Global config > Environment
+  New-index model                  --embedding > Global config > ZVEC_GREP_EMBEDDING
+  Client mode                      --mode > ZVEC_GREP_MODE > Global config
+  Qwen environment credential      ZVEC_GREP_API_KEY > DASHSCOPE_API_KEY > QWEN_API_KEY
+
+Server scope:
+  A running daemon uses the embedding environment inherited when it started.
+  Restart it after changing ZVEC_GREP_EMBEDDING, ZVEC_GREP_API_KEY,
+  ZVEC_GREP_ENDPOINT, ZVEC_GREP_MODEL_CACHE, or ZVEC_GREP_DEVICE.
+
+Environment variables provide fallbacks; explicit CLI options never print or
+store their values in help output.`;
+}
+
+function formatEnvironmentVariables(
+  names: readonly EnvironmentVariableName[],
+): string {
+  const width = Math.max(...names.map((name) => name.length)) + 2;
+  return names
+    .map((name) => `  ${name.padEnd(width)}${ENVIRONMENT_VARIABLES[name]}`)
+    .join("\n");
 }

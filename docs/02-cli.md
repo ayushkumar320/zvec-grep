@@ -12,6 +12,7 @@ installed CLI for version-specific help:
 ```bash
 zg help
 zg help query
+zg help environment
 zg <command> --help
 ```
 
@@ -177,7 +178,10 @@ zg auth revoke [root]
 
 Workspace grants are stored under `.zvec-grep/authorization.json` and shared by
 the CLI and MCP server. `--allow-remote` is the non-persistent alternative for
-one `query` or `index` command.
+one `query` or `index` command. `--embedding` selects the Remote Embedding model
+to authorize; it does not run embedding. It may be omitted when the model can be
+resolved from the existing Workspace index, the global default, or
+`ZVEC_GREP_EMBEDDING`, in that order.
 
 ## `zg server`
 
@@ -210,6 +214,11 @@ refresh, authentication, and logs. See [MCP](./03-mcp.md) for the tool contract.
 | `ZVEC_GREP_ENDPOINT` | Remote Embedding endpoint |
 | `ZVEC_GREP_MODEL_CACHE` | Local model cache directory |
 | `ZVEC_GREP_DEVICE` | Local model device |
+| `DASHSCOPE_API_KEY` | Qwen API-key fallback after `ZVEC_GREP_API_KEY` |
+| `QWEN_API_KEY` | Qwen API-key fallback after `DASHSCOPE_API_KEY` |
 
-Explicit command options take precedence over environment and global
-configuration values.
+Run `zg help environment` for advanced variables, agent integration paths,
+scope, and detailed precedence. Embedding runtime values currently resolve in
+this order: explicit command option, Workspace snapshot, global configuration,
+then environment. A running daemon keeps the embedding environment inherited
+when it started; restart it after changing those variables.
