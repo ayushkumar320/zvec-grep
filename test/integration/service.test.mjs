@@ -89,6 +89,15 @@ test("service optionally fuses independent query groups into one result list", a
   await mkdir(root, { recursive: true });
   await writeFile(join(root, "alpha.ts"), "export const AlphaNeedle = 1;\n");
   await writeFile(join(root, "beta.ts"), "export const BetaNeedle = 2;\n");
+  for (const [name, value] of [
+    ["gamma", "GammaNeedle"],
+    ["delta", "DeltaNeedle"],
+    ["epsilon", "EpsilonNeedle"],
+    ["zeta", "ZetaNeedle"],
+    ["eta", "EtaNeedle"],
+  ]) {
+    await writeFile(join(root, `${name}.ts`), `export const ${value} = 1;\n`);
+  }
 
   const service = await createZvecGrep({
     root,
@@ -103,10 +112,84 @@ test("service optionally fuses independent query groups into one result list", a
   ];
   const grouped = await service.context({ routes, limit: 1 });
   const fused = await service.context({ routes, limit: 1, fuse: true });
+  const duplicateGroups = await service.context({
+    routes: [routes[0], routes[0]],
+    limit: 1,
+  });
+  const primaryGroups = await service.context({
+    queries: ["AlphaNeedle", "BetaNeedle"],
+    limit: 1,
+  });
+  const cappedPrimaryGroups = await service.context({
+    queries: [
+      "AlphaNeedle",
+      "BetaNeedle",
+      "GammaNeedle",
+      "DeltaNeedle",
+      "EpsilonNeedle",
+      "ZetaNeedle",
+      "EtaNeedle",
+    ],
+    limit: 1,
+  });
 
   assert.equal(grouped.items.length, 2);
+  assert.deepEqual(
+    grouped.diagnostics.index?.queryGroups?.map((group) => group.id),
+    ["Q1", "Q2"],
+  );
+  assert.deepEqual(
+    grouped.diagnostics.index?.queryGroups?.map((group) => group.role),
+    ["supplemental", "supplemental"],
+  );
+  assert.deepEqual(
+    grouped.items.map((item) => [item.selectionReason, item.coverageGroup]),
+    [
+      ["global_fill", undefined],
+      ["global_fill", undefined],
+    ],
+  );
+  assert.deepEqual(
+    primaryGroups.diagnostics.index?.queryGroups?.map((group) => group.role),
+    ["primary", "primary"],
+  );
+  assert.deepEqual(
+    primaryGroups.items.map((item) => [
+      item.selectionReason,
+      item.coverageGroup,
+    ]),
+    [
+      ["coverage", "Q1"],
+      ["coverage", "Q2"],
+    ],
+  );
+  assert.equal(
+    cappedPrimaryGroups.items.filter(
+      (item) => item.selectionReason !== undefined,
+    ).length,
+    6,
+  );
+  assert.equal(
+    cappedPrimaryGroups.items.filter(
+      (item) => item.selectionReason === "coverage",
+    ).length,
+    6,
+  );
   assert.equal(fused.items.length, 1);
   assert.equal(fused.diagnostics.index?.routes.length, 2);
+  assert.equal(fused.diagnostics.index?.queryGroups?.length, 1);
+  assert.equal(duplicateGroups.items.length, 1);
+  assert.deepEqual(
+    duplicateGroups.items[0]?.queryGroups?.map((group) => [
+      group.id,
+      group.rank,
+      group.role,
+    ]),
+    [
+      ["Q1", 1, "supplemental"],
+      ["Q2", 1, "supplemental"],
+    ],
+  );
 });
 
 test("workspace rebuild recreates unsupported index metadata", async (t) => {

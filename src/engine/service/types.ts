@@ -143,6 +143,16 @@ export type ZvecGrepContextContainer = {
   metadata?: EntityMetadata;
 };
 
+export type ZvecGrepContextQueryGroupMatch = {
+  id: string;
+  query: string;
+  role: "primary" | "supplemental";
+  rank: number;
+  matchedBy: SearchMatchedBy;
+};
+
+export type ZvecGrepContextSelectionReason = "coverage" | "global_fill";
+
 export type ZvecGrepContextItem = {
   kind: ZvecGrepContextItemKind;
   rank: number;
@@ -159,6 +169,9 @@ export type ZvecGrepContextItem = {
   entityId?: string;
   container?: ZvecGrepContextContainer;
   trace?: SearchHitTrace;
+  queryGroups?: readonly ZvecGrepContextQueryGroupMatch[];
+  selectionReason?: ZvecGrepContextSelectionReason;
+  coverageGroup?: string;
 };
 
 export type ZvecGrepContextWorkspaceIndex = {
@@ -191,6 +204,11 @@ export type ZvecGrepStructureEnrichmentDiagnostics = {
 
 export type ZvecGrepIndexDiagnostics = {
   hitsReturned: number;
+  queryGroups?: readonly {
+    id: string;
+    query: string;
+    role: "primary" | "supplemental";
+  }[];
   routes: readonly {
     id: string;
     mode: "fts" | "vector";

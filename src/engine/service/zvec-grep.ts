@@ -938,8 +938,17 @@ async function contextFromOpenWorkspaceIndex(input: {
   timings: TimingCollector;
 }): Promise<ZvecGrepContextResult> {
   const searches: SearchPlanResult[] = [];
-  const groups = input.options.fuse
-    ? [{ routes: input.request.routes }]
+  const groups: NormalizedContextGroup[] = input.options.fuse
+    ? [
+        {
+          id: "Q1",
+          query: input.request.displayQuery,
+          role: input.request.groups.some((group) => group.role === "primary")
+            ? "primary"
+            : "supplemental",
+          routes: input.request.routes,
+        },
+      ]
     : input.request.groups;
   const limit = contextGroupLimit(input.options.limit, groups.length);
 
@@ -963,8 +972,11 @@ async function contextFromOpenWorkspaceIndex(input: {
     searches.push(search);
   }
 
-  const items = dedupeAndRerankContextItems(
-    searches.flatMap((search) => searchPlanToContextItems(search, input.root)),
+  const items = selectAndRankContextItems(
+    searches.flatMap((search, index) =>
+      searchPlanToContextItems(search, input.root, groups[index]!),
+    ),
+    groups.filter((group) => group.role === "primary").map((group) => group.id),
   );
 
   return {
@@ -982,6 +994,11 @@ async function contextFromOpenWorkspaceIndex(input: {
       emptyReason: items.length === 0 ? "no_matches" : undefined,
       index: {
         hitsReturned: items.length,
+        queryGroups: groups.map((group) => ({
+          id: group.id,
+          query: group.query,
+          role: group.role,
+        })),
         routes: searches.flatMap((search) => search.plan.routes),
       },
     },
@@ -1671,6 +1688,9 @@ type NormalizedContextRequest = {
 };
 
 type NormalizedContextGroup = {
+  id: string;
+  query: string;
+  role: "primary" | "supplemental";
   routes: SearchPlan["routes"];
 };
 
@@ -1770,13 +1790,19 @@ function contextGroups(
   extraRoutes: SearchPlan["routes"],
 ): NormalizedContextGroup[] {
   return [
-    ...primaryQueries.map((query) => ({
+    ...primaryQueries.map((query, index) => ({
+      id: `Q${index + 1}`,
+      query,
+      role: "primary" as const,
       routes: [
         { mode: "fts" as const, query },
         { mode: "vector" as const, query },
       ],
     })),
-    ...extraRoutes.map((route) => ({
+    ...extraRoutes.map((route, index) => ({
+      id: `Q${primaryQueries.length + index + 1}`,
+      query: route.query,
+      role: "supplemental" as const,
       routes: [route],
     })),
   ];
@@ -1785,6 +1811,7 @@ function contextGroups(
 function searchPlanToContextItems(
   result: SearchPlanResult,
   root: string,
+  group: NormalizedContextGroup,
 ): ZvecGrepContextItem[] {
   return result.hits.map((hit) => {
     const target = contextItemTarget(hit);
@@ -1809,8 +1836,91 @@ function searchPlanToContextItems(
       metadata: hit.entity.metadata,
       entityId: hit.entity.id,
       trace: hit.trace,
+      queryGroups: [
+        {
+          id: group.id,
+          query: group.query,
+          role: group.role,
+          rank: hit.rank,
+          matchedBy: hit.matchedBy,
+        },
+      ],
     };
   });
+}
+
+const DEFAULT_CONTEXT_DETAIL_LIMIT = 6;
+const CONTEXT_GROUP_RRF_K = 60;
+
+function selectAndRankContextItems(
+  items: readonly ZvecGrepContextItem[],
+  coverageGroupIds: readonly string[],
+): ZvecGrepContextItem[] {
+  const deduped = new Map<string, ZvecGrepContextItem>();
+
+  for (const item of items) {
+    const key = contextItemDedupeKey(item);
+    const existing = deduped.get(key);
+    if (existing) {
+      existing.queryGroups = mergeContextQueryGroupMatches(
+        existing.queryGroups ?? [],
+        item.queryGroups ?? [],
+      );
+      existing.matchedBy = mergedContextMatchedBy(existing.queryGroups);
+      continue;
+    }
+
+    deduped.set(key, { ...item });
+  }
+
+  const candidates = [...deduped.values()];
+  const globallyRanked = [...candidates].sort(compareContextGlobalRank);
+  const selected = new Set<string>();
+  const detailed: ZvecGrepContextItem[] = [];
+
+  for (const groupId of coverageGroupIds) {
+    if (detailed.length >= DEFAULT_CONTEXT_DETAIL_LIMIT) {
+      break;
+    }
+    const candidate = candidates
+      .filter((item) => !selected.has(contextItemDedupeKey(item)))
+      .filter((item) => contextQueryGroupMatch(item, groupId) !== undefined)
+      .sort((left, right) => compareContextGroupRank(left, right, groupId))[0];
+    if (!candidate) {
+      continue;
+    }
+
+    selected.add(contextItemDedupeKey(candidate));
+    detailed.push({
+      ...candidate,
+      selectionReason: "coverage",
+      coverageGroup: groupId,
+    });
+  }
+
+  for (const candidate of globallyRanked) {
+    if (detailed.length >= DEFAULT_CONTEXT_DETAIL_LIMIT) {
+      break;
+    }
+    const key = contextItemDedupeKey(candidate);
+    if (selected.has(key)) {
+      continue;
+    }
+    selected.add(key);
+    detailed.push({
+      ...candidate,
+      selectionReason: "global_fill",
+      coverageGroup: undefined,
+    });
+  }
+
+  const additional = globallyRanked.filter(
+    (item) => !selected.has(contextItemDedupeKey(item)),
+  );
+  return [...detailed, ...additional].map((item, index) => ({
+    ...item,
+    rank: index + 1,
+  }));
 }
 
 function dedupeAndRerankContextItems(
@@ -1818,21 +1928,96 @@ function dedupeAndRerankContextItems(
 ): ZvecGrepContextItem[] {
   const seen = new Set<string>();
   const deduped: ZvecGrepContextItem[] = [];
-
   for (const item of items) {
     const key = contextItemDedupeKey(item);
     if (seen.has(key)) {
       continue;
     }
-
     seen.add(key);
-    deduped.push({
-      ...item,
-      rank: deduped.length + 1,
-    });
+    deduped.push({ ...item, rank: deduped.length + 1 });
   }
-
   return deduped;
+}
+
+function mergeContextQueryGroupMatches(
+  left: readonly NonNullable<ZvecGrepContextItem["queryGroups"]>[number][],
+  right: readonly NonNullable<ZvecGrepContextItem["queryGroups"]>[number][],
+): NonNullable<ZvecGrepContextItem["queryGroups"]> {
+  const matches = new Map(left.map((match) => [match.id, match] as const));
+  for (const match of right) {
+    const existing = matches.get(match.id);
+    if (!existing || match.rank < existing.rank) {
+      matches.set(match.id, match);
+    }
+  }
+  return [...matches.values()].sort(
+    (a, b) => contextGroupNumber(a.id) - contextGroupNumber(b.id),
+  );
+}
+
+function mergedContextMatchedBy(
+  matches: readonly NonNullable<ZvecGrepContextItem["queryGroups"]>[number][],
+): ZvecGrepContextItem["matchedBy"] {
+  const hasFts = matches.some(
+    (match) => match.matchedBy === "fts" || match.matchedBy === "fts+vector",
+  );
+  const hasVector = matches.some(
+    (match) => match.matchedBy === "vector" || match.matchedBy === "fts+vector",
+  );
+  return hasFts && hasVector ? "fts+vector" : hasFts ? "fts" : "vector";
+}
+
+function compareContextGlobalRank(
+  left: ZvecGrepContextItem,
+  right: ZvecGrepContextItem,
+): number {
+  return (
+    contextGlobalRrfScore(right) - contextGlobalRrfScore(left) ||
+    contextBestGroupRank(left) - contextBestGroupRank(right) ||
+    contextFirstGroupNumber(left) - contextFirstGroupNumber(right) ||
+    contextItemDedupeKey(left).localeCompare(contextItemDedupeKey(right))
+  );
+}
+
+function contextGlobalRrfScore(item: ZvecGrepContextItem): number {
+  return (item.queryGroups ?? []).reduce(
+    (score, match) => score + 1 / (CONTEXT_GROUP_RRF_K + match.rank),
+    0,
+  );
+}
+
+function compareContextGroupRank(
+  left: ZvecGrepContextItem,
+  right: ZvecGrepContextItem,
+  groupId: string,
+): number {
+  return (
+    contextQueryGroupMatch(left, groupId)!.rank -
+      contextQueryGroupMatch(right, groupId)!.rank ||
+    compareContextGlobalRank(left, right)
+  );
+}
+
+function contextQueryGroupMatch(
+  item: ZvecGrepContextItem,
+  groupId: string,
+): NonNullable<ZvecGrepContextItem["queryGroups"]>[number] | undefined {
+  return item.queryGroups?.find((match) => match.id === groupId);
+}
+
+function contextBestGroupRank(item: ZvecGrepContextItem): number {
+  return Math.min(...(item.queryGroups ?? []).map((match) => match.rank));
+}
+
+function contextFirstGroupNumber(item: ZvecGrepContextItem): number {
+  return Math.min(
+    ...(item.queryGroups ?? []).map((match) => contextGroupNumber(match.id)),
+  );
+}
+
+function contextGroupNumber(id: string): number {
+  const value = Number.parseInt(id.slice(1), 10);
+  return Number.isFinite(value) ? value : Number.MAX_SAFE_INTEGER;
 }
 
 function contextItemDedupeKey(item: ZvecGrepContextItem): string {

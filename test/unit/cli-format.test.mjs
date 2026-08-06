@@ -316,6 +316,152 @@ test("context formatters render indexed, lexical, metadata, preview, trace, and 
   }
 });
 
+test("indexed agent results preserve global rank and compact lower-ranked candidates", () => {
+  const item = (rank, relativePath, content, score) => ({
+    kind: "indexed_entity",
+    rank,
+    file: {
+      absolutePath: `/repo/${relativePath}`,
+      relativePath,
+    },
+    range: {
+      kind: "text",
+      startLine: rank * 10,
+      endLine: rank * 10,
+      startOffset: 0,
+      endOffset: content.length,
+    },
+    content,
+    status: "fresh",
+    score,
+    matchedBy: rank % 2 === 0 ? "fts" : "fts+vector",
+    metadata: {
+      kind: "code",
+      symbolType: "function",
+      symbolName: `symbol${rank}`,
+      scope: null,
+      nodeType: "function_declaration",
+      modifiers: [],
+    },
+  });
+  const result = contextResult({
+    items: [
+      item(3, "src/a.ts", "detail-three-body", 0.7),
+      item(1, "src/a.ts", "detail-one-body", 0.9),
+      item(6, "src/d.ts", "detail-six-body", 0.2),
+      item(2, "src/b.ts", "detail-two-body", 0.8),
+      item(5, "src/c.ts", "detail-five-body", 0.4),
+      item(4, "src/c.ts", "detail-four-body", 0.6),
+      item(7, "src/e.ts", "detail-seven-body", 0.1),
+    ],
+  });
+
+  const text = formatAgentContextResult(result, {
+    preview: "short",
+    color: "never",
+  });
+  for (let rank = 1; rank < 7; rank += 1) {
+    assert.ok(text.indexOf(`#${rank} `) < text.indexOf(`#${rank + 1} `));
+  }
+  assert.match(text, /additional candidates \(metadata only\):/);
+  assert.match(text, /#7 matchedBy=fts\+vector src\/e\.ts:70 function symbol7/);
+  assert.doesNotMatch(text, /detail-seven-body/);
+  assert.doesNotMatch(text, /score=/);
+
+  const traced = formatAgentContextResult(result, {
+    preview: "short",
+    trace: true,
+    color: "never",
+  });
+  assert.match(traced, /#1 matchedBy=fts\+vector score=0\.9000/);
+  assert.match(traced, /#7 matchedBy=fts\+vector score=0\.1000/);
+});
+
+test("indexed agent results show query-group coverage and provenance", () => {
+  const makeItem = (rank, selectionReason, coverageGroup, queryGroups) => ({
+    kind: "indexed_entity",
+    rank,
+    file: {
+      absolutePath: `/repo/src/item${rank}.ts`,
+      relativePath: `src/item${rank}.ts`,
+    },
+    range: {
+      kind: "text",
+      startLine: rank,
+      endLine: rank,
+      startOffset: 0,
+      endOffset: 10,
+    },
+    content: `result-${rank}`,
+    status: "fresh",
+    matchedBy: "fts+vector",
+    queryGroups,
+    selectionReason,
+    coverageGroup,
+  });
+  const result = contextResult({
+    items: [
+      makeItem(1, "coverage", "Q1", [
+        {
+          id: "Q1",
+          query: "lifecycle",
+          role: "primary",
+          rank: 1,
+          matchedBy: "fts+vector",
+        },
+        {
+          id: "Q3",
+          query: "cleanup",
+          role: "supplemental",
+          rank: 4,
+          matchedBy: "vector",
+        },
+      ]),
+      makeItem(2, "coverage", "Q2", [
+        {
+          id: "Q2",
+          query: "backend",
+          role: "primary",
+          rank: 1,
+          matchedBy: "fts",
+        },
+      ]),
+      makeItem(3, "global_fill", undefined, [
+        {
+          id: "Q1",
+          query: "lifecycle",
+          role: "primary",
+          rank: 2,
+          matchedBy: "vector",
+        },
+      ]),
+    ],
+    diagnostics: {
+      index: {
+        hitsReturned: 3,
+        queryGroups: [
+          { id: "Q1", query: "lifecycle", role: "primary" },
+          { id: "Q2", query: "backend", role: "primary" },
+          { id: "Q3", query: "cleanup", role: "supplemental" },
+        ],
+        routes: [],
+      },
+    },
+  });
+
+  const text = formatAgentContextResult(result, {
+    preview: "short",
+    color: "never",
+  });
+  assert.match(text, /query groups \(3\):/);
+  assert.match(text, /Q1 \[primary\]: lifecycle/);
+  assert.match(text, /Q3 \[supplemental\]: cleanup/);
+  assert.match(text, /supplemental routes use global_fill; detailed<=6/);
+  assert.match(text, /#1 \[group_coverage: Q1\]/);
+  assert.match(text, /groups: Q1#1 \(fts\+vector\), Q3#4 \(vector\)/);
+  assert.match(text, /#3 \[global_fill\]/);
+});
+
 test("managed rg uses a compact file and adaptive symbol hierarchy", () => {
   const file = {
     absolutePath: "/repo/src/example.ts",

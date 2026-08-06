@@ -37,6 +37,7 @@ type AgentRgSourceLine = SourceLineEntry & {
 const SHORT_SOURCE_MAX_LINES = 10;
 const SHORT_SOURCE_CONTEXT_BEFORE = 2;
 const SHORT_OUTLINE_MAX_LINES = 7;
+const AGENT_SHORT_DETAIL_MAX_ITEMS = 6;
 const AGENT_PREVIEW_MAX_LINE_LENGTH = 160;
 const HUMAN_PREVIEW_MAX_LINE_LENGTH = 120;
 
@@ -67,51 +68,119 @@ function agentContextLines(
   const highlighter = shouldUseColor(options)
     ? createHighlighter(result.query, true)
     : plainText;
-  const groups = groupContextItems(result.items);
   const preview = previewMode(result, options);
+  const items = [...result.items].sort(compareContextItems);
   const lines: string[] = [];
 
-  if (groups.length === 0) {
+  if (items.length === 0) {
     return [emptyContextLabel(result), ...emptyContextDetailLines(result)];
   }
 
-  let first = true;
-  for (const group of groups) {
-    for (const item of group.items.sort(compareContextItems)) {
-      if (!first) {
-        lines.push("");
-      }
-      first = false;
+  const queryGroups = result.diagnostics.index?.queryGroups ?? [];
+  if (queryGroups.length > 1) {
+    lines.push(
+      `query groups (${queryGroups.length}):`,
+      ...queryGroups.map(
+        (group) => `  ${group.id} [${group.role}]: ${group.query}`,
+      ),
+      "selection: min_coverage=1 per primary group; supplemental routes use global_fill; detailed<=6",
+      "",
+    );
+  }
 
-      lines.push(`${item.file.relativePath}:${rangeLabel(headerRange(item))}`);
-      const matched = matchedRangeLine(item);
-      const outlineLines = agentOutlineLines(item, preview);
-      const sourceLines = sourceLinesForPreview(item, preview, highlighter, {
-        maxLineLength: AGENT_PREVIEW_MAX_LINE_LENGTH,
-      });
-      lines.push(
-        ...agentMetadataLines(item, [...outlineLines, ...sourceLines]),
-        ...outlineLines,
-      );
-      if (matched && preview !== "none") {
-        lines.push(matched);
+  const selectedItems = items.filter(
+    (item) => item.selectionReason !== undefined,
+  );
+  const detailItems =
+    preview === "short"
+      ? selectedItems.length > 0
+        ? selectedItems.slice(0, AGENT_SHORT_DETAIL_MAX_ITEMS)
+        : items.slice(0, AGENT_SHORT_DETAIL_MAX_ITEMS)
+      : items;
+  const detailedRanks = new Set(detailItems.map((item) => item.rank));
+  let first = true;
+  for (const item of detailItems) {
+    if (!first) {
+      lines.push("");
+    }
+    first = false;
+
+    lines.push(agentRankedItemHeader(item, options.trace === true));
+    const groupLine = agentQueryGroupLine(item);
+    if (groupLine) {
+      lines.push(groupLine);
+    }
+    const matched = matchedRangeLine(item);
+    const outlineLines = agentOutlineLines(item, preview);
+    const sourceLines = sourceLinesForPreview(item, preview, highlighter, {
+      maxLineLength: AGENT_PREVIEW_MAX_LINE_LENGTH,
+    });
+    lines.push(
+      ...agentMetadataLines(item, [...outlineLines, ...sourceLines]),
+      ...outlineLines,
+    );
+    if (matched && preview !== "none") {
+      lines.push(matched);
+    }
+    if (sourceLines.length > 0) {
+      if (item.kind !== "lexical_match" && preview !== "none") {
+        lines.push("source:");
       }
-      if (sourceLines.length > 0) {
-        if (item.kind !== "lexical_match" && preview !== "none") {
-          lines.push("source:");
-        }
-        lines.push(...sourceLines);
-      }
-      if (options.trace) {
-        const trace = traceDetailLine(item);
-        if (trace) {
-          lines.push(`trace: ${trace}`);
-        }
+      lines.push(...sourceLines);
+    }
+    if (options.trace) {
+      const trace = traceDetailLine(item);
+      if (trace) {
+        lines.push(`trace: ${trace}`);
       }
     }
   }
 
+  const additionalItems = items.filter((item) => !detailedRanks.has(item.rank));
+  if (additionalItems.length > 0) {
+    lines.push("", "additional candidates (metadata only):");
+    lines.push(
+      ...additionalItems.map((item) => agentCandidateSummary(item, options)),
+    );
+  }
+
   return lines;
+}
+
+function agentRankedItemHeader(
+  item: ZvecGrepContextItem,
+  trace: boolean,
+): string {
+  const score =
+    trace && typeof item.score === "number"
+      ? ` score=${formatScore(item.score)}`
+      : "";
+  const selection =
+    item.selectionReason === "coverage"
+      ? ` [group_coverage: ${item.coverageGroup ?? "unknown"}]`
+      : item.selectionReason === "global_fill"
+        ? " [global_fill]"
+        : "";
+  return `#${item.rank}${selection} matchedBy=${item.matchedBy}${score} ${item.file.relativePath}:${rangeLabel(headerRange(item))}`;
+}
+
+function agentQueryGroupLine(item: ZvecGrepContextItem): string | undefined {
+  if (!item.queryGroups || item.queryGroups.length === 0) {
+    return undefined;
+  }
+  return `groups: ${item.queryGroups
+    .map((group) => `${group.id}#${group.rank} (${group.matchedBy})`)
+    .join(", ")}`;
+}
+
+function agentCandidateSummary(
+  item: ZvecGrepContextItem,
+  options: CliOptions,
+): string {
+  const summary = entitySummary(item);
+  const entity = summary === item.kind ? "" : ` ${summary}`;
+  const groups = agentQueryGroupLine(item);
+  return `${agentRankedItemHeader(item, options.trace === true)}${entity}${groups ? ` ${groups}` : ""}`;
 }
 
 function agentRgContextLines(
