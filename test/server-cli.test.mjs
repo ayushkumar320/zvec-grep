@@ -18,6 +18,9 @@ import { readInstanceRecord } from "../dist/daemon/server-controller.js";
 
 const execFileAsync = promisify(execFile);
 const cliPath = resolve("dist/cli/index.js");
+const packageVersion = JSON.parse(
+  await readFile(new URL("../package.json", import.meta.url), "utf8"),
+).version;
 
 test("server run parses a loopback listen address", () => {
   const parsed = parseArgs(["server", "run", "--listen", "127.0.0.1:8123"]);
@@ -300,7 +303,7 @@ test("server token file enables authentication", async (t) => {
     serverUrl: `http://127.0.0.1:${port}/mcp`,
     tokenFile,
   }).callTool("zvec_grep_server_status", {});
-  assert.equal(clientStatus.version, "0.1.5");
+  assert.equal(clientStatus.version, packageVersion);
   const stopped = await execFileAsync(process.execPath, [
     cliPath,
     "server",
