@@ -65,3 +65,25 @@ test("structure enrichment ignores plain-text extraction fallbacks", async (t) =
     truncated: false,
   });
 });
+
+test("structure enrichment uses type-aware size limits instead of a fixed 1 MiB cap", async (t) => {
+  const root = await createTemporaryDirectory(t, "zg-structure-size-policy-");
+  const markdown = `# Large section\n\n${"x".repeat(1024 * 1024 + 1)}\n`;
+  await writeFile(join(root, "large.md"), markdown);
+
+  const result = await enrichLexicalItemsWithStructure(root, [
+    lexicalItem(root, "large.md", 1, "# Large section"),
+  ]);
+
+  assert.equal(result.diagnostics.parsedFiles, 1);
+  assert.equal(result.items[0].container.metadata.kind, "markdown");
+
+  const explicitlyLimited = await enrichLexicalItemsWithStructure(
+    root,
+    [lexicalItem(root, "large.md", 1, "# Large section")],
+    undefined,
+    1024,
+  );
+  assert.equal(explicitlyLimited.diagnostics.parsedFiles, 0);
+  assert.equal(explicitlyLimited.items[0].container, undefined);
+});

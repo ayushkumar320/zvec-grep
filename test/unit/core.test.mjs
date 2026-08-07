@@ -392,6 +392,7 @@ test("CLI parser covers utility commands, provider controls, routes, and equals 
   assert.deepEqual(query.options.globs, ["src/**", "docs/**", "!dist/**"]);
   assert.deepEqual(query.options.fileTypes, ["ts"]);
   assert.deepEqual(query.positionals, ["-literal-query"]);
+  assert.equal(parseArgs(["index", "--debug"]).options.debug, true);
 });
 
 test("CLI parser covers managed rg long and short compatibility options", () => {

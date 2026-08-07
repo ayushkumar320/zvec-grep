@@ -45,6 +45,49 @@ test("index releases its model lease when service creation fails", async () => {
   }
 });
 
+test("index returns scan diagnostics only when debug is requested", async () => {
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-backend-debug-"),
+  );
+  const root = join(temporaryDirectory, "repo");
+  await mkdir(root);
+  await writeFile(join(root, "README.md"), "# Searchable\n");
+  await writeFile(join(root, "large.ts"), "x".repeat(1024 * 1024 + 1));
+  const backend = new DaemonBackend({
+    version: "1.0.0",
+    modelPoolOptions: { createModel: () => new TestEmbeddingModel() },
+    createService: (options) =>
+      createZvecGrep({
+        ...options,
+        embeddingModel: new TestEmbeddingModel(),
+      }),
+    watchManagerFactory: noopWatchManagerFactory,
+  });
+
+  try {
+    const debug = await backend.index({
+      root,
+      embedding: "test/deterministic",
+      wait: true,
+      debug: true,
+    });
+    assert.equal(debug.state, "succeeded");
+    assert.equal(debug.scanDiagnostics.skippedFiles, 1);
+    assert.equal(debug.scanDiagnostics.skippedByReason.too_large, 1);
+    assert.equal(
+      debug.scanDiagnostics.skippedSamples[0].relativePath,
+      "large.ts",
+    );
+
+    const normal = await backend.index({ root, wait: true });
+    assert.equal(normal.state, "succeeded");
+    assert.equal(normal.scanDiagnostics, undefined);
+  } finally {
+    await backend.close();
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
 test("drop index closes the active runtime and removes the persisted index", async () => {
   const temporaryDirectory = await mkdtemp(
     join(tmpdir(), "zvec-grep-drop-backend-"),

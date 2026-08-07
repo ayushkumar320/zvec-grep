@@ -73,6 +73,23 @@ export type FileInfo = {
   indexStatus?: FileIndexStatus;
 };
 
+export type SkippedFileReason =
+  "empty" | "too_large" | "unsupported" | "binary";
+
+export type SkippedFile = {
+  absolutePath: string;
+  relativePath: string;
+  reason: SkippedFileReason;
+  sizeBytes?: number;
+  limitBytes?: number;
+};
+
+export type FileScanDiagnostics = {
+  skippedFiles: number;
+  skippedByReason: Record<SkippedFileReason, number>;
+  skippedSamples: SkippedFile[];
+};
+
 // -----------------------------------------------------------------------------
 // Entity and fragment types
 // -----------------------------------------------------------------------------
@@ -252,6 +269,7 @@ export type IndexResult = {
   entitiesCreated: number;
   durationMs: number;
   timings?: readonly TimingEntry[];
+  scanDiagnostics?: FileScanDiagnostics;
 };
 
 export type WorkspaceIndexStatus = {

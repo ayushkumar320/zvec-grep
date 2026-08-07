@@ -15,8 +15,14 @@ import {
   resolve,
   sep,
 } from "node:path";
-import type { FileInfo, RootPath } from "../../../types.js";
+import type {
+  FileInfo,
+  FileScanDiagnostics,
+  RootPath,
+  SkippedFile,
+} from "../../../types.js";
 import { detectFileType } from "../../../file-type.js";
+import { resolveMaxFileSizeBytes } from "../../../file-size-policy.js";
 import { sha256Text } from "../../../utils/hash.js";
 import {
   matchesFileSelection,
@@ -36,7 +42,6 @@ import {
   validateRootPaths,
 } from "../root-paths.js";
 
-const DEFAULT_MAX_FILE_SIZE_BYTES = 1 * 1024 * 1024;
 const BINARY_SNIFF_BYTES = 8192;
 const BINARY_CONTROL_CHAR_RATIO = 0.3;
 const MAX_GITIGNORE_CACHE_ENTRIES = 4_096;
@@ -155,6 +160,7 @@ const gitIgnoreRuleCache = new Map<
 
 export type ScanResult = {
   files: FileInfo[];
+  diagnostics: FileScanDiagnostics;
 };
 
 export type ScanOptions = {
@@ -168,13 +174,20 @@ export async function scanRootPaths(
 ): Promise<ScanResult> {
   const validatedRootPaths = validateRootPaths(rootPaths);
   const files: FileInfo[] = [];
+  const diagnostics = createScanDiagnostics();
 
   for (const rootPath of validatedRootPaths) {
     throwIfAborted(options.signal);
-    await scanRootPath(workspaceIndexId, rootPath, files, options.signal);
+    await scanRootPath(
+      workspaceIndexId,
+      rootPath,
+      files,
+      diagnostics,
+      options.signal,
+    );
   }
 
-  return { files };
+  return { files, diagnostics };
 }
 
 export async function scanFilePath(
@@ -184,6 +197,7 @@ export async function scanFilePath(
   options: ScanOptions = {},
 ): Promise<ScanResult> {
   const files: FileInfo[] = [];
+  const diagnostics = createScanDiagnostics();
   for (const rootPath of matchingRootPaths(rootPaths, absolutePath)) {
     throwIfAborted(options.signal);
     const root = normalizeRootPath(rootPath);
@@ -219,12 +233,17 @@ export async function scanFilePath(
     ) {
       continue;
     }
-    const file = await readFileInfo(workspaceIndexId, root, absolutePath);
+    const file = await readFileInfo(
+      workspaceIndexId,
+      root,
+      absolutePath,
+      diagnostics,
+    );
     if (file) {
       files.push(file);
     }
   }
-  return { files: dedupeFiles(files) };
+  return { files: dedupeFiles(files), diagnostics };
 }
 
 export async function scanDirectoryPath(
@@ -234,6 +253,7 @@ export async function scanDirectoryPath(
   options: ScanOptions = {},
 ): Promise<ScanResult> {
   const files: FileInfo[] = [];
+  const diagnostics = createScanDiagnostics();
   for (const rootPath of matchingRootPaths(rootPaths, absolutePath)) {
     throwIfAborted(options.signal);
     const root = normalizeRootPath(rootPath);
@@ -284,6 +304,7 @@ export async function scanDirectoryPath(
       root,
       absolutePath,
       files,
+      diagnostics,
       parentRules,
       fileTypes,
       new Set([rootRealPath, directoryRealPath]),
@@ -291,7 +312,7 @@ export async function scanDirectoryPath(
       options.signal,
     );
   }
-  return { files: dedupeFiles(files) };
+  return { files: dedupeFiles(files), diagnostics };
 }
 
 async function hasExcludedNestedGitAncestor(
@@ -406,6 +427,7 @@ async function scanRootPath(
   workspaceIndexId: string,
   rootPath: RootPath,
   files: FileInfo[],
+  diagnostics: FileScanDiagnostics,
   signal?: AbortSignal,
 ): Promise<void> {
   throwIfAborted(signal);
@@ -423,7 +445,12 @@ async function scanRootPath(
   if (info.isFile()) {
     const relativePath = basename(root.absolutePath);
     const file = matchesFileSelection(relativePath, root, fileTypes)
-      ? await readFileInfo(workspaceIndexId, root, root.absolutePath)
+      ? await readFileInfo(
+          workspaceIndexId,
+          root,
+          root.absolutePath,
+          diagnostics,
+        )
       : null;
     if (file) {
       files.push(file);
@@ -447,6 +474,7 @@ async function scanRootPath(
     root,
     root.absolutePath,
     files,
+    diagnostics,
     [
       ...(root.noIgnore ? [] : DEFAULT_IGNORE_RULES),
       ...(await readConfiguredIgnoreRules(root)),
@@ -463,6 +491,7 @@ async function walk(
   rootPath: RootPath,
   currentPath: string,
   files: FileInfo[],
+  diagnostics: FileScanDiagnostics,
   parentIgnoreRules: readonly IgnoreRule[],
   fileTypes: FileTypePatterns,
   visitedDirectories: Set<string>,
@@ -539,6 +568,7 @@ async function walk(
         rootPath,
         absolutePath,
         files,
+        diagnostics,
         ignoreRules,
         fileTypes,
         visitedDirectories,
@@ -580,7 +610,12 @@ async function walk(
       continue;
     }
 
-    const file = await readFileInfo(workspaceIndexId, rootPath, absolutePath);
+    const file = await readFileInfo(
+      workspaceIndexId,
+      rootPath,
+      absolutePath,
+      diagnostics,
+    );
     throwIfAborted(signal);
     if (file) {
       files.push(file);
@@ -963,6 +998,7 @@ async function readFileInfo(
   workspaceIndexId: string,
   rootPath: RootPath,
   absolutePath: string,
+  diagnostics: FileScanDiagnostics,
 ): Promise<FileInfo | null> {
   const info = await stat(absolutePath).catch(() => null);
 
@@ -970,32 +1006,91 @@ async function readFileInfo(
     return null;
   }
 
-  const maxFileSize = rootPath.maxFileSizeBytes ?? DEFAULT_MAX_FILE_SIZE_BYTES;
-  if (info.size === 0 || info.size > maxFileSize) {
+  const relativePath =
+    toDisplayPath(relative(rootPath.absolutePath, absolutePath)) ||
+    basename(absolutePath);
+  if (info.size === 0) {
+    recordSkippedFile(diagnostics, {
+      absolutePath,
+      relativePath,
+      reason: "empty",
+      sizeBytes: 0,
+    });
     return null;
   }
 
   const detected = detectFileType(absolutePath);
   if (!detected) {
+    recordSkippedFile(diagnostics, {
+      absolutePath,
+      relativePath,
+      reason: "unsupported",
+      sizeBytes: info.size,
+    });
+    return null;
+  }
+
+  const maxFileSize = resolveMaxFileSizeBytes(
+    detected.kind,
+    rootPath.maxFileSizeBytes,
+  );
+  if (info.size > maxFileSize) {
+    recordSkippedFile(diagnostics, {
+      absolutePath,
+      relativePath,
+      reason: "too_large",
+      sizeBytes: info.size,
+      limitBytes: maxFileSize,
+    });
     return null;
   }
 
   if (detected.kind !== "image" && (await isLikelyBinaryFile(absolutePath))) {
+    recordSkippedFile(diagnostics, {
+      absolutePath,
+      relativePath,
+      reason: "binary",
+      sizeBytes: info.size,
+    });
     return null;
   }
 
   return {
     id: makeFileId(workspaceIndexId, absolutePath),
     absolutePath,
-    relativePath:
-      toDisplayPath(relative(rootPath.absolutePath, absolutePath)) ||
-      basename(absolutePath),
+    relativePath,
     rootPath: rootPath.absolutePath,
     sizeBytes: info.size,
     lastModifiedTime: info.mtimeMs,
     kind: detected.kind,
     format: detected.format,
   };
+}
+
+const MAX_SKIPPED_FILE_SAMPLES = 20;
+
+export function createScanDiagnostics(): FileScanDiagnostics {
+  return {
+    skippedFiles: 0,
+    skippedByReason: {
+      empty: 0,
+      too_large: 0,
+      unsupported: 0,
+      binary: 0,
+    },
+    skippedSamples: [],
+  };
+}
+
+function recordSkippedFile(
+  diagnostics: FileScanDiagnostics,
+  skipped: SkippedFile,
+): void {
+  diagnostics.skippedFiles++;
+  diagnostics.skippedByReason[skipped.reason]++;
+  if (diagnostics.skippedSamples.length < MAX_SKIPPED_FILE_SAMPLES) {
+    diagnostics.skippedSamples.push(skipped);
+  }
 }
 
 async function isLikelyBinaryFile(path: string): Promise<boolean> {

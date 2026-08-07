@@ -10,7 +10,11 @@ import {
   type ServerContext,
 } from "@modelcontextprotocol/server";
 import { z } from "zod";
-import type { IndexProgress, ZvecGrepContextResult } from "../index.js";
+import type {
+  FileScanDiagnostics,
+  IndexProgress,
+  ZvecGrepContextResult,
+} from "../index.js";
 import { formatAgentContextResult } from "../cli/format/context.js";
 import {
   formatRemoteEmbeddingAuthorizationPrompt,
@@ -70,6 +74,7 @@ export type ZvecGrepIndexResult = {
   action?: "index" | "drop";
   dropped?: boolean;
   error?: { code: string; message: string };
+  scanDiagnostics?: FileScanDiagnostics;
 };
 
 export type ZvecGrepIndexDropResult = {
@@ -357,6 +362,7 @@ export function registerZvecGrepTools(
               action: result.action,
               dropped: result.dropped,
               error: result.error,
+              scan_diagnostics: result.scanDiagnostics,
             };
             return toolResult(
               [
@@ -373,6 +379,9 @@ export function registerZvecGrepTools(
                       `error_code: ${result.error.code}`,
                       `error_message: ${result.error.message}`,
                     ]
+                  : []),
+                ...(result.scanDiagnostics
+                  ? [`skipped_files: ${result.scanDiagnostics.skippedFiles}`]
                   : []),
               ].join("\n"),
               structuredContent,

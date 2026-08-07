@@ -212,6 +212,10 @@ export const zvecGrepIndexInputSchema = z.object({
     .positive()
     .optional()
     .describe("Embedding requests processed concurrently."),
+  debug: z
+    .boolean()
+    .optional()
+    .describe("Return skipped-file diagnostics after a completed index job."),
   wait: z
     .boolean()
     .optional()
@@ -382,6 +386,26 @@ export const zvecGrepIndexOutputSchema = z.object({
   action: z.enum(["index", "drop"]).optional(),
   dropped: z.boolean().optional(),
   error: jobErrorSchema.optional(),
+  scan_diagnostics: z
+    .object({
+      skippedFiles: z.number().int().nonnegative(),
+      skippedByReason: z.object({
+        empty: z.number().int().nonnegative(),
+        too_large: z.number().int().nonnegative(),
+        unsupported: z.number().int().nonnegative(),
+        binary: z.number().int().nonnegative(),
+      }),
+      skippedSamples: z.array(
+        z.object({
+          absolutePath: z.string(),
+          relativePath: z.string(),
+          reason: z.enum(["empty", "too_large", "unsupported", "binary"]),
+          sizeBytes: z.number().int().nonnegative().optional(),
+          limitBytes: z.number().int().positive().optional(),
+        }),
+      ),
+    })
+    .optional(),
 });
 
 export const zvecGrepIndexDropOutputSchema = z.object({

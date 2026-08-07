@@ -17,6 +17,7 @@ import type {
 } from "../engine/models/index.js";
 import { resolveEmbeddingReference } from "../engine/models/index.js";
 import type {
+  FileScanDiagnostics,
   WorkspaceIndexEmbeddingSchema,
   IndexProgress,
 } from "../engine/types.js";
@@ -107,6 +108,10 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
   readonly scheduler: JobScheduler;
   private readonly startedAt = Date.now();
   private readonly statusCache = new Map<string, ZvecGrepInfoResult>();
+  private readonly lastScanDiagnostics = new Map<
+    string,
+    FileScanDiagnostics | undefined
+  >();
   private readonly workspaceRuntimeCache = new Map<
     string,
     EmbeddingRuntimeConfig
@@ -137,6 +142,7 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
       runtimeIdleTtlMs: options.runtimeIdleTtlMs,
       onRuntimeEvicted: async (root) => {
         this.statusCache.delete(root);
+        this.lastScanDiagnostics.delete(root);
         this.workspaceRuntimeCache.delete(root);
         await this.closeWatcher(root);
       },
@@ -305,6 +311,9 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
       !this.scheduler.hasActiveRoot(runtime.canonicalRoot) ||
       input.rebuild === true ||
       followsNarrowJob;
+    if (createsWork) {
+      this.lastScanDiagnostics.delete(runtime.canonicalRoot);
+    }
     const targetRevision = createsWork
       ? runtime.markDirty()
       : runtime.snapshot().dirtyRevision;
@@ -323,6 +332,10 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
               report,
               options.authorization,
               signal,
+            );
+            this.lastScanDiagnostics.set(
+              runtime.canonicalRoot,
+              proof.scanDiagnostics,
             );
             if (proof.reconciled) {
               runtime.markReconciled(targetRevision, proof.reconciliationEpoch);
@@ -362,6 +375,13 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
       reused: submitted.reused,
       action: "index",
       error: job.error,
+      ...(input.debug === true && input.wait === true
+        ? {
+            scanDiagnostics: this.lastScanDiagnostics.get(
+              runtime.canonicalRoot,
+            ),
+          }
+        : {}),
     };
   }
 
@@ -401,6 +421,7 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
       return { root: canonicalRoot, removed };
     } finally {
       this.statusCache.delete(canonicalRoot);
+      this.lastScanDiagnostics.delete(canonicalRoot);
       this.workspaceRuntimeCache.delete(canonicalRoot);
       try {
         await this.runtimeManager.evict(canonicalRoot);
@@ -686,6 +707,7 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
       await this.scheduler.close();
       await this.runtimeManager.close();
       await this.modelPool.close();
+      this.lastScanDiagnostics.clear();
       this.workspaceRuntimeCache.clear();
     })();
     return this.closePromise;
@@ -719,6 +741,7 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
       );
     }
     let service: Awaited<ReturnType<typeof createZvecGrep>> | undefined;
+    let scanDiagnostics: FileScanDiagnostics | undefined;
     try {
       service = await (this.options.createService ?? createZvecGrep)({
         ...this.options.serviceOptions,
@@ -735,29 +758,34 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
         device: input.runtimeOverridesAreEphemeral ? undefined : input.device,
         daemonInstanceToken: this.runtimeManager.instanceToken,
       });
-      await withRemoteEmbeddingOperationPermit(authorization, () =>
-        service!.index({
-          root: runtime.canonicalRoot,
-          rebuild: input.rebuild,
-          resetPaths: input.resetPaths,
-          globs: normalizePlainStringList(input.globs),
-          insensitiveGlobs: normalizePlainStringList(input.insensitiveGlobs),
-          fileTypes: normalizePlainStringList(input.fileTypes),
-          excludedFileTypes: normalizePlainStringList(input.excludedFileTypes),
-          hidden: input.hidden,
-          noIgnore: input.noIgnore,
-          ignoreFiles: normalizePlainStringList(input.ignoreFiles),
-          maxDepth: input.maxDepth,
-          maxFileSizeBytes: input.maxFileSizeBytes,
-          follow: input.follow,
-          embeddingConcurrency: input.embeddingConcurrency,
-          changedPaths: input.changedPaths,
-          signal,
-          onProgress: report,
-          onWriterContext: (context) =>
-            runtime.setWriterContext(context, lease.key),
-        }),
+      const result = await withRemoteEmbeddingOperationPermit(
+        authorization,
+        () =>
+          service!.index({
+            root: runtime.canonicalRoot,
+            rebuild: input.rebuild,
+            resetPaths: input.resetPaths,
+            globs: normalizePlainStringList(input.globs),
+            insensitiveGlobs: normalizePlainStringList(input.insensitiveGlobs),
+            fileTypes: normalizePlainStringList(input.fileTypes),
+            excludedFileTypes: normalizePlainStringList(
+              input.excludedFileTypes,
+            ),
+            hidden: input.hidden,
+            noIgnore: input.noIgnore,
+            ignoreFiles: normalizePlainStringList(input.ignoreFiles),
+            maxDepth: input.maxDepth,
+            maxFileSizeBytes: input.maxFileSizeBytes,
+            follow: input.follow,
+            embeddingConcurrency: input.embeddingConcurrency,
+            changedPaths: input.changedPaths,
+            signal,
+            onProgress: report,
+            onWriterContext: (context) =>
+              runtime.setWriterContext(context, lease.key),
+          }),
       );
+      scanDiagnostics = result.scanDiagnostics;
     } finally {
       try {
         await service?.close();
@@ -796,6 +824,7 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
     return {
       reconciled,
       reconciliationEpoch: proofReconciliationEpoch,
+      scanDiagnostics,
     };
   }
 

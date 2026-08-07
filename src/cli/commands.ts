@@ -3,6 +3,7 @@ import { createInterface } from "node:readline/promises";
 import {
   createZvecGrep,
   type CreateZvecGrepOptions,
+  type FileScanDiagnostics,
   type IndexProgress,
   type RootPath,
   type ZvecGrepContextOptions,
@@ -37,6 +38,7 @@ import {
   printWorkspaceInfo,
   printIndexPathFilterTip,
   printIndexResult,
+  printIndexScanDiagnostics,
   printServerIndexInfo,
 } from "./format/status.js";
 import {
@@ -244,6 +246,7 @@ async function runIndex(parsed: ParsedArgs): Promise<void> {
             maxFileSizeBytes: parsed.options.maxFileSizeBytes,
             follow: parsed.options.follow,
             embeddingConcurrency: parsed.options.embeddingConcurrency,
+            debug: parsed.options.debug,
             wait: true,
           },
           {
@@ -262,6 +265,11 @@ async function runIndex(parsed: ParsedArgs): Promise<void> {
       console.log(`Workspace index: ${String(result.state ?? "submitted")}`);
       console.log(`Root: ${String(result.root ?? rootPath.absolutePath)}`);
       console.log(`Job: ${String(result.job_id ?? "unknown")}`);
+      if (parsed.options.debug) {
+        printIndexScanDiagnostics(
+          result.scan_diagnostics as FileScanDiagnostics | undefined,
+        );
+      }
       if (result.state === "failed") {
         throw new Error(serverIndexFailureMessage(result));
       }

@@ -681,7 +681,13 @@ class ZvecGrepService implements ZvecGrep {
 
     const structuralEnrichment = await timings.time(
       "structure_enrichment",
-      () => enrichLexicalItemsWithStructure(root, rgResult.items),
+      () =>
+        enrichLexicalItemsWithStructure(
+          root,
+          rgResult.items,
+          undefined,
+          options.maxFileSizeBytes,
+        ),
     );
     const items = dedupeAndRerankContextItems(structuralEnrichment.items);
     const emptyReason =

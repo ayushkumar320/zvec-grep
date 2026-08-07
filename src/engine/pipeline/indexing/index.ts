@@ -18,6 +18,7 @@ import type {
   Content,
   EntityMetadata,
   EntityFragment,
+  FileScanDiagnostics,
   FileInfo,
   ImageFormat,
   IndexProgress,
@@ -78,6 +79,7 @@ type IndexStats = {
 
 type IndexPassResult = {
   filesScanned: number;
+  scanDiagnostics: FileScanDiagnostics;
   diff: DiffResult;
   stats: IndexStats;
 };
@@ -346,6 +348,7 @@ async function runPathIndexPass(
   reportScanning(report, "Scanning changed paths...", progressBase);
   const scanned = await timings.time("index_scan_paths", async () => {
     const files: FileInfo[] = [];
+    const diagnostics = emptyScanDiagnostics();
     for (const path of changedPaths) {
       throwIfIndexCancelled(ctx);
       const info = await lstat(path).catch(() => null);
@@ -365,8 +368,12 @@ async function runPathIndexPass(
             },
           );
       files.push(...scan.files);
+      mergeScanDiagnostics(diagnostics, scan.diagnostics);
     }
-    return [...new Map(files.map((file) => [file.id, file])).values()];
+    return {
+      files: [...new Map(files.map((file) => [file.id, file])).values()],
+      diagnostics,
+    };
   });
   throwIfIndexCancelled(ctx);
   const existing = [
@@ -376,7 +383,15 @@ async function runPathIndexPass(
         .map((file) => [file.id, file]),
     ).values(),
   ];
-  return runDiffPass(ctx, report, scanned, existing, timings, progressBase);
+  return runDiffPass(
+    ctx,
+    report,
+    scanned.files,
+    existing,
+    timings,
+    progressBase,
+    scanned.diagnostics,
+  );
 }
 
 async function runIndexPass(
@@ -400,6 +415,7 @@ async function runIndexPass(
     ctx.storage.listFiles(),
     timings,
     progressBase,
+    scan.diagnostics,
   );
 }
 
@@ -410,6 +426,7 @@ async function runDiffPass(
   existingFiles: readonly FileInfo[],
   timings: TimingCollector,
   progressBase?: IndexProgressBase,
+  scanDiagnostics: FileScanDiagnostics = emptyScanDiagnostics(),
 ): Promise<IndexPassResult> {
   const diff = await timings.time("index_diff", () =>
     computeDiffFromFiles(scannedFiles, existingFiles),
@@ -473,6 +490,7 @@ async function runDiffPass(
 
   return {
     filesScanned: scannedFiles.length,
+    scanDiagnostics,
     diff,
     stats,
   };
@@ -559,7 +577,44 @@ function buildIndexResult(
     ),
     durationMs,
     timings: timings.entries(),
+    ...(finalPass.scanDiagnostics.skippedFiles > 0
+      ? { scanDiagnostics: finalPass.scanDiagnostics }
+      : {}),
   };
+}
+
+const MAX_SKIPPED_FILE_SAMPLES = 20;
+
+function emptyScanDiagnostics(): FileScanDiagnostics {
+  return {
+    skippedFiles: 0,
+    skippedByReason: {
+      empty: 0,
+      too_large: 0,
+      unsupported: 0,
+      binary: 0,
+    },
+    skippedSamples: [],
+  };
+}
+
+function mergeScanDiagnostics(
+  target: FileScanDiagnostics,
+  source: FileScanDiagnostics,
+): void {
+  target.skippedFiles += source.skippedFiles;
+  for (const reason of [
+    "empty",
+    "too_large",
+    "unsupported",
+    "binary",
+  ] as const) {
+    target.skippedByReason[reason] += source.skippedByReason[reason];
+  }
+  const remaining = MAX_SKIPPED_FILE_SAMPLES - target.skippedSamples.length;
+  if (remaining > 0) {
+    target.skippedSamples.push(...source.skippedSamples.slice(0, remaining));
+  }
 }
 
 async function optimizeStorage(ctx: IndexContext): Promise<void> {

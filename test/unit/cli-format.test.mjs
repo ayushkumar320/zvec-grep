@@ -874,6 +874,50 @@ test("status formatters cover workspace states, failures, filters, and color", a
   }
 });
 
+test("index formatter emits skipped-file details only in debug mode", async () => {
+  const result = {
+    filesScanned: 1,
+    filesAdded: 1,
+    filesModified: 0,
+    filesPending: 0,
+    filesDeleted: 0,
+    filesUnchanged: 0,
+    filesFailed: 0,
+    entitiesCreated: 1,
+    durationMs: 10,
+    scanDiagnostics: {
+      skippedFiles: 1,
+      skippedByReason: {
+        empty: 0,
+        too_large: 1,
+        unsupported: 0,
+        binary: 0,
+      },
+      skippedSamples: [
+        {
+          absolutePath: "/repo/large.ts",
+          relativePath: "large.ts",
+          reason: "too_large",
+          sizeBytes: 2 * 1024 * 1024,
+          limitBytes: 1024 * 1024,
+        },
+      ],
+    },
+  };
+
+  const normal = await captureConsole(() =>
+    printIndexResult("Indexed", result, { color: "never" }),
+  );
+  assert.equal(normal.errors.length, 0);
+
+  const debug = await captureConsole(() =>
+    printIndexResult("Indexed", result, { color: "never", debug: true }),
+  );
+  assert.match(debug.errors.join("\n"), /skipped_files=1/);
+  assert.match(debug.errors.join("\n"), /path="large\.ts"/);
+  assert.match(debug.errors.join("\n"), /limit_bytes=1048576/);
+});
+
 test("workspace status uses a status-first grouped layout", async () => {
   const originalTerm = process.env.TERM;
   process.env.TERM = "xterm-256color";

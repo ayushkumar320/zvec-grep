@@ -3,6 +3,7 @@ import { isAbsolute, relative, sep } from "node:path";
 import type {
   WorkspaceIndexStatus,
   WorkspaceIndexInfo,
+  FileScanDiagnostics,
   IndexResult,
   ZvecGrepInfoResult,
 } from "../../index.js";
@@ -637,6 +638,39 @@ export function printIndexResult(
     );
   }
   printQueryFilters(theme, options);
+  if (options.debug) {
+    printIndexScanDiagnostics(result.scanDiagnostics);
+  }
+}
+
+export function printIndexScanDiagnostics(
+  diagnostics: FileScanDiagnostics | undefined,
+): void {
+  if (!diagnostics || diagnostics.skippedFiles === 0) {
+    console.error("skipped_files=0");
+    return;
+  }
+
+  const reasons = Object.entries(diagnostics.skippedByReason)
+    .filter(([, count]) => count > 0)
+    .map(([reason, count]) => `${reason}:${count}`)
+    .join(",");
+  console.error(
+    `skipped_files=${diagnostics.skippedFiles} reasons=${reasons || "none"}`,
+  );
+  for (const skipped of diagnostics.skippedSamples) {
+    const details = [
+      `reason=${skipped.reason}`,
+      `path=${JSON.stringify(skipped.relativePath)}`,
+      ...(skipped.sizeBytes !== undefined
+        ? [`size_bytes=${skipped.sizeBytes}`]
+        : []),
+      ...(skipped.limitBytes !== undefined
+        ? [`limit_bytes=${skipped.limitBytes}`]
+        : []),
+    ];
+    console.error(`skipped_file ${details.join(" ")}`);
+  }
 }
 
 export function printIndexPathFilterTip(options: CliOptions): void {

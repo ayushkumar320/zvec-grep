@@ -8,6 +8,7 @@ import type {
   ZvecGrepContextItem,
 } from "./types.js";
 import { detectFileType } from "../file-type.js";
+import { resolveMaxFileSizeBytes } from "../file-size-policy.js";
 import { normalizePath, toDisplayPath } from "../utils/path.js";
 import { sha256Text } from "../utils/hash.js";
 
@@ -19,12 +20,11 @@ type StructureEnrichmentResult = {
 };
 
 const STRUCTURE_ENRICH_FILE_ID_NAMESPACE = "__rg_structure__";
-const STRUCTURE_ENRICH_MAX_FILE_SIZE_BYTES = 1 * 1024 * 1024;
-
 export async function enrichLexicalItemsWithStructure(
   root: string,
   items: readonly ZvecGrepContextItem[],
   fileLimit = RG_STRUCTURE_ENRICH_FILE_LIMIT,
+  maxFileSizeBytes?: number,
 ): Promise<StructureEnrichmentResult> {
   const matchedFiles = uniqueLexicalFilePaths(items);
   const selectedFiles = new Set(matchedFiles.slice(0, fileLimit));
@@ -32,7 +32,11 @@ export async function enrichLexicalItemsWithStructure(
   let parsedFiles = 0;
 
   for (const absolutePath of selectedFiles) {
-    const fragments = await parseStructuralFragments(root, absolutePath);
+    const fragments = await parseStructuralFragments(
+      root,
+      absolutePath,
+      maxFileSizeBytes,
+    );
     fragmentsByFile.set(absolutePath, fragments);
     if (fragments !== null) {
       parsedFiles++;
@@ -118,9 +122,14 @@ function uniqueLexicalFilePaths(
 async function parseStructuralFragments(
   root: string,
   absolutePath: string,
+  maxFileSizeBytes?: number,
 ): Promise<EntityFragment[] | null> {
   try {
-    const file = await fileInfoForStructure(root, absolutePath);
+    const file = await fileInfoForStructure(
+      root,
+      absolutePath,
+      maxFileSizeBytes,
+    );
     if (!file) {
       return null;
     }
@@ -148,19 +157,18 @@ function isStructuralFragment(fragment: EntityFragment): boolean {
 async function fileInfoForStructure(
   root: string,
   absolutePath: string,
+  maxFileSizeBytes?: number,
 ): Promise<FileInfo | null> {
   const info = await stat(absolutePath).catch(() => null);
-  if (
-    !info ||
-    !info.isFile() ||
-    info.size <= 0 ||
-    info.size > STRUCTURE_ENRICH_MAX_FILE_SIZE_BYTES
-  ) {
+  if (!info || !info.isFile() || info.size <= 0) {
     return null;
   }
 
   const detected = detectFileType(absolutePath);
   if (!detected || !isStructurallyEnrichableFile(detected)) {
+    return null;
+  }
+  if (info.size > resolveMaxFileSizeBytes(detected.kind, maxFileSizeBytes)) {
     return null;
   }
 

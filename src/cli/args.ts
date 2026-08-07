@@ -642,7 +642,6 @@ function validateCliShape(
     [options.hybridQueries?.length, "--hybrid"],
     [options.routes?.length, "--fts/--vector"],
     [options.fuse, "--fuse"],
-    [options.debug, "--debug"],
     [options.trace, "--trace"],
     [options.human, "--human"],
     [options.preview, "--preview"],
@@ -656,6 +655,9 @@ function validateCliShape(
   ]);
   if (command !== "query" && queryOnly) {
     throw new Error(`${queryOnly} can only be used with zg query`);
+  }
+  if (options.debug && command !== "query" && command !== "index") {
+    throw new Error("--debug can only be used with zg query or zg index");
   }
 
   const sharedSelection = firstEnabledOption([
@@ -911,6 +913,7 @@ function validateCliShape(
       options.ignoreFiles?.length ||
       options.maxDepth !== undefined ||
       options.maxFileSizeBytes !== undefined ||
+      options.debug ||
       options.follow ||
       options.embeddingConcurrency)
   ) {

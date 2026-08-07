@@ -67,6 +67,12 @@ File-type filters narrow the result after glob rules. For example,
 `-g "docs/**" -t ts` selects TypeScript files inside `docs`, not every file in
 that directory.
 
+Without an explicit `--max-filesize`, indexing uses type-aware safety limits:
+1 MiB for code, 256 MiB for text and Markdown, 16 MiB for structured data, and
+10 MiB for images. An explicit value replaces the type-aware defaults for every
+selected file. Files excluded by these limits remain silent during normal
+indexing; use `zg index --debug` to print skipped-file counts and samples.
+
 ### Supported formats and extraction
 
 The scanner assigns each admitted file to one extraction path. Structure-aware

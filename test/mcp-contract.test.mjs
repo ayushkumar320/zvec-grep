@@ -577,6 +577,59 @@ test("index streams daemon progress through MCP", async (t) => {
   });
 });
 
+test("index returns skipped-file diagnostics only for a debug request", async (t) => {
+  const backend = createBackend();
+  backend.index = async (input) => ({
+    root: input.root,
+    jobId: "job-debug",
+    state: "succeeded",
+    reused: false,
+    ...(input.debug
+      ? {
+          scanDiagnostics: {
+            skippedFiles: 1,
+            skippedByReason: {
+              empty: 0,
+              too_large: 1,
+              unsupported: 0,
+              binary: 0,
+            },
+            skippedSamples: [
+              {
+                absolutePath: `${root}/large.ts`,
+                relativePath: "large.ts",
+                reason: "too_large",
+                sizeBytes: 2 * 1024 * 1024,
+                limitBytes: 1024 * 1024,
+              },
+            ],
+          },
+        }
+      : {}),
+  });
+  const { client, server } = await connectFull(backend);
+  t.after(async () => {
+    await client.close();
+    await server.close();
+  });
+
+  const normal = await client.callTool({
+    name: "zvec_grep_index",
+    arguments: { root, wait: true },
+  });
+  assert.equal(normal.structuredContent.scan_diagnostics, undefined);
+
+  const debug = await client.callTool({
+    name: "zvec_grep_index",
+    arguments: { root, wait: true, debug: true },
+  });
+  assert.equal(debug.structuredContent.scan_diagnostics.skippedFiles, 1);
+  assert.equal(
+    debug.structuredContent.scan_diagnostics.skippedSamples[0].relativePath,
+    "large.ts",
+  );
+});
+
 test("index authorization keeps the requested model and offers no local fallback", async (t) => {
   const backend = createBackend();
   let receivedInput;

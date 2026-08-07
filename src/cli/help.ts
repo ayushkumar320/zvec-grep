@@ -155,6 +155,7 @@ Index options:
   --rebuild                         Rebuild the existing index
   --drop                            Permanently remove the workspace index
   --yes                             Confirm --drop without prompting
+  --debug                           Print skipped-file diagnostics to stderr
   --mode <direct|server|auto>       Select indexing transport
 
 Embedding options:

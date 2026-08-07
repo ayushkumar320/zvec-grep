@@ -11,6 +11,7 @@ import { hostname } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { detectFileType } from "../../dist/engine/file-type.js";
+import { resolveMaxFileSizeBytes } from "../../dist/engine/file-size-policy.js";
 import {
   fileBelongsToRootPath,
   matchesRootExcludePatterns,
@@ -66,6 +67,14 @@ test("file detection covers special, code, data, text, image, binary, and unknow
     kind: "text",
     format: "text",
   });
+});
+
+test("file-size policy uses type-aware defaults and honors explicit overrides", () => {
+  assert.equal(resolveMaxFileSizeBytes("code"), 1 * 1024 * 1024);
+  assert.equal(resolveMaxFileSizeBytes("text"), 256 * 1024 * 1024);
+  assert.equal(resolveMaxFileSizeBytes("data"), 16 * 1024 * 1024);
+  assert.equal(resolveMaxFileSizeBytes("image"), 10 * 1024 * 1024);
+  assert.equal(resolveMaxFileSizeBytes("text", 4096), 4096);
 });
 
 test("root path validation detects missing and overlapping scan domains", async (t) => {
@@ -180,6 +189,44 @@ test("scanner applies ignore files, hidden and generated directories, size, bina
     implicit.files.some((item) => item.relativePath === "src/nested/child.ts"),
     false,
   );
+});
+
+test("scanner applies type-aware default file-size limits and records diagnostics", async (t) => {
+  const root = await createTemporaryDirectory(t, "zvec-scanner-size-policy-");
+  const oversized = "x".repeat(1024 * 1024 + 1);
+  await writeFile(join(root, "large.ts"), oversized);
+  await writeFile(join(root, "large.md"), oversized);
+
+  const result = await scanRootPaths("workspace-index", [
+    { absolutePath: root, recursive: true, noIgnore: true },
+  ]);
+
+  assert.deepEqual(
+    result.files.map((file) => file.relativePath),
+    ["large.md"],
+  );
+  assert.equal(result.diagnostics.skippedFiles, 1);
+  assert.equal(result.diagnostics.skippedByReason.too_large, 1);
+  assert.deepEqual(result.diagnostics.skippedSamples, [
+    {
+      absolutePath: join(root, "large.ts"),
+      relativePath: "large.ts",
+      reason: "too_large",
+      sizeBytes: 1024 * 1024 + 1,
+      limitBytes: 1024 * 1024,
+    },
+  ]);
+
+  const explicitlyLimited = await scanRootPaths("workspace-index", [
+    {
+      absolutePath: root,
+      recursive: true,
+      noIgnore: true,
+      maxFileSizeBytes: 1024,
+    },
+  ]);
+  assert.equal(explicitlyLimited.files.length, 0);
+  assert.equal(explicitlyLimited.diagnostics.skippedByReason.too_large, 2);
 });
 
 test("scanner excludes general low-signal content and permits explicit includes", async (t) => {
