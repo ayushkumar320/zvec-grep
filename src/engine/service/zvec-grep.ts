@@ -79,7 +79,7 @@ import { RemoteEmbeddingAuthorizationStore } from "../../authorization/store.js"
 
 const DEFAULT_CONTEXT_LIMIT = 10;
 const DEFAULT_CONTEXT_TOTAL_LIMIT = 30;
-const DEFAULT_LOCAL_EMBEDDING = "local/embeddinggemma-300m";
+const DEFAULT_LOCAL_EMBEDDING = "local/potion-code-16m-v2";
 const PROVIDER_API_KEY_IDENTITY_SECRET = randomBytes(32);
 const MAX_RECOVERED_EMBEDDING_MODELS = 4;
 
@@ -914,7 +914,7 @@ class ZvecGrepService implements ZvecGrep {
           ),
           detail(
             "examples",
-            "local/embeddinggemma-300m, qwen/text-embedding-v4",
+            "local/potion-code-16m-v2, qwen/text-embedding-v4",
           ),
         ]),
       });

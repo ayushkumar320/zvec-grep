@@ -73,13 +73,13 @@ zg index
 Otherwise, use the embedding model selected by the user:
 
 ```bash
-zg index --embedding local/embeddinggemma-300m
+zg index --embedding local/potion-code-16m-v2
 ```
 
 Use focused path filters for a new index:
 
 ```bash
-zg index --embedding local/embeddinggemma-300m -g "src/**" -g "docs/**" -g "test/**" -g "!dist/**" -g "!node_modules/**" -g "!coverage/**"
+zg index --embedding local/potion-code-16m-v2 -g "src/**" -g "docs/**" -g "test/**" -g "!dist/**" -g "!node_modules/**" -g "!coverage/**"
 ```
 
 Rebuild only when an incompatible embedding schema or index version requires it. Existing indexes reuse their stored embedding schema unless the user intentionally changes it.

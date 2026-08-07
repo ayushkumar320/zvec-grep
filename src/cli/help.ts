@@ -73,11 +73,11 @@ Examples:
   zg query "where authentication is validated"
   zg query --fts "AuthService"
   zg query --rg -F "AuthService" src
-  zg index --embedding local/embeddinggemma-300m
+  zg index --embedding local/potion-code-16m-v2
   zg status
   zg auth status
   zg server on
-  zg config model set local/embeddinggemma-300m --device metal
+  zg config model set local/potion-code-16m-v2 --device metal
   zg install
 
 Environment:
@@ -158,7 +158,7 @@ Index options:
   --mode <direct|server|auto>       Select indexing transport
 
 Embedding options:
-  --embedding <model>               Model such as local/embeddinggemma-300m or qwen/text-embedding-v4
+  --embedding <model>               Model such as local/potion-code-16m-v2 or qwen/text-embedding-v4
   --api-key <key>                   Embedding provider API key
   --endpoint <url>                  Embedding provider endpoint
   --model-cache <path>              Local model cache directory

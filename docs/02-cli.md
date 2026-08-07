@@ -162,7 +162,7 @@ Examples:
 ```bash
 zg config provider set qwen --api-key "$DASHSCOPE_API_KEY"
 zg config model set qwen/text-embedding-v4 --default
-zg config model set local/embeddinggemma-300m --device metal
+zg config model set local/potion-code-16m-v2 --device metal
 ```
 
 Global configuration is stored in `~/.zvec-grep/config.json`. Existing indexes
