@@ -1102,9 +1102,7 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
           input.embeddingEnvironment ?? process.env.ZVEC_GREP_EMBEDDING,
       },
       globalDefault: readGlobalConfig().defaults?.embedding,
-      fallback: this.options.serviceOptions?.defaultEmbedding
-        ? DEFAULT_LOCAL_EMBEDDING
-        : undefined,
+      fallback: DEFAULT_LOCAL_EMBEDDING,
     });
     if (!reference) {
       throw new DaemonError(

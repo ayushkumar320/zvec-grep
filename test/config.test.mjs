@@ -196,6 +196,12 @@ test("embedding reference resolver prefers the environment over the global defau
     }),
     "local/potion-code-16m-v2",
   );
+  assert.equal(
+    resolveEmbeddingReference({
+      fallback: "local/potion-code-16m-v2",
+    }),
+    "local/potion-code-16m-v2",
+  );
 });
 
 test("embedding reference resolver validates only a selected environment model", () => {

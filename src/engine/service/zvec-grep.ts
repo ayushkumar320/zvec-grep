@@ -779,10 +779,7 @@ class ZvecGrepService implements ZvecGrep {
     const reference = resolveEmbeddingReference({
       explicit: this.options.embedding,
       globalDefault: config.defaults?.embedding,
-      fallback:
-        this.options.defaultEmbedding === true
-          ? DEFAULT_LOCAL_EMBEDDING
-          : undefined,
+      fallback: DEFAULT_LOCAL_EMBEDDING,
     });
     const referenceIdentity = reference
       ? parseEmbeddingModelReference(reference)
