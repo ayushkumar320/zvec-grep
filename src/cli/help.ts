@@ -105,14 +105,14 @@ Search routes:
   --rg                              Run exhaustive managed ripgrep
 
 Result options:
-  --limit <n>                       Maximum results
-  --human                           Human-readable ranked output
-  --preview <none|short|full>       Indexed source preview size
+  --limit <n>                       Maximum results per group (default: 7)
+  --human                           Human-readable output (default: agent markdown)
+  --preview <none|short|full>       Indexed preview size (default: none; --human: full)
   --debug                           Print diagnostics to stderr
   --trace                           Include per-hit indexed search trace
   --refresh <background|wait|off>   Refresh policy (defaults: server=background, direct=off)
                                     In direct mode, background warns and falls back to off
-  --mode <direct|server|auto>       Select indexed query transport
+  --mode <direct|server|auto>       Select indexed query transport (default: auto)
 
 Embedding runtime:
   --api-key <key>                   Embedding provider API key
