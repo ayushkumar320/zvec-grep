@@ -110,7 +110,8 @@ Result options:
   --preview <none|short|full>       Indexed source preview size
   --debug                           Print diagnostics to stderr
   --trace                           Include per-hit indexed search trace
-  --refresh <background|wait|off>   Refresh policy (Server: background; Direct: off)
+  --refresh <background|wait|off>   Refresh policy (defaults: server=background, direct=off)
+                                    In direct mode, background warns and falls back to off
   --mode <direct|server|auto>       Select indexed query transport
 
 Embedding runtime:
@@ -118,8 +119,6 @@ Embedding runtime:
   --model-cache <path>              Local model cache directory
   --device <device>                 auto, cpu, metal, vulkan, cuda
   --allow-remote                    Allow Remote Embedding for this command only
-
-Direct mode warns and uses off when background is requested.
 
 File filters:
   -g, --glob <glob>                 Include paths; prefix with ! to exclude; repeatable
