@@ -39,7 +39,7 @@ terminal, or let your agent use it for you.
 ## 🎬 See it in action
 
 <div align="center">
-  <img src="./.github/assets/zvec-grep-tour.gif" width="1000" alt="Install the agent integration, index a repository, and let the agent search it with zvec-grep" />
+  <img src="./.github/assets/zvec-grep-tour.gif" width="1000" alt="Install the agent integration, index a workspace, and let the agent search it with zvec-grep" />
 </div>
 
 Install the integration once, index the workspace, then search from the terminal
@@ -80,10 +80,10 @@ explicitly:
 zg install --target codex --yes
 ```
 
-### 2. Index your repository
+### 2. Index your workspace
 
 ```bash
-cd your-repository
+cd your-workspace
 zg index --embedding local/potion-code-16m-v2
 ```
 
@@ -100,8 +100,15 @@ rebuilds.
 My app forgets dark mode every time I refresh. Find out why.
 ```
 
-The agent uses zg for semantic discovery and ranked keyword retrieval, while
-exact lexical lookup stays with native grep or rg. The
+The indexed workspace may contain code, documentation, books, research material,
+meeting notes, manuals, knowledge-base exports, or other local content. Workspace
+search applies only when local material is intended as evidence; unrelated
+open-world, current external, and web-only questions use the appropriate external
+source.
+
+When the answer should be grounded in the current indexed workspace, the agent
+uses zg for semantic discovery and ranked keyword retrieval, while exact lexical
+lookup stays with native grep or rg. The
 [MCP guide](./docs/03-mcp.md) describes the default search tool and the optional
 full toolset, which retains managed rg.
 

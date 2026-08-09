@@ -402,18 +402,39 @@ test("Codex installer refreshes legacy managed guidance", async (t) => {
   assert.match(agents, /# Existing instructions/);
   assert.match(
     agents,
-    /Use native Grep or rg first when the answer can be obtained by locating a specific definition/,
+    /when an exact word, phrase, name, date,[^\n]+locating its occurrences is sufficient, use the managed-rg MCP tool when it is available; otherwise use native Grep or rg/,
   );
   assert.match(
     agents,
-    /Use `zvec_grep_search` first when the answer requires architecture, lifecycle, system design/,
+    /Within a workspace-grounded task, use `zvec_grep_search` when wording or location is unknown/,
+  );
+  assert.match(agents, /comparison or synthesis across files, sections/);
+  assert.match(agents, /Choose the evidence source before the retrieval mode/);
+  assert.match(agents, /asks to inspect, search, or ground the answer/);
+  assert.match(agents, /workspace or repository/);
+  assert.match(agents, /Negative, incidental, or comparative mentions/);
+  assert.match(agents, /or a workspace tool is available/);
+  assert.match(
+    agents,
+    /If the index is missing but exact or regex lookup can answer the task, use the managed-rg MCP tool when it is available, or native Grep or rg otherwise/,
   );
   assert.match(
     agents,
-    /Choose the initial search tool by the scope of the requested answer/,
+    /Non-code content does not make workspace search less appropriate/,
   );
-  assert.match(agents, /treat it as a mixed task/);
-  assert.match(agents, /Do not launch a sub-agent solely to locate code/);
+  assert.match(agents, /managed-rg MCP tool when it is available/);
+  assert.match(agents, /one focused `zvec_grep_search` probe/);
+  assert.match(
+    agents,
+    /semantic discovery is selected because no sufficient exact anchor/,
+  );
+  assert.match(agents, /probe does not apply to exact quotations/i);
+  assert.match(
+    agents,
+    /unrelated open-world questions, current external facts/,
+  );
+  assert.match(agents, /Do not delegate solely to locate material/);
+  assert.doesNotMatch(agents, /solely to locate code/);
   assert.doesNotMatch(agents, /zvec_grep_rg/);
   assert.doesNotMatch(agents, /indexed search first/);
   assert.doesNotMatch(agents, /Indexing and status/);
@@ -469,7 +490,10 @@ test("Claude Code installer configures MCP trust and guidance", async (t) => {
   assert.ok(settings.permissions.allow.includes("mcp__zvec_grep__*"));
   assert.match(guidance, /zvec_grep_search/);
   assert.doesNotMatch(guidance, /zvec_grep_rg/);
-  assert.match(guidance, /Use native Grep or rg first/);
+  assert.match(
+    guidance,
+    /when an exact word, phrase, name, date,[^\n]+locating its occurrences is sufficient, use the managed-rg MCP tool when it is available; otherwise use native Grep or rg/,
+  );
   assert.doesNotMatch(guidance, /Indexing and status/);
   assert.doesNotMatch(guidance, /Remote data authorization/);
   assert.doesNotMatch(guidance, /zg status/);
@@ -664,17 +688,23 @@ test("OpenCode installer preserves config and manages a remote MCP server", asyn
   assert.match(guidance, /# Existing OpenCode guidance/);
   assert.match(
     guidance,
-    /Use native Grep or rg first when the answer can be obtained by locating a specific definition/,
+    /when an exact word, phrase, name, date,[^\n]+locating its occurrences is sufficient, use the managed-rg MCP tool when it is available; otherwise use native Grep or rg/,
   );
   assert.match(
     guidance,
-    /Use `zvec_grep_zvec_grep_search` first when the answer requires architecture, lifecycle, system design/,
+    /Within a workspace-grounded task, use `zvec_grep_zvec_grep_search` when wording or location is unknown/,
   );
   assert.match(
     guidance,
-    /Choose the initial search tool by the scope of the requested answer/,
+    /Choose the evidence source before the retrieval mode/,
   );
-  assert.match(guidance, /treat it as a mixed task/);
+  assert.match(guidance, /one focused `zvec_grep_zvec_grep_search` probe/);
+  assert.match(guidance, /managed-rg MCP tool when it is available/);
+  assert.match(guidance, /probe does not apply to exact quotations/i);
+  assert.match(
+    guidance,
+    /unrelated open-world questions, current external facts/,
+  );
   assert.doesNotMatch(guidance, /zvec_grep_rg/);
   assert.equal(countOccurrences(guidance, "<!-- ZVEC_GREP_START -->"), 1);
   assert.equal(countOccurrences(guidance, "<!-- ZVEC_GREP_END -->"), 1);

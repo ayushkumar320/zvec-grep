@@ -1129,16 +1129,20 @@ function agentGuidanceBlock(toolNames?: { search: string }): string {
   return `${ZVEC_GREP_AGENTS_START}
 ## zvec-grep
 
-Choose the initial search tool by the scope of the requested answer, not merely by whether the question contains an identifier.
+Choose the evidence source before the retrieval mode. Treat the current indexed workspace as an evidence source only when the user asks to inspect, search, or ground the answer in local files, the workspace or repository, or its index; prior context has established the workspace as the intended evidence source; or the user asks whether relevant local material exists. Negative, incidental, or comparative mentions of a workspace do not establish workspace relevance. Do not infer workspace relevance merely because the workspace could contain or mention the topic or a workspace tool is available.
 
-Use native Grep or rg first when the answer can be obtained by locating a specific definition, reference, filename, configuration key, error message, literal, source fragment, or regex.
+The workspace may contain source code, documentation, books, research material, meeting notes, knowledge-base exports, manuals, configuration, data, or mixed content. Non-code content does not make workspace search less appropriate.
 
-Use \`${searchTool}\` first when the answer requires architecture, lifecycle, system design, conceptual discovery, data or control flow, comparison across implementations, design rationale, or performance analysis.
+Once workspace relevance is established, when an exact word, phrase, name, date, identifier, filename, path, configuration key, error message, source fragment, literal, or regex is known and locating its occurrences is sufficient, use the managed-rg MCP tool when it is available; otherwise use native Grep or rg.
 
-When exact symbols are present but the answer spans multiple components, files, stages, or implementations, treat it as a mixed task: use \`${searchTool}\` with the concept and known symbols, then use native Grep or rg for focused follow-up.
+Within a workspace-grounded task, use \`${searchTool}\` when wording or location is unknown, or when the answer requires semantic, conceptual, fuzzy, or paraphrase discovery; relationships, chronology, causality, architecture, or data or control flow; or comparison or synthesis across files, sections, or documents.
 
-Before using broad file reads or a sub-agent for conceptual repository discovery, make at least one appropriate \`${searchTool}\` call.
+Within a workspace-grounded mixed task, when exact anchors are known but the answer requires those relationships or cross-file synthesis, use \`${searchTool}\` with the concept and anchors, then use the managed-rg MCP tool when it is available or native Grep or rg otherwise for focused follow-up.
 
-Do not launch a sub-agent solely to locate code. Stop discovery when the evidence covers all components requested by the question.
+When semantic discovery is selected because no sufficient exact anchor is available and the user asks whether conceptually related material exists locally, make at most one focused \`${searchTool}\` probe using the user's question plus distinctive names, dates, or terms. This probe does not apply to exact quotations, configuration keys, filenames, regexes, or exhaustive occurrence requests. Continue only when the results are relevant; otherwise stop local discovery and report that the indexed workspace did not establish the answer.
+
+Do not use workspace search for unrelated open-world questions, current external facts, or web knowledge that do not depend on local evidence. Before broad file reads or delegating workspace discovery, use the appropriate search route. Do not delegate solely to locate material, and stop when the evidence is sufficient.
+
+Pass a daemon-visible absolute \`root\` on every zvec-grep workspace call. Read \`freshness\` and \`indexing\` from search results without a status preflight, and use \`possibly_stale\` results when they are sufficient. If the index is missing but exact or regex lookup can answer the task, use the managed-rg MCP tool when it is available, or native Grep or rg otherwise; never silently create or rebuild an index.
 ${ZVEC_GREP_AGENTS_END}`;
 }

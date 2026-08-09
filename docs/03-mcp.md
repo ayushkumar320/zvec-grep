@@ -22,15 +22,33 @@ refresh, authentication, and logs.
 
 The default `agent` toolset intentionally exposes only search:
 
+Agents first decide whether the requested answer should be grounded in the
+current indexed workspace, then choose exact or semantic retrieval. The same
+rules apply to source code and non-code material such as documentation, books,
+research material, meeting notes, knowledge-base exports, manuals,
+configuration, and data.
+
+Workspace relevance requires a request to inspect, search, or ground the answer
+in local material, prior context that established local material as the intended
+source, or a question about whether relevant local material exists. Negative,
+incidental, or comparative workspace mentions do not establish relevance.
+
 | Tool | Use it when | Index required |
 | --- | --- | --- |
-| `zvec_grep_search` | The answer requires conceptual discovery, architecture, lifecycle, or cross-component flow | Yes |
+| `zvec_grep_search` | The answer is workspace-grounded and wording or location is unknown, or semantic, fuzzy, relationship, chronology, causality, comparison, or cross-file synthesis is required | Yes |
 
-Agents use native grep or rg when locating an exact word, symbol, filename, path,
-source fragment, or regex is sufficient. For mixed tasks, start with
-`zvec_grep_search`, then use native grep or rg for focused follow-up.
+Agents use native grep or rg when locating an exact word, quotation, name, date,
+key, filename, path, source fragment, or regex is sufficient. For mixed tasks,
+start with `zvec_grep_search`, then use native grep or rg for focused follow-up.
+When semantic discovery is selected because no sufficient exact anchor is
+available and the user asks whether conceptually related material exists
+locally, agents make at most one focused search probe and stop when its results
+are not relevant. The probe does not apply to exact quotations, configuration
+keys, filenames, regexes, or exhaustive occurrence requests. Unrelated
+open-world knowledge, current external facts, and web content that does not
+depend on local evidence use the appropriate external source instead.
 
-Every repository tool input uses an absolute `root` visible to the daemon.
+Every workspace tool input uses an absolute `root` visible to the daemon.
 
 ## `zvec_grep_search`
 
@@ -41,8 +59,8 @@ Minimal conceptual search:
 
 ```json
 {
-  "root": "/absolute/path/to/repository",
-  "query": "theme preference persistence on startup",
+  "root": "/absolute/path/to/workspace",
+  "query": "decision history behind the launch date",
   "limit": 5
 }
 ```
@@ -51,7 +69,7 @@ Explicit query routes and scope:
 
 ```json
 {
-  "root": "/absolute/path/to/repository",
+  "root": "/absolute/path/to/workspace",
   "query": "authentication flow",
   "fts": ["AuthService", "ForbiddenError"],
   "globs": ["src/**", "!src/generated/**"],
@@ -67,7 +85,7 @@ Important inputs:
 | --- | --- |
 | `query` | One hybrid natural-language or exact query |
 | `queries` | One or more hybrid query groups |
-| `fts` | Ranked lexical query groups |
+| `fts` | Ranked lexical constraints within indexed search, not exhaustive occurrence lookup |
 | `vector` | Semantic-only query groups |
 | `fuse` | Combine every group into one ranked plan |
 | `limit` | Maximum items per group, up to 50 |
@@ -110,7 +128,7 @@ arguments and is never executed by a shell:
 
 ```json
 {
-  "root": "/absolute/path/to/repository",
+  "root": "/absolute/path/to/workspace",
   "command": "rg -n -F 'loadTheme' -g '*.ts' src"
 }
 ```
@@ -120,7 +138,7 @@ requesting bounded output:
 
 ```json
 {
-  "root": "/absolute/path/to/repository",
+  "root": "/absolute/path/to/workspace",
   "command": "rg -n 'TODO|FIXME' src | head -50"
 }
 ```

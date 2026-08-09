@@ -31,15 +31,15 @@
 </div>
 
 **zg**（**z**vec-**g**rep）将 ripgrep、BM25 与向量检索统一在一个
-[本地优先的检索入口](./docs/05-architecture.md)中。无论是人在终端中搜索，
-还是让 Agent 自主检索，只用 zg 即可。
+[本地优先的检索入口](./docs/05-architecture.md)中。既可以由人在终端中搜索，
+也可以让 Agent 根据问题选择合适的本地检索方式。
 
 <a id="tour"></a>
 
 ## 🎬 功能演示
 
 <div align="center">
-  <img src="./.github/assets/zvec-grep-tour.gif" width="1000" alt="安装 Agent 集成、为仓库建索引并让 Agent 使用 zvec-grep 搜索代码" />
+  <img src="./.github/assets/zvec-grep-tour.gif" width="1000" alt="安装 Agent 集成、为工作区建索引并让 Agent 使用 zvec-grep 检索本地内容" />
 </div>
 
 只需安装一次集成并为工作区建索引，之后既可以在终端中搜索，也可以直接向
@@ -79,10 +79,10 @@ zg install
 zg install --target codex --yes
 ```
 
-### 2. 为仓库建索引
+### 2. 为工作区建索引
 
 ```bash
-cd your-repository
+cd your-workspace
 zg index --embedding local/potion-code-16m-v2
 ```
 
@@ -97,8 +97,13 @@ zg index --embedding local/potion-code-16m-v2
 每次刷新页面，应用都会忘记深色模式。帮我找出原因。
 ```
 
-Agent 会始终通过 zg 完成语义发现、关键词相关性检索与穷尽精确匹配。你无需
-选择或调用其他搜索工具。[MCP 指南](./docs/03-mcp.md)介绍了 Agent 使用的两个工具。
+已索引工作区既可以包含代码，也可以包含文档、书籍、研究资料、会议纪要、手册、
+知识库导出或其他本地内容。只有当本地资料应作为回答依据时才搜索工作区；无关的
+开放世界知识、当前外部事实和纯网页问题应使用相应的外部来源。
+
+当答案应基于当前已索引工作区时，Agent 使用 zg 完成语义发现与关键词相关性
+检索；穷尽精确匹配仍使用原生 grep 或 rg。[MCP 指南](./docs/03-mcp.md)介绍了
+默认的单一搜索工具，以及保留 managed rg 的可选 full toolset。
 
 也可以直接在终端中使用同一个本地检索层。查看 [CLI 指南](./docs/02-cli.md)，了解
 搜索方式、过滤条件和输出控制。

@@ -6,8 +6,9 @@
 [Embedding](./07-embedding.md) · [Roadmap](./08-roadmap.md)
 
 `zg install` connects zvec-grep to supported agents through the local MCP
-server. After that, the agent can use zg for conceptual discovery and exact
-search without switching between unrelated search tools.
+server. After that, the agent can use indexed retrieval for workspace-grounded
+semantic discovery while keeping exact lookup on the appropriate native or
+managed-rg route.
 
 ## Supported agents
 
@@ -56,19 +57,39 @@ Restart the selected agent, or open a new session, after installation.
 
 ## How the agent searches
 
+The agent routes in two stages: first it decides whether the answer should be
+grounded in the current indexed workspace, then it chooses exact or semantic
+retrieval. Code versus non-code is not the boundary; a workspace may contain
+source code, documentation, books, research material, meeting notes,
+knowledge-base exports, manuals, configuration, data, or mixed content.
+
+Workspace content is the intended evidence source when the user asks to inspect,
+search, or ground the answer in local files, the workspace, or its index; prior
+context established local material as the intended source; or the user asks
+whether relevant local material exists. Negative, incidental, or comparative
+workspace mentions do not establish relevance. Tool availability or topic
+overlap alone does not establish workspace relevance.
+
 The default MCP surface gives the agent one indexed search tool and leaves exact
 lexical lookup to the agent's native tools:
 
 | Intent | Tool |
 | --- | --- |
-| Locating known words, symbols, filenames, paths, or regexes is sufficient | Native grep or rg |
-| The answer requires conceptual discovery, architecture, lifecycle, or cross-component flow | `zvec_grep_search` |
-| Exact symbols are known but the answer spans components, files, or stages | `zvec_grep_search`, then native grep or rg |
+| Workspace-grounded exact words, quotations, names, dates, keys, filenames, paths, or regexes are sufficient | Native grep or rg |
+| Workspace-grounded wording or location is unknown, or the answer requires semantic, fuzzy, relationship, chronology, causality, comparison, or cross-file synthesis | `zvec_grep_search` |
+| Exact anchors are known but the answer requires broader context or synthesis | `zvec_grep_search`, then native grep or rg |
+| The answer is unrelated open-world knowledge, a current external fact, or web content that does not depend on local evidence | The appropriate external source, not zvec-grep |
 
 `zvec_grep_search` needs an existing index. Managed rg remains available through
 `zg query --rg` and through the optional `full` MCP toolset. See the
 [Pipeline guide](./04-pipeline.md) for the distinction and the
 [MCP guide](./03-mcp.md) for tool inputs.
+
+When semantic discovery is selected because no sufficient exact anchor is
+available and the user asks whether conceptually related material exists
+locally, the agent makes at most one focused `zvec_grep_search` probe and stops
+when the results are not relevant. Exact quotations, configuration keys,
+filenames, regexes, and exhaustive occurrence requests stay on the exact route.
 
 ## Verify the setup
 

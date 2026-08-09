@@ -1,4 +1,4 @@
 interface:
   display_name: "zvec-grep"
-  short_description: "Repository search with explicit index lifecycle"
-  default_prompt: "Use $zvec-grep to investigate this repository before raw grep or rg. Prefer the public MCP search tools, and use the zg CLI only for authorized index lifecycle or daemon diagnostics."
+  short_description: "Search indexed workspaces across code and non-code content"
+  default_prompt: "Use $zvec-grep when the answer should be grounded in the current indexed workspace; it applies to code and non-code material. Use MCP search for conceptual retrieval and the zg CLI only for authorized index lifecycle or daemon diagnostics."

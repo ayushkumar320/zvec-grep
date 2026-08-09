@@ -214,27 +214,40 @@ export interface ZvecGrepDaemonBackend {
   serverStatus(): Promise<ZvecGrepServerStatusResult>;
 }
 
+const ZVEC_GREP_WORKSPACE_ROUTING_MCP_INSTRUCTIONS = [
+  "Route retrieval in two stages: first decide whether the answer should be grounded in the current indexed workspace, and only then choose exact or semantic retrieval.",
+  "Do not use code versus non-code as the boundary. A workspace may contain source code, documentation, books, research material, meeting notes, knowledge-base exports, manuals, configuration, data, or mixed content.",
+  "Treat the workspace as an intended evidence source only when the user asks to inspect, search, or ground the answer in the workspace, index, repository, or local files; prior conversation established local material as the intended evidence source; or the user asks whether relevant material exists locally.",
+  "Negative, incidental, or comparative mentions of a workspace do not establish workspace relevance.",
+  "Do not invoke workspace search for unrelated open-world questions, current external facts, or web content merely because the topic overlaps indexed material or a workspace tool is available.",
+];
+
 const ZVEC_GREP_AGENT_SEARCH_MCP_INSTRUCTIONS = [
-  "Choose the initial search tool by the scope of the requested answer, not merely by whether the question contains an identifier.",
-  "Use native Grep or rg first when the answer can be obtained by locating a specific definition, reference, filename, configuration key, error message, literal, source fragment, or regex.",
-  "Use zvec_grep_search first when the answer requires architecture, lifecycle, system design, conceptual discovery, data or control flow, comparison across implementations, design rationale, or performance analysis.",
-  "When exact symbols are present but the answer spans multiple components, files, stages, or implementations, treat it as a mixed task: use zvec_grep_search with the concept and known symbols, then use native Grep or rg for focused follow-up.",
-  "Before using broad file reads or a sub-agent for conceptual repository discovery, make at least one appropriate zvec_grep_search call.",
-  "Do not launch a sub-agent solely to locate code. Stop discovery when the evidence covers all components requested by the question.",
+  ...ZVEC_GREP_WORKSPACE_ROUTING_MCP_INSTRUCTIONS,
+  "After workspace relevance is established, use native Grep or rg first for exact lookup when known text, names, titles, dates, quotations, keys, symbols, filenames, error messages, source fragments, or regexes can answer the question.",
+  "Within a workspace-grounded task, use zvec_grep_search when wording or location is unknown; the question is conceptual or fuzzy; you need paraphrases or related passages; you need relationships among people, events, concepts, or components; you need chronology or causality; or the answer requires comparison or synthesis across files or sections.",
+  "Within a workspace-grounded mixed task, include known names, titles, dates, quotations, keys, or symbols as anchors in zvec_grep_search, then use native Grep or rg for focused exact follow-up.",
+  "When semantic discovery is selected because no sufficient exact anchor is available and the user asks whether conceptually related material exists locally, make at most one focused zvec_grep_search probe. This probe does not apply to exact quotations, configuration keys, filenames, regexes, or exhaustive occurrence requests; if its results are irrelevant, stop workspace discovery.",
+  "Before broad file reads or a sub-agent for semantic workspace-material discovery, make at least one appropriate zvec_grep_search call.",
+  "Do not launch a sub-agent solely to locate workspace material. Stop discovery when the evidence covers the requested scope.",
 ];
 
 const ZVEC_GREP_FULL_SEARCH_MCP_INSTRUCTIONS = [
-  "Choose the initial search tool by the scope of the requested answer, not merely by whether the question contains an identifier.",
-  "Use zvec_grep_rg first only when the answer can be obtained by locating a specific definition, reference, filename, configuration key, error message, literal, source fragment, or regex.",
-  "Use zvec_grep_search first when the answer requires architecture, lifecycle, system design, conceptual discovery, data or control flow, comparison across implementations, design rationale, or performance analysis.",
-  "When exact symbols are present but the answer spans multiple components, files, stages, or implementations, treat it as a mixed task: search using the concept and known symbols, then use zvec_grep_rg for focused follow-up.",
-  "Before using native Grep, Glob, shell rg, broad file reads, or a sub-agent for repository discovery, make at least one appropriate zvec-grep call.",
-  "Do not launch a sub-agent solely to locate code. Stop discovery when the evidence covers all components requested by the question.",
+  ...ZVEC_GREP_WORKSPACE_ROUTING_MCP_INSTRUCTIONS,
+  "After workspace relevance is established, use zvec_grep_rg first for exact lookup when known text, names, titles, dates, quotations, keys, symbols, filenames, error messages, source fragments, or regexes can answer the question.",
+  "Within a workspace-grounded task, use zvec_grep_search when wording or location is unknown; the question is conceptual or fuzzy; you need paraphrases or related passages; you need relationships among people, events, concepts, or components; you need chronology or causality; or the answer requires comparison or synthesis across files or sections.",
+  "Within a workspace-grounded mixed task, include known names, titles, dates, quotations, keys, or symbols as anchors in zvec_grep_search, then use zvec_grep_rg for focused exact follow-up.",
+  "When semantic discovery is selected because no sufficient exact anchor is available and the user asks whether conceptually related material exists locally, make at most one focused zvec_grep_search probe. This probe does not apply to exact quotations, configuration keys, filenames, regexes, or exhaustive occurrence requests; if its results are irrelevant, stop workspace discovery.",
+  "Before using native Grep, Glob, shell rg, broad file reads, or a sub-agent for workspace-material discovery, make at least one appropriate zvec-grep call.",
+  "Do not launch a sub-agent solely to locate workspace material. Stop discovery when the evidence covers the requested scope.",
 ];
+
+const ZVEC_GREP_SEARCH_TOOL_DESCRIPTION =
+  "Search an existing workspace index across source code and non-code material, including documentation, books, research material, meeting notes, knowledge-base exports, manuals, configuration, data, or mixed content. Use only when the user asks to inspect, search, or ground the answer in the current indexed workspace, prior conversation established local material as the intended evidence source, or the user asks whether relevant material exists locally. Negative, incidental, or comparative workspace mentions do not establish relevance, and unrelated open-world questions, current external facts, or web content do not become workspace tasks merely because the topic overlaps indexed material or the tool is available. Within a workspace-grounded task, use semantic search when wording or location is unknown, the request is conceptual or fuzzy, or it needs paraphrases, related passages, relationships among people, events, concepts, or components, chronology or causality, or comparison or synthesis across files or sections. For workspace-grounded mixed tasks, include known names, titles, dates, quotations, keys, or symbols as anchors, then use exact lookup for focused follow-up. When the user asks whether conceptually related material exists locally and no sufficient exact anchor is available, make at most one focused probe and stop if its results are irrelevant. Do not use that probe for exact quotations, configuration keys, filenames, regexes, or exhaustive occurrence requests.";
 
 export const ZVEC_GREP_AGENT_MCP_INSTRUCTIONS = [
   ...ZVEC_GREP_AGENT_SEARCH_MCP_INSTRUCTIONS,
-  "Every repository operation requires an absolute root path visible to the daemon.",
+  "Every workspace operation requires an absolute root path visible to the daemon.",
   "Read freshness and indexing directly from zvec_grep_search responses without a status preflight.",
   "Use possibly_stale search results immediately when they are sufficient; do not perform extra diagnostics merely because a background update is active.",
   "When an index is missing and literal or regex search can answer the task, use native Grep or rg.",
@@ -242,8 +255,8 @@ export const ZVEC_GREP_AGENT_MCP_INSTRUCTIONS = [
 
 export const ZVEC_GREP_FULL_MCP_INSTRUCTIONS = [
   ...ZVEC_GREP_FULL_SEARCH_MCP_INSTRUCTIONS,
-  "Every repository operation requires an absolute root path visible to the daemon.",
-  "Use the zvec_grep_* tools directly for repository search, status, indexing, deletion, and exhaustive lexical search.",
+  "Every workspace operation requires an absolute root path visible to the daemon.",
+  "Use the zvec_grep_* tools directly for workspace search, status, indexing, deletion, and exhaustive lexical search.",
   "Use freshness and indexing from zvec_grep_search without a status preflight; call zvec_grep_index_status only for a missing index, failed or cancelled indexing, diagnostics, or explicit progress monitoring.",
   "Use possibly_stale search results immediately when they are sufficient; do not call status merely because a background update is active.",
   "Call zvec_grep_index only when persistent indexing or index deletion is explicitly requested. Never silently create, rebuild, or drop an index.",
@@ -311,7 +324,7 @@ export function registerZvecGrepTools(
       {
         title: "Ensure or drop zvec-grep index",
         description:
-          "Activate an absolute repository root to create, incrementally update, rebuild, or explicitly drop its index. Do not call this tool to create, rebuild, or drop an index unless the user requested persistent indexing or index deletion.",
+          "Activate an absolute workspace root to create, incrementally update, rebuild, or explicitly drop its index. Do not call this tool to create, rebuild, or drop an index unless the user requested persistent indexing or index deletion.",
         inputSchema: zvecGrepIndexInputSchema,
         outputSchema: zvecGrepIndexOutputSchema,
         annotations: {
@@ -396,8 +409,8 @@ export function registerZvecGrepTools(
     {
       title: "Search with zvec-grep",
       description: full
-        ? "Search an existing repository index when the answer requires architecture, lifecycle, system design, conceptual discovery, data or control flow, comparison across implementations, design rationale, or performance analysis. Use search for mixed tasks whose question names exact symbols but whose answer spans multiple components, files, stages, or implementations; use managed ripgrep for focused follow-up. Read freshness and indexing from the response; use zvec_grep_index_status only for missing indexes, failed or cancelled indexing, diagnostics, or explicit progress monitoring."
-        : "Search an existing repository index when the answer requires architecture, lifecycle, system design, conceptual discovery, data or control flow, comparison across implementations, design rationale, or performance analysis. Use search for mixed tasks whose question names exact symbols but whose answer spans multiple components, files, stages, or implementations; use native Grep or rg for focused follow-up. Read freshness and indexing directly from the response without a status preflight. When an index is unavailable, use the returned diagnostics and native Grep or rg for exact fallback.",
+        ? `${ZVEC_GREP_SEARCH_TOOL_DESCRIPTION} In the full toolset, use zvec_grep_rg for exact lookup and focused follow-up. Read freshness and indexing from the response; use zvec_grep_index_status only for missing indexes, failed or cancelled indexing, diagnostics, or explicit progress monitoring.`
+        : `${ZVEC_GREP_SEARCH_TOOL_DESCRIPTION} In the agent toolset, use native Grep or rg for exact lookup and focused follow-up. Read freshness and indexing directly from the response without a status preflight. When an index is unavailable, use the returned diagnostics and native Grep or rg for exact fallback.`,
       inputSchema: zvecGrepSearchInputSchema,
       annotations: {
         readOnlyHint: false,
@@ -491,7 +504,7 @@ export function registerZvecGrepTools(
       {
         title: "Search with managed ripgrep",
         description:
-          "Run exhaustive, AST-enriched managed ripgrep locally without requiring an index. Use it first only when the answer can be obtained by locating a specific definition, reference, filename, configuration key, error message, literal, source fragment, or regex. Pass the rg command you would otherwise run. Results are exhaustive by default; append `| head -N` only when you intentionally want a bounded result set. Scope broad matches with command paths, `-g`/`--glob`, or `-t`/`--type` filters.",
+          "Run exhaustive, AST-enriched managed ripgrep locally across source code or non-code workspace material without requiring an index. Use it for exact lookup only when the answer should be grounded in the workspace and known text, names, titles, dates, quotations, keys, symbols, filenames, error messages, source fragments, or regexes can answer the question. Do not use it for unrelated open-world questions, current external facts, or web content merely because the topic overlaps workspace material or the tool is available. Pass the rg command you would otherwise run. Results are exhaustive by default; append `| head -N` only when you intentionally want a bounded result set. Scope broad matches with command paths, `-g`/`--glob`, or `-t`/`--type` filters.",
         inputSchema: zvecGrepRgInputSchema,
         annotations: {
           readOnlyHint: true,

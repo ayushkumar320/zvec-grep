@@ -15,17 +15,30 @@ test("zvec-grep skill triggers by task and selects the available transport", asy
 
   assert.match(
     skill,
-    /^description: Repository code search and indexing with zvec-grep/m,
+    /^description: Search and index local workspaces with zvec-grep/m,
+  );
+  assert.match(skill, /code and non-code corpora/);
+  assert.match(skill, /local, workspace, repository, or indexed material/);
+  assert.match(skill, /or for unrelated open-world/);
+  assert.match(
+    skill,
+    /negative, incidental, or comparative workspace mentions/,
   );
   assert.match(
     skill,
-    /repository investigation would otherwise use grep, rg, or broad file reads/,
+    /Treat the current indexed workspace as an evidence source/,
   );
+  assert.match(skill, /workspace or repository/);
+  assert.match(skill, /or a workspace tool is\s+available/);
   assert.match(
     skill,
-    /Use zvec-grep indexed search for conceptual repository investigation/,
+    /semantic\s+comparison or synthesis across files, sections, or documents/,
   );
-  assert.match(skill, /Use native\s+`grep` or `rg` for exact lexical searches/);
+  assert.doesNotMatch(skill, /semantic or\s+cross-file retrieval/);
+  assert.match(
+    skill,
+    /Use native\s+`grep`\s+or `rg` for exact lexical searches/,
+  );
   assert.match(
     skill,
     /Use the public native HTTP MCP search tools as the primary interface when the matching `zvec_grep_\*` tool is present/,
@@ -39,22 +52,32 @@ test("zvec-grep skill triggers by task and selects the available transport", asy
     /default public MCP endpoint intentionally exposes only indexed search/,
   );
   assert.match(skill, /default Auto mode can select Server or Direct/);
+  assert.doesNotMatch(skill, /explicit no-index lexical search is needed/);
   assert.match(
     skill,
     /do not probe forced Server mode and then retry forced Direct mode/,
   );
   assert.match(
     skill,
-    /Use native `grep` or `rg` when an exact keyword, text, symbol, filename/,
+    /When an exact word, phrase, name, date,[\s\S]*?locating its occurrences is sufficient, use the managed-rg MCP tool when\s+it is available; otherwise use native `grep` or `rg`/,
   );
   assert.match(skill, /optional full MCP toolset exposes\s+`zvec_grep_rg`/);
   assert.match(
     skill,
-    /Call `zvec_grep_search` when the answer requires conceptual discovery/,
+    /Within a workspace-grounded task, call `zvec_grep_search` when wording or/,
   );
+  assert.match(skill, /comparison or synthesis across files, sections/);
+  assert.match(skill, /call\s+`zvec_grep_search` with the concept and anchors/);
+  assert.match(skill, /make at most one focused `zvec_grep_search` probe/);
   assert.match(
     skill,
-    /call `zvec_grep_search` first with the\s+concept and known symbols/,
+    /semantic discovery is selected because no sufficient exact anchor/,
+  );
+  assert.match(skill, /does not apply to\s+exact quotations/);
+  assert.match(skill, /ranked lexical constraints within an indexed search/);
+  assert.match(
+    skill,
+    /unrelated open-world\s+questions,\s+current external facts/,
   );
   assert.match(skill, /`freshness` and `indexing`/);
   assert.match(skill, /After authorization, use the CLI lifecycle workflow/);
@@ -62,11 +85,20 @@ test("zvec-grep skill triggers by task and selects the available transport", asy
   assert.doesNotMatch(skill, /zvec_grep_server_status/);
   assert.match(skill, /references\/cli-fallback\.md/);
   assert.doesNotMatch(skill, /Use zvec-grep through the `zg` command/);
-  assert.match(metadata, /Repository search with explicit index lifecycle/);
   assert.match(
     metadata,
-    /Prefer the public MCP search tools, and use the zg CLI only for authorized index lifecycle or daemon diagnostics/,
+    /Search indexed workspaces across code and non-code content/,
   );
+  assert.match(
+    metadata,
+    /Use \$zvec-grep when the answer should be grounded in the current indexed workspace/,
+  );
+  assert.match(fallback, /once per workspace investigation/);
+  assert.match(
+    fallback,
+    /Use native `grep` or `rg` for\s+no-index exact lookup/,
+  );
+  assert.match(fallback, /a\s+CLI fallback condition above is satisfied/);
   assert.match(fallback, /Leave `--mode` unset/);
   assert.match(fallback, /zg status\r?\n/);
   assert.doesNotMatch(fallback, /zg status --mode (?:server|direct)/);

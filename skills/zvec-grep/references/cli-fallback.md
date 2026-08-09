@@ -1,6 +1,9 @@
 # CLI fallback
 
-Use these commands only when the native MCP tools are unavailable or when an explicit no-index lexical search is required.
+Use these commands only when an indexed MCP search tool is unavailable, failed,
+or cannot perform the required operation, or when an authorized index lifecycle
+or daemon-diagnostics task requires the CLI. Use native `grep` or `rg` for
+no-index exact lookup.
 
 ## Choose the route
 
@@ -15,7 +18,7 @@ Do not probe with `--mode server` and then retry with `--mode direct`. Use an ex
 
 ## Check index state
 
-Check status once per repository investigation and reuse it:
+Check status once per workspace investigation and reuse it:
 
 ```bash
 zg status
@@ -46,7 +49,9 @@ If the local model or embedding context remains unavailable and exact anchors ar
 zg query --fts "AuthService" --fts "ForbiddenError" -g "src/**" --limit 20 --preview short
 ```
 
-Do not switch to managed ripgrep merely because semantic search is unavailable. Use it only when the task requires exhaustive literal or regex matching, or when no index exists and the user has not authorized creating one.
+Do not switch to managed ripgrep merely because semantic search is unavailable.
+Use it only when the task requires exhaustive literal or regex matching and a
+CLI fallback condition above is satisfied.
 
 ## Search exhaustively with managed ripgrep
 
