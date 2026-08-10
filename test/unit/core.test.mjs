@@ -602,7 +602,7 @@ test("file, model, content, and entity helpers classify inputs", () => {
   });
   assert.equal(detectFileType("archive.zip"), null);
   assert.deepEqual(detectFileType("NOTICE"), { kind: "text", format: "text" });
-  assert.equal(listEmbeddingModels().length, 13);
+  assert.equal(listEmbeddingModels().length, 14);
   assert.equal(
     getEmbeddingModelCatalogEntry("local/embeddinggemma-300m")?.dimension,
     768,
@@ -634,19 +634,37 @@ test("file, model, content, and entity helpers classify inputs", () => {
   );
   assert.deepEqual(
     {
-      backend: getEmbeddingModelCatalogEntry("local/potion-base-8m")?.backend,
-      modelFile: getEmbeddingModelCatalogEntry("local/potion-base-8m")
+      backend: getEmbeddingModelCatalogEntry("local/potion-retrieval-32m")
+        ?.backend,
+      modelFile: getEmbeddingModelCatalogEntry("local/potion-retrieval-32m")
         ?.modelFile,
-      dimension: getEmbeddingModelCatalogEntry("local/potion-base-8m")
+      dimension: getEmbeddingModelCatalogEntry("local/potion-retrieval-32m")
         ?.dimension,
-      maxBatchSize: getEmbeddingModelCatalogEntry("local/potion-base-8m")
-        ?.maxBatchSize,
+      maxInputTokens: getEmbeddingModelCatalogEntry(
+        "local/potion-retrieval-32m",
+      )?.maxInputTokens,
     },
     {
       backend: "model2vec",
       modelFile: "model.safetensors",
+      dimension: 512,
+      maxInputTokens: 1024,
+    },
+  );
+  assert.deepEqual(
+    {
+      modelFile: getEmbeddingModelCatalogEntry("local/potion-multilingual-128m")
+        ?.modelFile,
+      dimension: getEmbeddingModelCatalogEntry("local/potion-multilingual-128m")
+        ?.dimension,
+      maxInputTokens: getEmbeddingModelCatalogEntry(
+        "local/potion-multilingual-128m",
+      )?.maxInputTokens,
+    },
+    {
+      modelFile: "model.safetensors",
       dimension: 256,
-      maxBatchSize: 256,
+      maxInputTokens: 1024,
     },
   );
   assert.deepEqual(
@@ -655,8 +673,14 @@ test("file, model, content, and entity helpers classify inputs", () => {
         ?.modelFile,
       dimension: getEmbeddingModelCatalogEntry("local/potion-code-16m-v2")
         ?.dimension,
+      maxInputTokens: getEmbeddingModelCatalogEntry("local/potion-code-16m-v2")
+        ?.maxInputTokens,
     },
-    { modelFile: "model.safetensors", dimension: 256 },
+    {
+      modelFile: "model.safetensors",
+      dimension: 256,
+      maxInputTokens: 1024,
+    },
   );
   assert.deepEqual(
     {

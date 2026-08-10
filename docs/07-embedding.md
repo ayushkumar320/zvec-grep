@@ -23,7 +23,9 @@ content to the configured provider after authorization.
 
 | Need | Start with | Why |
 | --- | --- | --- |
-| A fast first index for a code repository | `local/potion-code-16m-v2` | Small static Model2Vec model with an 8,192-token input limit |
+| A fast first index for a code repository | `local/potion-code-16m-v2` | Small static Model2Vec model with a 1,024-token input limit |
+| Fast English document retrieval | `local/potion-retrieval-32m` | Retrieval-tuned static model with 512-dimensional vectors |
+| Fast multilingual document retrieval | `local/potion-multilingual-128m` | Static model trained for 101 languages with compact 256-dimensional vectors |
 | A Transformer model specialized for code | `local/jina-embeddings-v2-base-code` | Code-oriented, multilingual, and long-context |
 | General multilingual code and documents | `local/embeddinggemma-300m` | Broad language coverage in a local GGUF model |
 | A smaller multilingual model | `local/multilingual-e5-small` | Compact 384-dimensional Transformer model |
@@ -43,8 +45,9 @@ file.
 
 | Model | Runtime | Max input tokens | Dimensions |
 | --- | --- | ---: | ---: |
-| `local/potion-code-16m-v2` | Model2Vec FP16 | 8,192 | 256 |
-| `local/potion-base-8m` | Model2Vec FP32 | 512 | 256 |
+| `local/potion-code-16m-v2` | Model2Vec FP16 | 1,024 | 256 |
+| `local/potion-retrieval-32m` | Model2Vec FP32 | 1,024 | 512 |
+| `local/potion-multilingual-128m` | Model2Vec FP32 | 1,024 | 256 |
 | `local/all-minilm-l6-v2` | ONNX Q4 | 256 | 384 |
 | `local/bge-small-en-v1.5` | ONNX Q4 | 512 | 384 |
 | `local/multilingual-e5-small` | ONNX Q8 | 512 | 384 |

@@ -47,7 +47,7 @@ test("direct and server indexes report aggregate local model download progress",
         "--mode",
         "direct",
         "--embedding",
-        "local/potion-base-8m",
+        "local/potion-retrieval-32m",
         "--model-cache",
         directCache,
         root,
@@ -55,8 +55,8 @@ test("direct and server indexes report aggregate local model download progress",
       { cwd: root, env: baseEnv, timeout: 120_000 },
     ),
     (error) => {
-      assert.match(error.stderr, /Preparing local\/potion-base-8m/);
-      assert.match(error.stderr, /Downloading local\/potion-base-8m/);
+      assert.match(error.stderr, /Preparing local\/potion-retrieval-32m/);
+      assert.match(error.stderr, /Downloading local\/potion-retrieval-32m/);
       assert.doesNotMatch(error.stderr, /model\.safetensors|tokenizer\.json/);
       return true;
     },
@@ -84,14 +84,14 @@ test("direct and server indexes report aggregate local model download progress",
         "--mode",
         "server",
         "--embedding",
-        "local/potion-base-8m",
+        "local/potion-retrieval-32m",
         root,
       ],
       { cwd: root, env: serverEnv, timeout: 120_000 },
     ),
     (error) => {
-      assert.match(error.stderr, /Preparing local\/potion-base-8m/);
-      assert.match(error.stderr, /Downloading local\/potion-base-8m/);
+      assert.match(error.stderr, /Preparing local\/potion-retrieval-32m/);
+      assert.match(error.stderr, /Downloading local\/potion-retrieval-32m/);
       assert.doesNotMatch(error.stderr, /model\.safetensors|tokenizer\.json/);
       return true;
     },
@@ -508,7 +508,14 @@ test("direct index points an empty workspace to file type help", async (t) => {
   await mkdir(root, { recursive: true });
 
   const indexed = await runCli(
-    ["index", "--mode", "direct", "--embedding", "local/potion-base-8m", root],
+    [
+      "index",
+      "--mode",
+      "direct",
+      "--embedding",
+      "local/potion-code-16m-v2",
+      root,
+    ],
     {
       cwd: root,
       env: {
@@ -535,6 +542,9 @@ test("CLI exposes stable help, version, and failure behavior", async (t) => {
   assert.match(helpTopics.stdout, /file-types\s+Supported file types/);
   const modelsHelp = await runCli(["help", "models"]);
   assert.match(modelsHelp.stdout, /local\/potion-code-16m-v2/);
+  assert.match(modelsHelp.stdout, /local\/potion-retrieval-32m/);
+  assert.match(modelsHelp.stdout, /local\/potion-multilingual-128m/);
+  assert.doesNotMatch(modelsHelp.stdout, /local\/potion-base-8m/);
   assert.match(modelsHelp.stdout, /qwen\/qwen3-vl-embedding/);
   assert.match(modelsHelp.stdout, /Local models are downloaded/);
   assert.match(modelsHelp.stdout, /Workspace authorization/);
