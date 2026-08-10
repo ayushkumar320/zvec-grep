@@ -56,7 +56,6 @@ test("npm package contains and exposes the supported public surface", async (t) 
     "dist/index.js",
     "dist/index.d.ts",
     "dist/cli/index.js",
-    "skills/zvec-grep/SKILL.md",
   ]) {
     assert.ok(paths.has(required), `package is missing ${required}`);
   }

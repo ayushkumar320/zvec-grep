@@ -32,8 +32,7 @@
     "README_CN.md",
     "LICENSE",
     "docs",
-    "dist",
-    "skills/zvec-grep"
+    "dist"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",

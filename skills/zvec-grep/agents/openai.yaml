@@ -1,4 +1,0 @@
-interface:
-  display_name: "zvec-grep"
-  short_description: "Search indexed workspaces across code and non-code content"
-  default_prompt: 'Use $zvec-grep to ground local requests and current-project implementation questions in the indexed workspace even when "workspace" is not explicit; do not use it for unrelated open-world questions.'
