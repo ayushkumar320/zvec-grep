@@ -29,6 +29,7 @@ class DownloadProgressEmbeddingModel extends FakeEmbeddingModel {
     super();
     this.info = {
       ...this.info,
+      defaultConcurrency: 2,
       limits: { maxBatchSize: 1 },
     };
   }
@@ -78,7 +79,6 @@ test("service exposes embedding model download progress while indexing", async (
 
   const progressEvents = [];
   await service.index({
-    embeddingConcurrency: 2,
     onProgress: (progress) => progressEvents.push(progress),
   });
 
@@ -100,6 +100,13 @@ test("service exposes embedding model download progress while indexing", async (
   );
   assert.ok(preparingIndex >= 0);
   assert.ok(readyIndex > preparingIndex);
+  assert.ok(
+    progressEvents.some(
+      (progress) =>
+        progress.embedding?.concurrency === 2 &&
+        progress.embedding.maxConcurrency === 2,
+    ),
+  );
   assert.ok(
     progressEvents
       .slice(preparingIndex, readyIndex + 1)

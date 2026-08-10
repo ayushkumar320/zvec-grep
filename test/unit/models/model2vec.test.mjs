@@ -23,6 +23,7 @@ function entry(overrides = {}) {
     documentPrefix: "passage: ",
     maxInputTokens: 512,
     maxBatchSize: 32,
+    defaultConcurrency: 2,
     ...overrides,
   };
 }
@@ -110,6 +111,7 @@ test("Model2Vec downloads pinned Safetensors assets and performs normalized stat
     },
     dependencies,
   );
+  assert.equal(model.info.defaultConcurrency, 2);
   const { vectors } = await model.embed(
     [
       { kind: "text", text: "both tokens" },
@@ -414,4 +416,44 @@ test("Model2Vec rejects token ids outside the static embedding table", async (t)
       error.message === "Model2Vec embedding failed" &&
       error.cause?.message.includes("out-of-range token id"),
   );
+});
+
+test("Model2Vec reuses a loaded worker pool without reloading artifacts", async () => {
+  const model = new Model2VecEmbeddingModel(
+    entry(),
+    { modelCacheDir: "/unused" },
+    {
+      async loadTokenizer() {
+        throw new Error(
+          "worker-backed model should not load in the main thread",
+        );
+      },
+      async loadSafetensors() {
+        throw new Error("worker-backed model should not reload its table");
+      },
+      async download() {
+        throw new Error("worker-backed model should not download artifacts");
+      },
+    },
+  );
+  let runs = 0;
+  let disposed = false;
+  model.workerPool = {
+    async run(texts) {
+      runs++;
+      return {
+        vectors: texts.map(() => [1, 0, 0]),
+        truncated: [],
+      };
+    },
+    async dispose() {
+      disposed = true;
+    },
+  };
+
+  await model.embed([{ kind: "text", text: "first" }]);
+  await model.embed([{ kind: "text", text: "second" }]);
+  assert.equal(runs, 2);
+  await model.dispose();
+  assert.equal(disposed, true);
 });

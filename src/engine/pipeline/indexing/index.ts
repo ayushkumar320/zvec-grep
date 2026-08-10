@@ -1396,8 +1396,15 @@ function resolveEmbeddingConcurrencyPolicy(
 
   const remote = model.info.provider === "qwen";
   const multimodal = model.info.inputKinds.includes("image");
-  const initial = remote ? (multimodal ? 4 : 8) : 1;
-  const max = remote ? (multimodal ? 8 : 12) : 1;
+  const configuredLocalDefault = model.info.defaultConcurrency;
+  const localDefault =
+    configuredLocalDefault !== undefined &&
+    Number.isInteger(configuredLocalDefault) &&
+    configuredLocalDefault > 0
+      ? configuredLocalDefault
+      : 1;
+  const initial = remote ? (multimodal ? 4 : 8) : localDefault;
+  const max = remote ? (multimodal ? 8 : 12) : localDefault;
   const min = Math.min(initial, 4);
 
   return {

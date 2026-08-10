@@ -643,12 +643,16 @@ test("file, model, content, and entity helpers classify inputs", () => {
       maxInputTokens: getEmbeddingModelCatalogEntry(
         "local/potion-retrieval-32m",
       )?.maxInputTokens,
+      defaultConcurrency: getEmbeddingModelCatalogEntry(
+        "local/potion-retrieval-32m",
+      )?.defaultConcurrency,
     },
     {
       backend: "model2vec",
       modelFile: "model.safetensors",
       dimension: 512,
       maxInputTokens: 1024,
+      defaultConcurrency: 2,
     },
   );
   assert.deepEqual(
@@ -660,11 +664,15 @@ test("file, model, content, and entity helpers classify inputs", () => {
       maxInputTokens: getEmbeddingModelCatalogEntry(
         "local/potion-multilingual-128m",
       )?.maxInputTokens,
+      defaultConcurrency: getEmbeddingModelCatalogEntry(
+        "local/potion-multilingual-128m",
+      )?.defaultConcurrency,
     },
     {
       modelFile: "model.safetensors",
       dimension: 256,
       maxInputTokens: 1024,
+      defaultConcurrency: 2,
     },
   );
   assert.deepEqual(
@@ -675,11 +683,15 @@ test("file, model, content, and entity helpers classify inputs", () => {
         ?.dimension,
       maxInputTokens: getEmbeddingModelCatalogEntry("local/potion-code-16m-v2")
         ?.maxInputTokens,
+      defaultConcurrency: getEmbeddingModelCatalogEntry(
+        "local/potion-code-16m-v2",
+      )?.defaultConcurrency,
     },
     {
       modelFile: "model.safetensors",
       dimension: 256,
       maxInputTokens: 1024,
+      defaultConcurrency: 2,
     },
   );
   assert.deepEqual(

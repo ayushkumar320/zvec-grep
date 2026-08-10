@@ -118,6 +118,7 @@ export const EMBEDDING_MODEL_CATALOG = {
     normalize: true,
     maxInputTokens: 1024,
     maxBatchSize: 256,
+    defaultConcurrency: 2,
   },
 
   "local/potion-multilingual-128m": {
@@ -135,6 +136,7 @@ export const EMBEDDING_MODEL_CATALOG = {
     normalize: true,
     maxInputTokens: 1024,
     maxBatchSize: 256,
+    defaultConcurrency: 2,
   },
 
   "local/potion-code-16m-v2": {
@@ -152,6 +154,7 @@ export const EMBEDDING_MODEL_CATALOG = {
     normalize: true,
     maxInputTokens: 1024,
     maxBatchSize: 256,
+    defaultConcurrency: 2,
   },
 
   "local/multilingual-e5-small": {

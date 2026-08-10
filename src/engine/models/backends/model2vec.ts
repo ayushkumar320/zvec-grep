@@ -1,10 +1,10 @@
 import { createWriteStream, existsSync, statSync } from "node:fs";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, open, rename, rm, writeFile } from "node:fs/promises";
+import type { FileHandle } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { ReadableStream as NodeReadableStream } from "node:stream/web";
-import { AutoTokenizer } from "@huggingface/transformers";
 import { EngineError } from "../../errors.js";
 import type { Content, TextContent } from "../../types.js";
 import { defaultHome } from "../../utils/path.js";
@@ -21,33 +21,13 @@ import {
   createModelDownloadProgressReporter,
   type ModelDownloadProgressReporter,
 } from "../download-progress.js";
-
-type TokenTensor = {
-  data: ArrayLike<number | bigint>;
-};
-
-type TokenizerOutput = {
-  input_ids: TokenTensor;
-};
-
-type TokenizerLike = {
-  (
-    text: string,
-    options: {
-      add_special_tokens: false;
-      truncation: true;
-      max_length: number;
-    },
-  ): TokenizerOutput | Promise<TokenizerOutput>;
-  unk_token_id?: number | null;
-};
-
-type StaticEmbeddingTable = {
-  data: Float32Array | Uint16Array;
-  dimension: number;
-  dtype: "F16" | "F32";
-  rows: number;
-};
+import { Model2VecWorkerPool } from "./model2vec-worker-pool.js";
+import {
+  embedModel2VecTexts,
+  sharedStaticEmbeddingTable,
+  type StaticEmbeddingTable,
+  type TokenizerLike,
+} from "./model2vec-runtime.js";
 
 type Model2VecDependencies = {
   loadTokenizer(
@@ -77,6 +57,7 @@ const DEFAULT_MODEL_CACHE_DIR = join(defaultHome(), "models");
 
 const defaultDependencies: Model2VecDependencies = {
   async loadTokenizer(repo, options) {
+    const { AutoTokenizer } = await import("@huggingface/transformers");
     return (await AutoTokenizer.from_pretrained(
       repo,
       options,
@@ -123,7 +104,9 @@ export class Model2VecEmbeddingModel extends BaseEmbeddingModel {
   private readonly dependencies: Model2VecDependencies;
   private tokenizer: TokenizerLike | null = null;
   private staticTable: StaticEmbeddingTable | null = null;
+  private workerPool: Model2VecWorkerPool | null = null;
   private loadPromise: Promise<void> | null = null;
+  private readonly useWorkerPool: boolean;
   private disposed = false;
 
   constructor(
@@ -138,6 +121,7 @@ export class Model2VecEmbeddingModel extends BaseEmbeddingModel {
       name: entry.model,
       dimension: entry.dimension,
       metric: entry.metric,
+      defaultConcurrency: entry.defaultConcurrency,
       inputKinds: ["text"],
       limits: {
         maxBatchSize: entry.maxBatchSize,
@@ -149,6 +133,7 @@ export class Model2VecEmbeddingModel extends BaseEmbeddingModel {
       process.env.ZVEC_GREP_MODEL_CACHE ??
       DEFAULT_MODEL_CACHE_DIR;
     this.dependencies = { ...defaultDependencies, ...dependencies };
+    this.useWorkerPool = Object.keys(dependencies).length === 0;
   }
 
   protected async doEmbed(
@@ -169,6 +154,9 @@ export class Model2VecEmbeddingModel extends BaseEmbeddingModel {
       const texts = (contents as readonly TextContent[]).map((content) =>
         formatText(content.text, options.purpose, this.entry),
       );
+      if (this.workerPool) {
+        return await this.workerPool.run(texts, options.signal);
+      }
       return await this.embedTexts(texts);
     } catch (cause) {
       throw new EngineError("Model2Vec embedding failed", {
@@ -184,6 +172,8 @@ export class Model2VecEmbeddingModel extends BaseEmbeddingModel {
       return;
     }
     this.disposed = true;
+    await this.workerPool?.dispose();
+    this.workerPool = null;
     this.staticTable = null;
     this.tokenizer = null;
     this.loadPromise = null;
@@ -192,7 +182,7 @@ export class Model2VecEmbeddingModel extends BaseEmbeddingModel {
   private async ensureLoaded(
     onProgress?: (progress: EmbeddingModelProgress) => void,
   ): Promise<void> {
-    if (this.tokenizer && this.staticTable) {
+    if (this.workerPool || (this.tokenizer && this.staticTable)) {
       return;
     }
     if (this.loadPromise) {
@@ -220,24 +210,44 @@ export class Model2VecEmbeddingModel extends BaseEmbeddingModel {
       this.resolveModelPath(downloadProgress),
       this.resolveTokenizerSource(downloadProgress),
     ]);
-    const tokenizerPromise = this.dependencies.loadTokenizer(tokenizerSource, {
-      cache_dir: this.modelCacheDir,
-      revision: this.entry.revision,
-      ...(tokenizerSource !== this.entry.repo
-        ? { local_files_only: true }
-        : {}),
-    });
-    const [tokenizer, staticTable] = await Promise.all([
-      tokenizerPromise,
-      this.dependencies.loadSafetensors(
-        modelPath,
-        this.entry.embeddingTensor,
-        this.info.dimension,
-      ),
-    ]);
+    const staticTable = await this.dependencies.loadSafetensors(
+      modelPath,
+      this.entry.embeddingTensor,
+      this.info.dimension,
+    );
     this.ensureNotDisposed();
-    this.tokenizer = tokenizer;
-    this.staticTable = staticTable;
+    if (this.useWorkerPool) {
+      const sharedTable = sharedStaticEmbeddingTable(staticTable);
+      const workerPool = new Model2VecWorkerPool({
+        tokenizerSource,
+        modelCacheDir: this.modelCacheDir,
+        revision: this.entry.revision,
+        maxInputTokens: this.entry.maxInputTokens,
+        normalize: this.entry.normalize,
+        tableBuffer: sharedTable.data.buffer as SharedArrayBuffer,
+        dimension: sharedTable.dimension,
+        dtype: sharedTable.dtype,
+        rows: sharedTable.rows,
+      });
+      try {
+        await workerPool.start();
+        this.ensureNotDisposed();
+        this.workerPool = workerPool;
+      } catch (error) {
+        await workerPool.dispose();
+        throw error;
+      }
+    } else {
+      this.tokenizer = await this.dependencies.loadTokenizer(tokenizerSource, {
+        cache_dir: this.modelCacheDir,
+        revision: this.entry.revision,
+        ...(tokenizerSource !== this.entry.repo
+          ? { local_files_only: true }
+          : {}),
+      });
+      this.ensureNotDisposed();
+      this.staticTable = staticTable;
+    }
     downloadProgress.finish();
   }
 
@@ -325,39 +335,13 @@ export class Model2VecEmbeddingModel extends BaseEmbeddingModel {
       throw new Error("Model2Vec model is not loaded");
     }
 
-    const truncatedInputIndexes: number[] = [];
-    const tokenLists = await Promise.all(
-      texts.map(async (text, index) => {
-        const encoded = await tokenizer(text, {
-          add_special_tokens: false,
-          truncation: true,
-          max_length: this.entry.maxInputTokens + 1,
-        });
-        const encodedTokenIds = Array.from(encoded.input_ids.data, Number);
-        if (encodedTokenIds.length > this.entry.maxInputTokens) {
-          truncatedInputIndexes.push(index);
-        }
-        const unknownTokenId = tokenizer.unk_token_id;
-        return encodedTokenIds
-          .slice(0, this.entry.maxInputTokens)
-          .filter(
-            (id) =>
-              unknownTokenId === undefined ||
-              unknownTokenId === null ||
-              id !== unknownTokenId,
-          );
-      }),
+    return await embedModel2VecTexts(
+      texts,
+      tokenizer,
+      staticTable,
+      this.entry.maxInputTokens,
+      this.entry.normalize,
     );
-
-    return {
-      vectors: embedStaticTokenLists(
-        tokenLists,
-        staticTable,
-        this.info.dimension,
-        this.entry.normalize,
-      ),
-      truncated: truncatedInputIndexes.sort((left, right) => left - right),
-    };
   }
 
   private ensureNotDisposed(): void {
@@ -395,126 +379,96 @@ async function readStaticEmbeddingTable(
   tensorName: string,
   expectedDimension: number,
 ): Promise<StaticEmbeddingTable> {
-  const file = await readFile(path);
-  if (file.byteLength < 9) {
-    throw new Error("Safetensors file is too small");
-  }
-
-  const headerLength = Number(file.readBigUInt64LE(0));
-  const dataStart = 8 + headerLength;
-  if (!Number.isSafeInteger(headerLength) || dataStart > file.byteLength) {
-    throw new Error("Safetensors header length is invalid");
-  }
-
-  let header: Record<
-    string,
-    { data_offsets?: [number, number]; dtype?: string; shape?: number[] }
-  >;
+  const file = await open(path, "r");
   try {
-    header = JSON.parse(
-      file.subarray(8, dataStart).toString("utf8"),
-    ) as typeof header;
-  } catch (cause) {
-    throw new Error("Safetensors header is invalid JSON", { cause });
-  }
-  const tensor = header[tensorName];
-  if (
-    !tensor ||
-    tensor.shape?.length !== 2 ||
-    tensor.shape[1] !== expectedDimension ||
-    tensor.data_offsets?.length !== 2 ||
-    (tensor.dtype !== "F16" && tensor.dtype !== "F32")
-  ) {
-    throw new Error(
-      `Safetensors tensor '${tensorName}' is missing or incompatible`,
+    const stats = await file.stat();
+    if (stats.size < 9) {
+      throw new Error("Safetensors file is too small");
+    }
+
+    const prefix = Buffer.alloc(8);
+    await readExactly(file, prefix, 0);
+    const headerLength = Number(prefix.readBigUInt64LE(0));
+    const dataStart = 8 + headerLength;
+    if (!Number.isSafeInteger(headerLength) || dataStart > stats.size) {
+      throw new Error("Safetensors header length is invalid");
+    }
+
+    const headerBytes = Buffer.alloc(headerLength);
+    await readExactly(file, headerBytes, 8);
+    let header: Record<
+      string,
+      { data_offsets?: [number, number]; dtype?: string; shape?: number[] }
+    >;
+    try {
+      header = JSON.parse(headerBytes.toString("utf8")) as typeof header;
+    } catch (cause) {
+      throw new Error("Safetensors header is invalid JSON", { cause });
+    }
+    const tensor = header[tensorName];
+    if (
+      !tensor ||
+      tensor.shape?.length !== 2 ||
+      tensor.shape[1] !== expectedDimension ||
+      tensor.data_offsets?.length !== 2 ||
+      (tensor.dtype !== "F16" && tensor.dtype !== "F32")
+    ) {
+      throw new Error(
+        `Safetensors tensor '${tensorName}' is missing or incompatible`,
+      );
+    }
+
+    const [relativeStart, relativeEnd] = tensor.data_offsets;
+    const rows = tensor.shape[0];
+    const valueCount = rows * expectedDimension;
+    const bytesPerValue = tensor.dtype === "F16" ? 2 : 4;
+    const tensorByteLength = valueCount * bytesPerValue;
+    if (
+      !Number.isSafeInteger(valueCount) ||
+      !Number.isSafeInteger(tensorByteLength) ||
+      relativeStart < 0 ||
+      relativeEnd - relativeStart !== tensorByteLength ||
+      dataStart + relativeEnd > stats.size
+    ) {
+      throw new Error(`Safetensors tensor '${tensorName}' has invalid offsets`);
+    }
+
+    const sharedBuffer = new SharedArrayBuffer(tensorByteLength);
+    await readExactly(
+      file,
+      Buffer.from(sharedBuffer),
+      dataStart + relativeStart,
     );
+    return {
+      data:
+        tensor.dtype === "F16"
+          ? new Uint16Array(sharedBuffer)
+          : new Float32Array(sharedBuffer),
+      dimension: expectedDimension,
+      dtype: tensor.dtype,
+      rows,
+    };
+  } finally {
+    await file.close();
   }
-
-  const [relativeStart, relativeEnd] = tensor.data_offsets;
-  const rows = tensor.shape[0];
-  const valueCount = rows * expectedDimension;
-  const bytesPerValue = tensor.dtype === "F16" ? 2 : 4;
-  if (
-    relativeStart < 0 ||
-    relativeEnd - relativeStart !== valueCount * bytesPerValue ||
-    dataStart + relativeEnd > file.byteLength
-  ) {
-    throw new Error(`Safetensors tensor '${tensorName}' has invalid offsets`);
-  }
-
-  const byteOffset = file.byteOffset + dataStart + relativeStart;
-  const data =
-    tensor.dtype === "F16"
-      ? new Uint16Array(file.buffer, byteOffset, valueCount)
-      : new Float32Array(file.buffer, byteOffset, valueCount);
-  return {
-    data,
-    dimension: expectedDimension,
-    dtype: tensor.dtype,
-    rows,
-  };
 }
 
-function embedStaticTokenLists(
-  tokenLists: readonly number[][],
-  table: StaticEmbeddingTable,
-  dimension: number,
-  normalize: boolean,
-): number[][] {
-  const halfValues = table.dtype === "F16" ? halfFloatValues() : null;
-  return tokenLists.map((tokenIds) => {
-    const vector = Array.from({ length: dimension }, () => 0);
-    if (tokenIds.length === 0) {
-      return vector;
+async function readExactly(
+  file: FileHandle,
+  buffer: Buffer,
+  position: number,
+): Promise<void> {
+  let offset = 0;
+  while (offset < buffer.byteLength) {
+    const { bytesRead } = await file.read(
+      buffer,
+      offset,
+      buffer.byteLength - offset,
+      position + offset,
+    );
+    if (bytesRead === 0) {
+      throw new Error("Safetensors file ended unexpectedly");
     }
-
-    for (const tokenId of tokenIds) {
-      if (!Number.isInteger(tokenId) || tokenId < 0 || tokenId >= table.rows) {
-        throw new Error(
-          `Tokenizer returned out-of-range token id: id=${tokenId} rows=${table.rows}`,
-        );
-      }
-      const start = tokenId * dimension;
-      for (let column = 0; column < dimension; column++) {
-        const value = table.data[start + column];
-        vector[column] += halfValues ? halfValues[value] : value;
-      }
-    }
-
-    let squaredNorm = 0;
-    for (let column = 0; column < dimension; column++) {
-      vector[column] /= tokenIds.length;
-      squaredNorm += vector[column] * vector[column];
-    }
-    if (normalize && squaredNorm > 0) {
-      const inverseNorm = 1 / Math.sqrt(squaredNorm);
-      for (let column = 0; column < dimension; column++) {
-        vector[column] *= inverseNorm;
-      }
-    }
-    return vector;
-  });
-}
-
-let cachedHalfFloatValues: Float32Array | null = null;
-
-function halfFloatValues(): Float32Array {
-  if (cachedHalfFloatValues) {
-    return cachedHalfFloatValues;
+    offset += bytesRead;
   }
-  const values = new Float32Array(65_536);
-  for (let bits = 0; bits < values.length; bits++) {
-    const sign = bits & 0x8000 ? -1 : 1;
-    const exponent = (bits >> 10) & 0x1f;
-    const fraction = bits & 0x03ff;
-    if (exponent === 0) {
-      values[bits] = sign * 2 ** -14 * (fraction / 1024);
-    } else if (exponent === 0x1f) {
-      values[bits] = fraction === 0 ? sign * Infinity : Number.NaN;
-    } else {
-      values[bits] = sign * 2 ** (exponent - 15) * (1 + fraction / 1024);
-    }
-  }
-  cachedHalfFloatValues = values;
-  return values;
 }

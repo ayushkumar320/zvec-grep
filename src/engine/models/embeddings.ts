@@ -51,6 +51,7 @@ export type EmbeddingModelInfo = Readonly<{
   dimension: number;
   metric: "cosine" | "dot" | "euclidean";
   endpoint?: string;
+  defaultConcurrency?: number;
   inputKinds: readonly ContentKind[];
   limits: Readonly<{
     maxBatchSize: number;
