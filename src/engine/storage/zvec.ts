@@ -469,21 +469,6 @@ class ZvecFileMetaStore {
         ZVecCreateAndOpen(path, createFilesSchema()),
       );
     }
-
-    if (
-      !readOnly &&
-      !this.collection.schema
-        .fields()
-        .some((field) => field.name === "truncated_fragment_count")
-    ) {
-      this.collection.addColumnSync({
-        fieldSchema: {
-          name: "truncated_fragment_count",
-          dataType: ZVecDataType.INT32,
-          nullable: true,
-        },
-      });
-    }
   }
 
   list(): FileRecord[] {
