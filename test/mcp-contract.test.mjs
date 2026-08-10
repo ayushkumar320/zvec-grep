@@ -1172,8 +1172,27 @@ test("input upper bounds are enforced", async (t) => {
   assert.equal(excessivePathFilters.isError, true);
 });
 
-test("structured tools return schema-compatible content and searches return only compact text", async (t) => {
-  const { client, server } = await connectFull();
+test("structured tools return schema-compatible content and searches preview every hit", async (t) => {
+  const backend = createBackend();
+  const originalSearch = backend.search;
+  backend.search = async (input) => {
+    const response = await originalSearch(input);
+    const first = response.result.items[0];
+    response.result.items = Array.from({ length: 7 }, (_, index) => ({
+      ...first,
+      rank: index + 1,
+      file: {
+        absolutePath: `${input.root}/src/result-${index + 1}.ts`,
+        relativePath: `src/result-${index + 1}.ts`,
+      },
+      content: index === 6 ? "seventh-expanded-snippet" : first.content,
+      selectionReason:
+        index === 0 ? "coverage" : index < 6 ? "global_fill" : undefined,
+      coverageGroup: index === 0 ? "Q1" : undefined,
+    }));
+    return response;
+  };
+  const { client, server } = await connectFull(backend);
   t.after(async () => {
     await client.close();
     await server.close();
@@ -1218,7 +1237,13 @@ test("structured tools return schema-compatible content and searches return only
   assert.equal(search.structuredContent, undefined);
   assert.match(search.content[0].text, /^freshness: possibly_stale$/m);
   assert.match(search.content[0].text, /indexing: running \(12\/20\)/);
-  assert.match(search.content[0].text, /src\/index\.ts:1-2/);
+  assert.match(search.content[0].text, /src\/result-1\.ts:1-2/);
+  assert.match(search.content[0].text, /src\/result-7\.ts:1-2/);
+  assert.match(search.content[0].text, /seventh-expanded-snippet/);
+  assert.doesNotMatch(
+    search.content[0].text,
+    /additional candidates \(metadata only\):/,
+  );
   assert.equal(search.content[0].text.includes(longIndexedContent), false);
 
   const rg = await client.callTool({

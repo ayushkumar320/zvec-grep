@@ -1832,7 +1832,7 @@ function searchPlanToContextItems(
   });
 }
 
-const DEFAULT_CONTEXT_DETAIL_LIMIT = 6;
+const DEFAULT_CONTEXT_PRIORITY_LIMIT = 6;
 const CONTEXT_GROUP_RRF_K = 60;
 
 function selectAndRankContextItems(
@@ -1859,10 +1859,10 @@ function selectAndRankContextItems(
   const candidates = [...deduped.values()];
   const globallyRanked = [...candidates].sort(compareContextGlobalRank);
   const selected = new Set<string>();
-  const detailed: ZvecGrepContextItem[] = [];
+  const prioritized: ZvecGrepContextItem[] = [];
 
   for (const groupId of coverageGroupIds) {
-    if (detailed.length >= DEFAULT_CONTEXT_DETAIL_LIMIT) {
+    if (prioritized.length >= DEFAULT_CONTEXT_PRIORITY_LIMIT) {
       break;
     }
     const candidate = candidates
@@ -1874,7 +1874,7 @@ function selectAndRankContextItems(
     }
 
     selected.add(contextItemDedupeKey(candidate));
-    detailed.push({
+    prioritized.push({
       ...candidate,
       selectionReason: "coverage",
       coverageGroup: groupId,
@@ -1882,7 +1882,7 @@ function selectAndRankContextItems(
   }
 
   for (const candidate of globallyRanked) {
-    if (detailed.length >= DEFAULT_CONTEXT_DETAIL_LIMIT) {
+    if (prioritized.length >= DEFAULT_CONTEXT_PRIORITY_LIMIT) {
       break;
     }
     const key = contextItemDedupeKey(candidate);
@@ -1890,17 +1890,17 @@ function selectAndRankContextItems(
       continue;
     }
     selected.add(key);
-    detailed.push({
+    prioritized.push({
       ...candidate,
       selectionReason: "global_fill",
       coverageGroup: undefined,
     });
   }
 
-  const additional = globallyRanked.filter(
+  const unprioritized = globallyRanked.filter(
     (item) => !selected.has(contextItemDedupeKey(item)),
   );
-  return [...detailed, ...additional].map((item, index) => ({
+  return [...prioritized, ...unprioritized].map((item, index) => ({
     ...item,
     rank: index + 1,
   }));

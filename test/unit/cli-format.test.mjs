@@ -316,8 +316,15 @@ test("context formatters render indexed, lexical, metadata, preview, trace, and 
   }
 });
 
-test("indexed agent results preserve global rank and compact lower-ranked candidates", () => {
-  const item = (rank, relativePath, content, score) => ({
+test("indexed agent results preserve global rank and expand every candidate", () => {
+  const item = (
+    rank,
+    relativePath,
+    content,
+    score,
+    selectionReason,
+    coverageGroup,
+  ) => ({
     kind: "indexed_entity",
     rank,
     file: {
@@ -335,6 +342,8 @@ test("indexed agent results preserve global rank and compact lower-ranked candid
     status: "fresh",
     score,
     matchedBy: rank % 2 === 0 ? "fts" : "fts+vector",
+    selectionReason,
+    coverageGroup,
     metadata: {
       kind: "code",
       symbolType: "function",
@@ -346,12 +355,12 @@ test("indexed agent results preserve global rank and compact lower-ranked candid
   });
   const result = contextResult({
     items: [
-      item(3, "src/a.ts", "detail-three-body", 0.7),
-      item(1, "src/a.ts", "detail-one-body", 0.9),
-      item(6, "src/d.ts", "detail-six-body", 0.2),
-      item(2, "src/b.ts", "detail-two-body", 0.8),
-      item(5, "src/c.ts", "detail-five-body", 0.4),
-      item(4, "src/c.ts", "detail-four-body", 0.6),
+      item(3, "src/a.ts", "detail-three-body", 0.7, "global_fill"),
+      item(1, "src/a.ts", "detail-one-body", 0.9, "coverage", "Q1"),
+      item(6, "src/d.ts", "detail-six-body", 0.2, "global_fill"),
+      item(2, "src/b.ts", "detail-two-body", 0.8, "global_fill"),
+      item(5, "src/c.ts", "detail-five-body", 0.4, "global_fill"),
+      item(4, "src/c.ts", "detail-four-body", 0.6, "global_fill"),
       item(7, "src/e.ts", "detail-seven-body", 0.1),
     ],
   });
@@ -363,9 +372,9 @@ test("indexed agent results preserve global rank and compact lower-ranked candid
   for (let rank = 1; rank < 7; rank += 1) {
     assert.ok(text.indexOf(`#${rank} `) < text.indexOf(`#${rank + 1} `));
   }
-  assert.match(text, /additional candidates \(metadata only\):/);
-  assert.match(text, /#7 matchedBy=fts\+vector src\/e\.ts:70 function symbol7/);
-  assert.doesNotMatch(text, /detail-seven-body/);
+  assert.doesNotMatch(text, /additional candidates \(metadata only\):/);
+  assert.match(text, /#7 matchedBy=fts\+vector src\/e\.ts:70/);
+  assert.match(text, /detail-seven-body/);
   assert.doesNotMatch(text, /score=/);
 
   const traced = formatAgentContextResult(result, {
@@ -373,7 +382,10 @@ test("indexed agent results preserve global rank and compact lower-ranked candid
     trace: true,
     color: "never",
   });
-  assert.match(traced, /#1 matchedBy=fts\+vector score=0\.9000/);
+  assert.match(
+    traced,
+    /#1 \[group_coverage: Q1\] matchedBy=fts\+vector score=0\.9000/,
+  );
   assert.match(traced, /#7 matchedBy=fts\+vector score=0\.1000/);
 });
 
@@ -456,7 +468,11 @@ test("indexed agent results show query-group coverage and provenance", () => {
   assert.match(text, /query groups \(3\):/);
   assert.match(text, /Q1 \[primary\]: lifecycle/);
   assert.match(text, /Q3 \[supplemental\]: cleanup/);
-  assert.match(text, /supplemental routes use global_fill; detailed<=6/);
+  assert.match(
+    text,
+    /primary-group coverage then global_fill; prioritized<=6; all candidates detailed/,
+  );
+  assert.doesNotMatch(text, /detailed<=6/);
   assert.match(text, /#1 \[group_coverage: Q1\]/);
   assert.match(text, /groups: Q1#1 \(fts\+vector\), Q3#4 \(vector\)/);
   assert.match(text, /#3 \[global_fill\]/);

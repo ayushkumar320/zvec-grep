@@ -37,7 +37,6 @@ type AgentRgSourceLine = SourceLineEntry & {
 const SHORT_SOURCE_MAX_LINES = 10;
 const SHORT_SOURCE_CONTEXT_BEFORE = 2;
 const SHORT_OUTLINE_MAX_LINES = 7;
-const AGENT_SHORT_DETAIL_MAX_ITEMS = 6;
 const AGENT_PREVIEW_MAX_LINE_LENGTH = 160;
 const HUMAN_PREVIEW_MAX_LINE_LENGTH = 120;
 
@@ -83,23 +82,13 @@ function agentContextLines(
       ...queryGroups.map(
         (group) => `  ${group.id} [${group.role}]: ${group.query}`,
       ),
-      "selection: min_coverage=1 per primary group; supplemental routes use global_fill; detailed<=6",
+      "selection: primary-group coverage then global_fill; prioritized<=6; all candidates detailed",
       "",
     );
   }
 
-  const selectedItems = items.filter(
-    (item) => item.selectionReason !== undefined,
-  );
-  const detailItems =
-    preview === "short"
-      ? selectedItems.length > 0
-        ? selectedItems.slice(0, AGENT_SHORT_DETAIL_MAX_ITEMS)
-        : items.slice(0, AGENT_SHORT_DETAIL_MAX_ITEMS)
-      : items;
-  const detailedRanks = new Set(detailItems.map((item) => item.rank));
   let first = true;
-  for (const item of detailItems) {
+  for (const item of items) {
     if (!first) {
       lines.push("");
     }
@@ -136,14 +125,6 @@ function agentContextLines(
     }
   }
 
-  const additionalItems = items.filter((item) => !detailedRanks.has(item.rank));
-  if (additionalItems.length > 0) {
-    lines.push("", "additional candidates (metadata only):");
-    lines.push(
-      ...additionalItems.map((item) => agentCandidateSummary(item, options)),
-    );
-  }
-
   return lines;
 }
 
@@ -171,16 +152,6 @@ function agentQueryGroupLine(item: ZvecGrepContextItem): string | undefined {
   return `groups: ${item.queryGroups
     .map((group) => `${group.id}#${group.rank} (${group.matchedBy})`)
     .join(", ")}`;
-}
-
-function agentCandidateSummary(
-  item: ZvecGrepContextItem,
-  options: CliOptions,
-): string {
-  const summary = entitySummary(item);
-  const entity = summary === item.kind ? "" : ` ${summary}`;
-  const groups = agentQueryGroupLine(item);
-  return `${agentRankedItemHeader(item, options.trace === true)}${entity}${groups ? ` ${groups}` : ""}`;
 }
 
 function agentRgContextLines(
