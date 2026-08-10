@@ -16,7 +16,8 @@ const boundedStringList = (description: string) =>
       boundedString(description),
       z.array(boundedString(description)).max(MCP_MAX_QUERY_GROUPS),
     ])
-    .optional();
+    .optional()
+    .describe(description);
 
 const pathFilter = z.string().max(MCP_MAX_PATH_CHARS);
 
@@ -49,7 +50,7 @@ export const absoluteRootSchema = z
   .min(1, "root is required.")
   .max(MCP_MAX_PATH_CHARS)
   .refine((root) => isAbsolute(root), "root must be an absolute path.")
-  .describe("Absolute repository path visible to the daemon.");
+  .describe("Absolute workspace root visible to the daemon.");
 
 const embeddingSearchRuntimeFields = {
   apiKey: z
@@ -76,21 +77,27 @@ const embeddingIndexRuntimeFields = {
 
 const searchFields = {
   ...embeddingSearchRuntimeFields,
-  query: boundedString("Natural-language or exact search query.").optional(),
+  query: boundedString(
+    "One primary hybrid-search group using natural-language or exact terms.",
+  ).optional(),
   queries: boundedStringList(
-    "Multiple query groups. Use this for related concepts.",
+    "One or more primary hybrid-search groups. By default, each group is searched separately and retains group metadata.",
   ),
   fts: boundedStringList(
-    "Exact lexical anchors, such as symbols, flags, or error messages.",
+    "Supplemental lexical-route groups for exact anchors such as symbols, flags, or error messages; these are retrieval routes, not hard result constraints.",
   ),
-  vector: boundedStringList("Explicit semantic/vector-only queries."),
+  vector: boundedStringList(
+    "Supplemental semantic/vector-route groups; these are retrieval routes, not hard result constraints.",
+  ),
   limit: z
     .number()
     .int()
     .positive()
     .max(MCP_MAX_SEARCH_LIMIT)
     .optional()
-    .describe("Maximum returned items per query/group."),
+    .describe(
+      "Maximum returned items per query group, or for the single fused plan.",
+    ),
   globs: pathFilterInputSchema.describe(
     "Ordered case-sensitive rg-style glob rules. Later rules override earlier rules.",
   ),
@@ -102,9 +109,12 @@ const searchFields = {
     excludedFileTypesDescription,
   ),
   hidden: z.boolean().optional().describe("Include hidden paths."),
-  noIgnore: z.boolean().optional().describe("Ignore no ignore files."),
+  noIgnore: z
+    .boolean()
+    .optional()
+    .describe("Do not respect ignore files such as .gitignore."),
   ignoreFiles: pathFilterInputSchema.describe(
-    "Additional ignore files relative to the repository root.",
+    "Additional ignore files relative to the workspace root.",
   ),
   maxDepth: z
     .number()
@@ -128,7 +138,9 @@ const searchFields = {
   fuse: z
     .boolean()
     .optional()
-    .describe("Fuse every query group into one ranked search plan."),
+    .describe(
+      "Collapse all primary and supplemental groups into one ranked search plan; otherwise search groups separately and retain group metadata.",
+    ),
   preferSymbol: z
     .boolean()
     .optional()
@@ -189,9 +201,12 @@ export const zvecGrepIndexInputSchema = z.object({
     excludedFileTypesDescription,
   ),
   hidden: z.boolean().optional().describe("Include hidden paths."),
-  noIgnore: z.boolean().optional().describe("Ignore no ignore files."),
+  noIgnore: z
+    .boolean()
+    .optional()
+    .describe("Do not respect ignore files such as .gitignore."),
   ignoreFiles: pathFilterInputSchema.describe(
-    "Additional ignore files relative to the repository root.",
+    "Additional ignore files relative to the workspace root.",
   ),
   maxDepth: z
     .number()
@@ -253,7 +268,7 @@ export const zvecGrepServerStatusInputSchema = z.object({});
 
 export const zvecGrepRgInputSchema = z.object({
   root: absoluteRootSchema.describe(
-    "Absolute repository root visible to the daemon. Keep this at the repository root; scope the rg search with command paths or globs.",
+    "Absolute workspace root visible to the daemon. Keep this at the workspace root; scope the search with command paths or globs.",
   ),
   command: z
     .string()
@@ -261,7 +276,7 @@ export const zvecGrepRgInputSchema = z.object({
     .min(1, "command is required.")
     .max(MCP_MAX_QUERY_CHARS)
     .describe(
-      "The rg command you would otherwise run, parsed as arguments and never executed by a shell. Search is exhaustive by default; append `| head -N` only to request a bounded result set.",
+      "The command MUST start with `rg`; it is parsed as arguments and never executed by a shell. Search is exhaustive by default; append `| head -N` only to request a bounded result set.",
     ),
 });
 

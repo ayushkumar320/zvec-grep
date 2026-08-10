@@ -17,6 +17,7 @@ import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import { installerSelectionLines } from "../dist/cli/install.js";
+import { ZVEC_GREP_WORKSPACE_EVIDENCE_RULES } from "../dist/prompts/zvec-grep-guidance.js";
 
 const execFileAsync = promisify(execFile);
 const cliPath = resolve("dist/cli/index.js");
@@ -402,40 +403,41 @@ test("Codex installer refreshes legacy managed guidance", async (t) => {
   assert.match(agents, /# Existing instructions/);
   assert.match(
     agents,
-    /when an exact word, phrase, name, date,[^\n]+locating its occurrences is sufficient, use the managed-rg MCP tool when it is available; otherwise use native Grep or rg/,
+    /when an exact word, phrase, name, date,[^\n]+use `zvec_grep_rg` when it is listed by the current host; otherwise native Grep or `rg`/i,
   );
   assert.match(
     agents,
-    /Within a workspace-grounded task, use `zvec_grep_search` when wording or location is unknown/,
+    /Use `zvec_grep_search` when wording or location is unknown/,
   );
   assert.match(agents, /comparison or synthesis across files, sections/);
   assert.match(agents, /Choose the evidence source before the retrieval mode/);
-  assert.match(agents, /asks to inspect, search, or ground the answer/);
-  assert.match(agents, /workspace or repository/);
-  assert.match(agents, /Negative, incidental, or comparative mentions/);
-  assert.match(agents, /or a workspace tool is available/);
+  for (const rule of ZVEC_GREP_WORKSPACE_EVIDENCE_RULES) {
+    assert.ok(agents.includes(`- ${rule}`));
+  }
   assert.match(
     agents,
-    /If the index is missing but exact or regex lookup can answer the task, use the managed-rg MCP tool when it is available, or native Grep or rg otherwise/,
+    /If the index is missing but exact or regex lookup can answer the task, use `zvec_grep_rg` when it is listed by the current host; otherwise native Grep or `rg`/,
   );
   assert.match(
     agents,
-    /Non-code content does not make workspace search less appropriate/,
+    /A workspace may contain source code, documentation, books/,
   );
-  assert.match(agents, /managed-rg MCP tool when it is available/);
   assert.match(agents, /one focused `zvec_grep_search` probe/);
-  assert.match(
-    agents,
-    /semantic discovery is selected because no sufficient exact anchor/,
-  );
+  assert.match(agents, /When no sufficient exact anchor is available/);
   assert.match(agents, /probe does not apply to exact quotations/i);
   assert.match(
     agents,
     /unrelated open-world questions, current external facts/,
   );
   assert.match(agents, /Do not delegate solely to locate material/);
+  assert.match(agents, /`query` creates one primary hybrid result group/);
+  assert.match(agents, /`fts` is a retrieval route, not a hard filter/);
+  assert.match(agents, /"root": "\/absolute\/workspace"/);
+  assert.match(agents, /"fuse": true/);
+  assert.match(agents, /Treat a sufficient snippet as already-read evidence/);
+  assert.match(agents, /Creating, rebuilding, or dropping a persistent index/);
+  assert.doesNotMatch(agents, /managed-rg/);
   assert.doesNotMatch(agents, /solely to locate code/);
-  assert.doesNotMatch(agents, /zvec_grep_rg/);
   assert.doesNotMatch(agents, /indexed search first/);
   assert.doesNotMatch(agents, /Indexing and status/);
   assert.doesNotMatch(agents, /Remote data authorization/);
@@ -489,11 +491,12 @@ test("Claude Code installer configures MCP trust and guidance", async (t) => {
   });
   assert.ok(settings.permissions.allow.includes("mcp__zvec_grep__*"));
   assert.match(guidance, /zvec_grep_search/);
-  assert.doesNotMatch(guidance, /zvec_grep_rg/);
+  assert.match(guidance, /`zvec_grep_rg` when it is listed/);
   assert.match(
     guidance,
-    /when an exact word, phrase, name, date,[^\n]+locating its occurrences is sufficient, use the managed-rg MCP tool when it is available; otherwise use native Grep or rg/,
+    /when an exact word, phrase, name, date,[^\n]+use `zvec_grep_rg` when it is listed by the current host; otherwise native Grep or `rg`/i,
   );
+  assert.doesNotMatch(guidance, /managed-rg/);
   assert.doesNotMatch(guidance, /Indexing and status/);
   assert.doesNotMatch(guidance, /Remote data authorization/);
   assert.doesNotMatch(guidance, /zg status/);
@@ -688,24 +691,24 @@ test("OpenCode installer preserves config and manages a remote MCP server", asyn
   assert.match(guidance, /# Existing OpenCode guidance/);
   assert.match(
     guidance,
-    /when an exact word, phrase, name, date,[^\n]+locating its occurrences is sufficient, use the managed-rg MCP tool when it is available; otherwise use native Grep or rg/,
+    /when an exact word, phrase, name, date,[^\n]+use `zvec_grep_zvec_grep_rg` when it is listed by the current host; otherwise native Grep or `rg`/i,
   );
   assert.match(
     guidance,
-    /Within a workspace-grounded task, use `zvec_grep_zvec_grep_search` when wording or location is unknown/,
+    /Use `zvec_grep_zvec_grep_search` when wording or location is unknown/,
   );
   assert.match(
     guidance,
     /Choose the evidence source before the retrieval mode/,
   );
   assert.match(guidance, /one focused `zvec_grep_zvec_grep_search` probe/);
-  assert.match(guidance, /managed-rg MCP tool when it is available/);
+  assert.match(guidance, /`zvec_grep_zvec_grep_rg` when it is listed/);
   assert.match(guidance, /probe does not apply to exact quotations/i);
   assert.match(
     guidance,
     /unrelated open-world questions, current external facts/,
   );
-  assert.doesNotMatch(guidance, /zvec_grep_rg/);
+  assert.doesNotMatch(guidance, /managed-rg/);
   assert.equal(countOccurrences(guidance, "<!-- ZVEC_GREP_START -->"), 1);
   assert.equal(countOccurrences(guidance, "<!-- ZVEC_GREP_END -->"), 1);
 

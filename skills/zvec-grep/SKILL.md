@@ -1,34 +1,40 @@
 ---
 name: zvec-grep
-description: Search and index local workspaces with zvec-grep across code and non-code corpora such as documentation, books, research material, meeting notes, knowledge-base exports, manuals, configuration, and data. Use when the user asks to inspect, search, or ground an answer in local, workspace, repository, or indexed material; prior context establishes the workspace as the intended evidence source; the user asks whether relevant local material exists; local retrieval would otherwise use grep, rg, or broad file reads; workspace-grounded semantic, fuzzy, paraphrase, relationship, chronology, causality, comparison, or cross-file, cross-section, or cross-document synthesis is needed; or authorized index lifecycle and daemon diagnostics are requested. Do not trigger for negative, incidental, or comparative workspace mentions, merely because a workspace tool is available, or for unrelated open-world, current external, or web-only questions.
+description: Search and index local workspaces with zvec-grep across code and non-code corpora including documentation, books, research, notes, knowledge-base exports, manuals, configuration, and data. Use when the user asks to inspect, search, or ground an answer in local, workspace, repository, or indexed material; prior context makes the workspace the evidence source; the user asks whether relevant local material exists; the agent is operating inside the current project and the user asks how, where, or why its implementation or interactions work; workspace-grounded semantic, fuzzy, paraphrase, relationship, chronology, causality, comparison, or cross-file, cross-section, or cross-document synthesis is needed; local retrieval would otherwise use grep, rg, or broad file reads; or authorized index lifecycle or daemon diagnostics are requested. Do not trigger for negative, incidental, or comparative workspace mentions, tool availability alone, or unrelated open-world, current external, or web-only questions.
 ---
 
 # zvec-grep
 
 ## Select the evidence source and transport
 
-Treat the current indexed workspace as an evidence source only when one of these
-conditions holds:
+Apply these shared workspace-evidence rules:
 
-- The user asks to inspect, search, or ground the answer in local files, the
-  workspace or repository, or its index.
-- Prior context has established the workspace as the intended evidence source.
-- The user asks whether relevant local material exists.
-
-A workspace may contain source code, documentation, books, research material,
-meeting notes, knowledge-base exports, manuals, configuration, data, or mixed
-content. Negative, incidental, or comparative workspace mentions do not
-establish workspace relevance. Do not infer workspace relevance merely because
-the workspace could contain or mention the topic or a workspace tool is
-available. Do not use workspace search for unrelated open-world questions,
-current external facts, or web knowledge that do not depend on local evidence.
+- Treat the current workspace as an intended evidence source when the user asks
+  to inspect, search, or ground the answer in local material; prior context
+  established the workspace as the source; the user asks whether relevant local
+  material exists; or the agent is operating inside a repository or project and
+  the question asks how, where, or why its implementation, symbols, call chains,
+  dependencies, lifecycle, data flow, architecture, or interactions work.
+- For an implementation-specific question about the current checkout, do not
+  require the user to explicitly say workspace, repository, project, codebase,
+  index, or local files.
+- A workspace may contain source code, documentation, books, research material,
+  meeting notes, knowledge-base exports, manuals, configuration, data, or mixed
+  content.
+- Negative, incidental, or comparative mentions of a workspace do not establish
+  workspace relevance, and an available workspace tool alone is not evidence
+  that the workspace is relevant.
+- Do not use workspace retrieval for unrelated open-world questions, current
+  external facts, or web content that does not depend on local evidence.
 
 Once workspace relevance is established, use indexed search for semantic
 comparison or synthesis across files, sections, or documents. Use native `grep`
-or `rg` for exact lexical searches unless the optional managed-rg MCP tool is
-explicitly available.
+or `rg` for exact lexical searches unless `zvec_grep_rg` or its host-prefixed
+equivalent is listed.
 
-Use the public native HTTP MCP search tools as the primary interface when the matching `zvec_grep_*` tool is present. Call them directly; do not run `zg`, probe the daemon through shell, or choose CLI for convenience.
+Use the public native HTTP MCP search tools as the primary interface when the
+matching `zvec_grep_*` tool is listed. Call the exact listed tool directly; do
+not run `zg`, probe the daemon through shell, or choose CLI for convenience.
 
 Use CLI fallback only when one of these conditions is true:
 
@@ -47,8 +53,9 @@ workspace call.
 
 1. When an exact word, phrase, name, date, identifier, filename, path,
    configuration key, error message, source fragment, literal, or regex is known
-   and locating its occurrences is sufficient, use the managed-rg MCP tool when
-   it is available; otherwise use native `grep` or `rg`.
+   and locating its occurrences is sufficient, use `zvec_grep_rg` or its
+   host-prefixed equivalent when that tool is listed; otherwise use native
+   `grep` or `rg`.
 2. Within a workspace-grounded task, call `zvec_grep_search` when wording or
    location is unknown, or when the answer requires semantic, conceptual, fuzzy,
    or paraphrase discovery; relationships, chronology, causality, architecture,
@@ -56,14 +63,26 @@ workspace call.
    or documents. Search
    defaults to `freshness: "eventual"`; use
    `freshness: "wait_for_fresh"` only when the result must include all pending
-   changes. Use hybrid `queries` for concepts plus known lexical constraints,
-   `fts` for ranked lexical constraints within an indexed search rather than
-   exhaustive occurrence lookup, and `vector` for semantic-only intent.
+   changes. Use `query` for one primary hybrid query group and `queries` for one
+   or more primary hybrid groups. `fts` and `vector` add supplemental lexical
+   and semantic retrieval routes; they are not hard constraints. By default,
+   the response is one deduplicated, reranked result list with query-group
+   metadata. Set `fuse: true` to collapse all primary and supplemental routes
+   into one ranked search plan. For example:
+
+   ```json
+   {
+     "root": "/absolute/workspace",
+     "query": "how are search results ranked and fused",
+     "fts": ["RRF", "score"],
+     "fuse": true
+   }
+   ```
 3. Within a workspace-grounded mixed task, when exact anchors are known but the
    answer requires those relationships or cross-file synthesis, call
-   `zvec_grep_search` with the concept and anchors, then use the managed-rg MCP
-   tool when it is available or native `grep` or `rg` otherwise for focused
-   follow-up.
+   `zvec_grep_search` with the concept and anchors, then use `zvec_grep_rg` or
+   its host-prefixed equivalent when that tool is listed, or native `grep` or
+   `rg` otherwise, for focused follow-up.
 4. When semantic discovery is selected because no sufficient exact anchor is
    available and the user asks whether conceptually related material exists
    locally, make at most one focused `zvec_grep_search` probe using the user's
@@ -75,18 +94,21 @@ workspace call.
 5. Read the indexed search response's `freshness` and `indexing` fields. Use
    `possibly_stale` results immediately when they are sufficient; do not call
    status merely because a background update is active.
-6. Apply focused path and file-type filters early. Exclude dependencies,
+6. Treat bounded source snippets in indexed results as already-read evidence.
+   Answer from a snippet when it contains the required detail; open the cited
+   file only when that detail falls outside the snippet or truncation matters.
+7. Apply focused path and file-type filters early. Exclude dependencies,
    generated output, caches, build artifacts, fixtures, and logs unless the
    task concerns them.
 
 The default public MCP endpoint intentionally exposes only indexed search. If the
 index is missing, explain that indexed search requires an index and ask before
 creating one. After authorization, use the CLI lifecycle workflow; never silently
-create, rebuild, or drop an index. The optional full MCP toolset exposes
-`zvec_grep_rg`; the CLI `zg query --rg` route remains available for explicit
-managed-ripgrep fallback.
-
-Use multiple queries when comparing related concepts.
+create, rebuild, or drop an index. When `zvec_grep_rg` or its host-prefixed
+equivalent is listed, use it for exhaustive literal or regex search, including
+when the index is missing; otherwise use native `grep` or `rg`. The CLI
+`zg query --rg` route remains available only under the fallback conditions
+above.
 
 ## Use CLI fallback
 

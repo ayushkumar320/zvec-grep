@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { ZVEC_GREP_WORKSPACE_EVIDENCE_RULES } from "../dist/prompts/zvec-grep-guidance.js";
+
+function normalizeWhitespace(value) {
+  return value.replace(/\s+/g, " ").trim();
+}
 
 test("zvec-grep skill triggers by task and selects the available transport", async () => {
   const skill = await readFile("skills/zvec-grep/SKILL.md", "utf8");
@@ -19,17 +24,27 @@ test("zvec-grep skill triggers by task and selects the available transport", asy
   );
   assert.match(skill, /code and non-code corpora/);
   assert.match(skill, /local, workspace, repository, or indexed material/);
-  assert.match(skill, /or for unrelated open-world/);
+  assert.match(
+    skill,
+    /operating inside the current project and the user asks how, where, or why its implementation or interactions work/,
+  );
+  assert.match(skill, /workspace-grounded semantic, fuzzy, paraphrase/);
+  assert.match(skill, /or unrelated open-world/);
   assert.match(
     skill,
     /negative, incidental, or comparative workspace mentions/,
   );
+  assert.match(skill, /Apply these shared workspace-evidence rules/);
   assert.match(
     skill,
-    /Treat the current indexed workspace as an evidence source/,
+    /agent is operating inside a repository or project and\s+the question asks how, where, or why its implementation, symbols, call chains/,
   );
-  assert.match(skill, /workspace or repository/);
-  assert.match(skill, /or a workspace tool is\s+available/);
+  assert.match(
+    skill,
+    /For an implementation-specific question about the current checkout, do not\s+require the user to explicitly say workspace, repository, project, codebase,\s+index, or local files/,
+  );
+  assert.match(skill, /workspace, repository/);
+  assert.match(skill, /available workspace tool alone is not evidence/);
   assert.match(
     skill,
     /semantic\s+comparison or synthesis across files, sections, or documents/,
@@ -37,12 +52,13 @@ test("zvec-grep skill triggers by task and selects the available transport", asy
   assert.doesNotMatch(skill, /semantic or\s+cross-file retrieval/);
   assert.match(
     skill,
-    /Use native\s+`grep`\s+or `rg` for exact lexical searches/,
+    /Use native `grep`\s+or `rg` for exact lexical searches unless `zvec_grep_rg` or its host-prefixed\s+equivalent is listed/,
   );
   assert.match(
     skill,
-    /Use the public native HTTP MCP search tools as the primary interface when the matching `zvec_grep_\*` tool is present/,
+    /Use the public native HTTP MCP search tools as the primary interface when the\s+matching `zvec_grep_\*` tool is listed/,
   );
+  assert.match(skill, /Call the exact listed tool directly/);
   assert.match(
     skill,
     /index lifecycle or daemon diagnostics, which are intentionally\s+kept out of the default agent MCP toolset/,
@@ -59,9 +75,9 @@ test("zvec-grep skill triggers by task and selects the available transport", asy
   );
   assert.match(
     skill,
-    /When an exact word, phrase, name, date,[\s\S]*?locating its occurrences is sufficient, use the managed-rg MCP tool when\s+it is available; otherwise use native `grep` or `rg`/,
+    /When an exact word, phrase, name, date,[\s\S]*?locating its occurrences is sufficient, use `zvec_grep_rg` or its\s+host-prefixed equivalent when that tool is listed; otherwise use native\s+`grep` or `rg`/,
   );
-  assert.match(skill, /optional full MCP toolset exposes\s+`zvec_grep_rg`/);
+  assert.doesNotMatch(skill, /managed-rg MCP tool/);
   assert.match(
     skill,
     /Within a workspace-grounded task, call `zvec_grep_search` when wording or/,
@@ -74,12 +90,45 @@ test("zvec-grep skill triggers by task and selects the available transport", asy
     /semantic discovery is selected because no sufficient exact anchor/,
   );
   assert.match(skill, /does not apply to\s+exact quotations/);
-  assert.match(skill, /ranked lexical constraints within an indexed search/);
+  assert.match(skill, /`query` for one primary hybrid query group/);
+  assert.match(skill, /`queries` for one\s+or more primary hybrid groups/);
   assert.match(
     skill,
-    /unrelated open-world\s+questions,\s+current external facts/,
+    /`fts` and `vector` add supplemental lexical\s+and semantic retrieval routes; they are not hard constraints/,
   );
+  assert.doesNotMatch(skill, /ranked lexical constraints/);
+  assert.match(
+    skill,
+    /response is one deduplicated, reranked result list with query-group\s+metadata/,
+  );
+  assert.match(
+    skill,
+    /Set `fuse: true` to collapse all primary and supplemental routes\s+into one ranked search plan/,
+  );
+  assert.match(skill, /"root": "\/absolute\/workspace"/);
+  assert.match(skill, /"query": "how are search results ranked and fused"/);
+  assert.match(skill, /"fts": \["RRF", "score"\]/);
+  assert.match(skill, /"fuse": true/);
+  assert.match(
+    skill,
+    /unrelated open-world questions,\s+current\s+external facts/,
+  );
+  const normalizedSkill = normalizeWhitespace(skill);
+  for (const rule of ZVEC_GREP_WORKSPACE_EVIDENCE_RULES) {
+    assert.ok(
+      normalizedSkill.includes(normalizeWhitespace(rule)),
+      `skill is missing shared workspace-evidence rule: ${rule}`,
+    );
+  }
   assert.match(skill, /`freshness` and `indexing`/);
+  assert.match(
+    skill,
+    /Treat bounded source snippets in indexed results as already-read evidence/,
+  );
+  assert.match(
+    skill,
+    /open the cited\s+file only when that detail falls outside the snippet or truncation matters/,
+  );
   assert.match(skill, /After authorization, use the CLI lifecycle workflow/);
   assert.doesNotMatch(skill, /zvec_grep_index(?:_drop|_status)?/);
   assert.doesNotMatch(skill, /zvec_grep_server_status/);
@@ -91,8 +140,10 @@ test("zvec-grep skill triggers by task and selects the available transport", asy
   );
   assert.match(
     metadata,
-    /Use \$zvec-grep when the answer should be grounded in the current indexed workspace/,
+    /Use \$zvec-grep to ground local requests and current-project implementation questions in the indexed workspace/,
   );
+  assert.match(metadata, /even when "workspace" is not explicit/);
+  assert.match(metadata, /do not use it for unrelated open-world questions/);
   assert.match(fallback, /once per workspace investigation/);
   assert.match(
     fallback,

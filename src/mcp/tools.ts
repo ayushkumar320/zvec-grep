@@ -62,6 +62,10 @@ import {
   runWithTraceContext,
   traceContextFromMcpMeta,
 } from "../observability/trace-context.js";
+import {
+  formatPromptRules,
+  ZVEC_GREP_WORKSPACE_EVIDENCE_RULES,
+} from "../prompts/zvec-grep-guidance.js";
 
 export type IndexJobState =
   "queued" | "running" | "succeeded" | "failed" | "cancelled";
@@ -214,56 +218,61 @@ export interface ZvecGrepDaemonBackend {
   serverStatus(): Promise<ZvecGrepServerStatusResult>;
 }
 
-const ZVEC_GREP_WORKSPACE_ROUTING_MCP_INSTRUCTIONS = [
-  "Treat the current indexed workspace as the intended evidence source when the user asks to inspect local material, prior conversation establishes it as the source, or the agent is operating inside a repository or project and the question asks how, where, or why an implementation, symbol, call chain, dependency, lifecycle, data flow, architecture, or interaction works.",
-  "Do not require the user to explicitly say workspace, repository, project, codebase, index, or local files when the question is clearly about the current checkout.",
-  "A workspace may contain source code, documentation, books, research material, meeting notes, knowledge-base exports, manuals, configuration, data, or mixed content.",
-  "Do not invoke workspace retrieval for unrelated open-world questions, current external facts, or web content.",
-];
+function searchRoutingRules(exactTool: string, focusedTools: string): string[] {
+  return [
+    `Use ${exactTool} first only when exact lookup alone is sufficient, such as locating one definition, literal, filename, configuration key, error message, regex match, or exhaustive occurrence list.`,
+    "Use zvec_grep_search first when wording or location is unknown, or when the answer requires architecture, lifecycle, call relationships, dependencies, data or control flow, design rationale, comparison, or synthesis across files or components.",
+    `When exact symbols are present but the answer spans multiple files, components, stages, implementations, or relationships, treat the task as mixed: call zvec_grep_search with the semantic intent and known symbols, then use ${focusedTools} only for focused verification.`,
+    "Before broad file discovery for a semantic or mixed workspace task, make one focused zvec_grep_search call. If its results are irrelevant, stop semantic discovery and fall back to focused exact tools.",
+    "`query` creates one primary hybrid FTS-plus-vector group; `queries` creates one or more primary hybrid groups; `fts` and `vector` add supplemental lexical-only or semantic-only route groups. These are retrieval routes, not hard constraints. Without `fuse`, the response is one deduplicated and reranked list with query-group metadata; set `fuse: true` to collapse every group into one ranked search plan.",
+    'For a fused mixed search, use arguments such as {"root":"/absolute/workspace","query":"how are results ranked and fused","fts":["RRF","score"],"fuse":true}.',
+    "Search results include bounded source snippets. Treat a sufficient snippet as already-read evidence, and open only the cited file or range when a required detail falls outside it.",
+    `After a search covers the requested scope, stop calling zvec_grep_search. Answer from that evidence or use only focused ${focusedTools} checks needed to verify exact details; do not issue another semantic search merely to confirm already-sufficient evidence.`,
+    "Do not launch a sub-agent solely to locate workspace material.",
+  ];
+}
 
-const ZVEC_GREP_AGENT_SEARCH_MCP_INSTRUCTIONS = [
-  ...ZVEC_GREP_WORKSPACE_ROUTING_MCP_INSTRUCTIONS,
-  "Use native Grep or rg first only when exact lookup alone is sufficient, such as locating one definition, literal, filename, configuration key, error message, regex match, or exhaustive occurrence list.",
-  "Use zvec_grep_search first when wording or location is unknown, or when the answer requires architecture, lifecycle, call relationships, dependencies, data or control flow, design rationale, comparison, or synthesis across files or components.",
-  "When exact symbols are present but the answer spans multiple files, components, stages, implementations, or relationships, treat the task as mixed: call zvec_grep_search with both the semantic intent and known symbols, then use native Grep, rg, or Read for focused verification.",
-  "Before broad native discovery for a semantic or mixed workspace task, make one focused zvec_grep_search call. If its results are irrelevant, stop semantic discovery and fall back to focused native tools.",
-  "After a search returns enough evidence to identify the relevant implementation, relationships, and files for the requested scope, stop calling zvec_grep_search. Answer from that evidence or use only focused Read, Grep, or rg checks needed to verify exact details. Do not issue another semantic search merely to confirm or broaden already-sufficient evidence.",
-  "Do not launch a sub-agent solely to locate workspace material.",
-];
+const ZVEC_GREP_AGENT_SEARCH_MCP_INSTRUCTIONS = searchRoutingRules(
+  "native Grep or rg",
+  "Read, Grep, or rg",
+);
 
-const ZVEC_GREP_FULL_SEARCH_MCP_INSTRUCTIONS = [
-  ...ZVEC_GREP_WORKSPACE_ROUTING_MCP_INSTRUCTIONS,
-  "Use zvec_grep_rg first only when exact lookup alone is sufficient, such as locating one definition, literal, filename, configuration key, error message, regex match, or exhaustive occurrence list.",
-  "Use zvec_grep_search first when wording or location is unknown, or when the answer requires architecture, lifecycle, call relationships, dependencies, data or control flow, design rationale, comparison, or synthesis across files or components.",
-  "When exact symbols are present but the answer spans multiple files, components, stages, implementations, or relationships, treat the task as mixed: call zvec_grep_search with both the semantic intent and known symbols, then use zvec_grep_rg or Read for focused verification.",
-  "Before broad discovery for a semantic or mixed workspace task, make one focused zvec_grep_search call. If its results are irrelevant, stop semantic discovery and fall back to focused exact tools.",
-  "After a search returns enough evidence to identify the relevant implementation, relationships, and files for the requested scope, stop calling zvec_grep_search. Answer from that evidence or use only focused Read or zvec_grep_rg checks needed to verify exact details. Do not issue another semantic search merely to confirm or broaden already-sufficient evidence.",
-  "Do not launch a sub-agent solely to locate workspace material.",
-];
+const ZVEC_GREP_FULL_SEARCH_MCP_INSTRUCTIONS = searchRoutingRules(
+  "zvec_grep_rg",
+  "Read or zvec_grep_rg",
+);
 
 const ZVEC_GREP_SEARCH_TOOL_DESCRIPTION =
-  "Search the current indexed workspace, including a code repository, project directory, documentation collection, or mixed local material. When operating inside a repository or project, implementation-specific questions are workspace-grounded even if the user does not explicitly mention the workspace. Use this first for semantic, relational, cross-file, or multi-hop evidence such as architecture, call chains, dependencies, data or control flow, lifecycle, design rationale, or comparison across components. Use exact lookup first only when locating an exact item is sufficient. If exact symbols are present but the answer spans multiple files, components, stages, implementations, or relationships, use this search first with both the semantic intent and known symbols, then use exact tools for focused verification. Once the results cover the requested scope, do not call this search again merely to confirm or broaden sufficient evidence; answer or use focused exact verification. Do not use workspace retrieval for unrelated open-world questions or current external facts.";
+  "Search an existing workspace index for semantic, relational, cross-file, or multi-hop evidence such as architecture, call chains, dependencies, lifecycle, data or control flow, design rationale, and comparisons. Use it when exact lookup alone cannot answer a workspace-grounded question. Results include bounded source snippets and query-group metadata; treat sufficient snippets as already-read evidence.";
 
-export const ZVEC_GREP_AGENT_MCP_INSTRUCTIONS = [
-  ...ZVEC_GREP_AGENT_SEARCH_MCP_INSTRUCTIONS,
-  "Every workspace operation requires an absolute root path visible to the daemon.",
-  "Read freshness and indexing directly from zvec_grep_search responses without a status preflight.",
-  "Use possibly_stale search results immediately when they are sufficient; do not perform extra diagnostics merely because a background update is active.",
-  "When an index is missing and literal or regex search can answer the task, use native Grep or rg.",
-].join(" ");
+export const ZVEC_GREP_AGENT_MCP_INSTRUCTIONS = formatPromptRules(
+  "Use zvec-grep with these workspace retrieval rules:",
+  [
+    ...ZVEC_GREP_WORKSPACE_EVIDENCE_RULES,
+    ...ZVEC_GREP_AGENT_SEARCH_MCP_INSTRUCTIONS,
+    "Every workspace operation requires an absolute root path visible to the daemon.",
+    "Read freshness and indexing directly from zvec_grep_search responses without a status preflight.",
+    "Use possibly_stale search results immediately when they are sufficient; do not perform extra diagnostics merely because a background update is active.",
+    "When an index is missing and literal or regex search can answer the task, use native Grep or rg. Creating or rebuilding a persistent index requires explicit user authorization.",
+  ],
+);
 
-export const ZVEC_GREP_FULL_MCP_INSTRUCTIONS = [
-  ...ZVEC_GREP_FULL_SEARCH_MCP_INSTRUCTIONS,
-  "Every workspace operation requires an absolute root path visible to the daemon.",
-  "Use the zvec_grep_* tools directly for workspace search, status, indexing, deletion, and exhaustive lexical search.",
-  "Use freshness and indexing from zvec_grep_search without a status preflight; call zvec_grep_index_status only for a missing index, failed or cancelled indexing, diagnostics, or explicit progress monitoring.",
-  "Use possibly_stale search results immediately when they are sufficient; do not call status merely because a background update is active.",
-  "Call zvec_grep_index only when persistent indexing or index deletion is explicitly requested. Never silently create, rebuild, or drop an index.",
-  "For a new index, use a user-selected embedding or omit it only when a server default model is known; never guess a model.",
-  "zvec_grep_index wait defaults to false; poll zvec_grep_index_status for background progress and set wait to true only when completion is required before continuing.",
-  "Use zvec_grep_index with drop: true, or zvec_grep_index_drop, only when index deletion is explicitly requested.",
-  "Call zvec_grep_server_status only for daemon diagnostics, not before ordinary searches.",
-].join(" ");
+export const ZVEC_GREP_FULL_MCP_INSTRUCTIONS = formatPromptRules(
+  "Use zvec-grep with these workspace retrieval and lifecycle rules:",
+  [
+    ...ZVEC_GREP_WORKSPACE_EVIDENCE_RULES,
+    ...ZVEC_GREP_FULL_SEARCH_MCP_INSTRUCTIONS,
+    "Every workspace operation requires an absolute root path visible to the daemon.",
+    "Use the zvec_grep_* tools directly for workspace search, status, indexing, deletion, and exhaustive lexical search.",
+    "Use freshness and indexing from zvec_grep_search without a status preflight; call zvec_grep_index_status only for a missing index, failed or cancelled indexing, diagnostics, or explicit progress monitoring.",
+    "Use possibly_stale search results immediately when they are sufficient; do not call status merely because a background update is active.",
+    "Call zvec_grep_index only when persistent indexing or index deletion is explicitly requested. Never silently create, rebuild, or drop an index.",
+    "For a new index, use a user-selected embedding or omit it only when a server default model is known; never guess a model.",
+    "zvec_grep_index wait defaults to false; poll zvec_grep_index_status for background progress and set wait to true only when completion is required before continuing.",
+    "Use zvec_grep_index with drop: true, or zvec_grep_index_drop, only when index deletion is explicitly requested.",
+    "Call zvec_grep_server_status only for daemon diagnostics, not before ordinary searches.",
+  ],
+);
 
 export const ZVEC_GREP_MCP_INSTRUCTIONS = ZVEC_GREP_AGENT_MCP_INSTRUCTIONS;
 
@@ -329,7 +338,7 @@ export function registerZvecGrepTools(
         annotations: {
           readOnlyHint: false,
           destructiveHint: true,
-          idempotentHint: true,
+          idempotentHint: false,
           openWorldHint: true,
         },
       },
@@ -408,14 +417,14 @@ export function registerZvecGrepTools(
     {
       title: "Search with zvec-grep",
       description: full
-        ? `${ZVEC_GREP_SEARCH_TOOL_DESCRIPTION} In the full toolset, use zvec_grep_rg for exact lookup and focused follow-up. Read freshness and indexing from the response; use zvec_grep_index_status only for missing indexes, failed or cancelled indexing, diagnostics, or explicit progress monitoring.`
-        : `${ZVEC_GREP_SEARCH_TOOL_DESCRIPTION} In the agent toolset, use native Grep or rg for exact lookup and focused follow-up. Read freshness and indexing directly from the response without a status preflight. When an index is unavailable, use the returned diagnostics and native Grep or rg for exact fallback.`,
+        ? `${ZVEC_GREP_SEARCH_TOOL_DESCRIPTION} Use zvec_grep_rg instead when exact lookup alone is sufficient.`
+        : `${ZVEC_GREP_SEARCH_TOOL_DESCRIPTION} Use native Grep or rg instead when exact lookup alone is sufficient.`,
       inputSchema: zvecGrepSearchInputSchema,
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
         idempotentHint: false,
-        openWorldHint: false,
+        openWorldHint: true,
       },
     },
     async (input, ctx) =>
@@ -469,9 +478,9 @@ export function registerZvecGrepTools(
     server.registerTool(
       "zvec_grep_index_drop",
       {
-        title: "Drop zvec-grep Workspace index",
+        title: "Drop zvec-grep workspace index",
         description:
-          "Delete the persisted index for an absolute Workspace root and release its daemon runtime.",
+          "Delete the persisted index for an absolute workspace root and release its daemon runtime.",
         inputSchema: zvecGrepIndexDropInputSchema,
         outputSchema: zvecGrepIndexDropOutputSchema,
         annotations: {
@@ -489,8 +498,8 @@ export function registerZvecGrepTools(
         };
         return toolResult(
           result.removed
-            ? `Dropped Workspace index for ${result.root}`
-            : `No Workspace index found for ${result.root}`,
+            ? `Dropped workspace index for ${result.root}`
+            : `No workspace index found for ${result.root}`,
           structuredContent,
         );
       },
@@ -503,13 +512,13 @@ export function registerZvecGrepTools(
       {
         title: "Search with managed ripgrep",
         description:
-          "Run exhaustive, AST-enriched managed ripgrep locally across source code or non-code workspace material without requiring an index. Use it for exact lookup only when the answer should be grounded in the workspace and known text, names, titles, dates, quotations, keys, symbols, filenames, error messages, source fragments, or regexes can answer the question. Do not use it for unrelated open-world questions, current external facts, or web content merely because the topic overlaps workspace material or the tool is available. Pass the rg command you would otherwise run. Results are exhaustive by default; append `| head -N` only when you intentionally want a bounded result set. Scope broad matches with command paths, `-g`/`--glob`, or `-t`/`--type` filters.",
+          "Run exhaustive, AST-enriched ripgrep across code or non-code workspace material without an index. Use it when a known word, symbol, filename, source fragment, or regex can answer the workspace-grounded question. Pass a command starting with `rg`; results are exhaustive unless a trailing `| head -N` explicitly bounds them.",
         inputSchema: zvecGrepRgInputSchema,
         annotations: {
           readOnlyHint: true,
           destructiveHint: false,
           idempotentHint: true,
-          openWorldHint: true,
+          openWorldHint: false,
         },
       },
       async (input) => {

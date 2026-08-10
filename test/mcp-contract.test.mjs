@@ -16,6 +16,7 @@ import {
 import { EMBEDDING_ENVIRONMENT_META_KEY } from "../dist/mcp/request-metadata.js";
 import { indexProgressFromMessage } from "../dist/index-progress.js";
 import { formatAgentContextResult } from "../dist/cli/format/context.js";
+import { ZVEC_GREP_WORKSPACE_EVIDENCE_RULES } from "../dist/prompts/zvec-grep-guidance.js";
 
 const root = resolve("test/fixtures/repository");
 const longIndexedContent = "x".repeat(8_000);
@@ -208,18 +209,15 @@ test("default agent contract exposes only indexed search", async (t) => {
   );
   const search = listed.tools.find((tool) => tool.name === "zvec_grep_search");
   assert.ok(search);
-  assert.match(
-    instructions,
-    /current indexed workspace as the intended evidence source/,
-  );
-  assert.match(instructions, /operating inside a repository or project/);
-  assert.match(instructions, /clearly about the current checkout/);
-  assert.match(instructions, /books, research material, meeting notes/);
+  for (const rule of ZVEC_GREP_WORKSPACE_EVIDENCE_RULES) {
+    assert.ok(instructions.includes(`- ${rule}`));
+  }
+  assert.match(instructions, /current checkout/);
   assert.match(instructions, /unrelated open-world questions/);
   assert.match(instructions, /solely to locate workspace material/);
   assert.match(
     instructions,
-    /stop calling zvec_grep_search.*Do not issue another semantic search/s,
+    /stop calling zvec_grep_search.*do not issue another semantic search/s,
   );
   assert.doesNotMatch(instructions, /solely to locate code/);
   assert.ok(
@@ -235,29 +233,13 @@ test("default agent contract exposes only indexed search", async (t) => {
       "Use zvec_grep_search first when wording or location is unknown",
     ) < instructions.indexOf("make one focused zvec_grep_search call"),
   );
-  assert.match(search.description, /code repository, project directory/);
-  assert.match(
-    search.description,
-    /implementation-specific questions are workspace-grounded/,
-  );
   assert.match(
     search.description,
     /semantic, relational, cross-file, or multi-hop evidence/,
   );
-  assert.match(
-    search.description,
-    /exact lookup first only when locating an exact item is sufficient/,
-  );
-  assert.match(
-    search.description,
-    /exact symbols are present but the answer spans multiple files/,
-  );
-  assert.match(search.description, /native Grep or rg for exact lookup/);
-  assert.match(
-    search.description,
-    /do not call this search again merely to confirm or broaden sufficient evidence/,
-  );
-  assert.match(search.description, /unrelated open-world questions/);
+  assert.match(search.description, /bounded source snippets/);
+  assert.match(search.description, /already-read evidence/);
+  assert.match(search.description, /native Grep or rg instead/);
   assert.doesNotMatch(search.description, /index first/);
   assert.doesNotMatch(
     search.description,
@@ -314,12 +296,10 @@ test("full server contract exposes all tools with stable annotations", async (t)
   );
   assert.doesNotMatch(toolContracts, /\bCLI\b/i);
   assert.doesNotMatch(toolContracts, /`?zg(?:\s|`)/i);
-  assert.match(
-    instructions,
-    /current indexed workspace as the intended evidence source/,
-  );
-  assert.match(instructions, /operating inside a repository or project/);
-  assert.match(instructions, /clearly about the current checkout/);
+  for (const rule of ZVEC_GREP_WORKSPACE_EVIDENCE_RULES) {
+    assert.ok(instructions.includes(`- ${rule}`));
+  }
+  assert.match(instructions, /current checkout/);
   assert.match(
     instructions,
     /zvec_grep_rg first only when exact lookup alone is sufficient/,
@@ -330,6 +310,10 @@ test("full server contract exposes all tools with stable annotations", async (t)
   );
   assert.match(instructions, /treat the task as mixed/);
   assert.match(instructions, /make one focused zvec_grep_search call/);
+  assert.match(instructions, /`query` creates one primary hybrid/);
+  assert.match(instructions, /retrieval routes, not hard constraints/);
+  assert.match(instructions, /"root":"\/absolute\/workspace"/);
+  assert.match(instructions, /bounded source snippets/);
   assert.match(instructions, /solely to locate workspace material/);
   assert.match(instructions, /workspace search, status, indexing, deletion/);
   assert.match(instructions, /unrelated open-world questions/);
@@ -344,11 +328,14 @@ test("full server contract exposes all tools with stable annotations", async (t)
   );
   assert.equal(annotations.zvec_grep_index.readOnlyHint, false);
   assert.equal(annotations.zvec_grep_index.destructiveHint, true);
+  assert.equal(annotations.zvec_grep_index.idempotentHint, false);
   assert.equal(annotations.zvec_grep_rg.readOnlyHint, true);
   assert.equal(annotations.zvec_grep_index_drop.readOnlyHint, false);
   assert.equal(annotations.zvec_grep_index_drop.destructiveHint, true);
   assert.equal(annotations.zvec_grep_index_drop.idempotentHint, true);
   assert.equal(annotations.zvec_grep_search.readOnlyHint, false);
+  assert.equal(annotations.zvec_grep_search.openWorldHint, true);
+  assert.equal(annotations.zvec_grep_rg.openWorldHint, false);
   assert.equal(annotations.zvec_grep_index_status.readOnlyHint, true);
   assert.equal(annotations.zvec_grep_server_status.readOnlyHint, true);
   const index = tools.find((tool) => tool.name === "zvec_grep_index");
@@ -356,13 +343,10 @@ test("full server contract exposes all tools with stable annotations", async (t)
   assert.match(index.description, /Do not call this tool/);
   assert.match(index.description, /index deletion/);
   const search = tools.find((tool) => tool.name === "zvec_grep_search");
-  assert.match(search.description, /code repository, project directory/);
   assert.match(search.description, /semantic, relational, cross-file/);
-  assert.match(search.description, /exact symbols are present/);
-  assert.match(search.description, /zvec_grep_rg for exact lookup/);
-  assert.match(search.description, /unrelated open-world questions/);
+  assert.match(search.description, /zvec_grep_rg instead/);
+  assert.match(search.description, /bounded source snippets/);
   assert.doesNotMatch(search.description, /index first/);
-  assert.match(search.description, /missing indexes/);
   for (const tool of [index, search]) {
     assert.match(
       tool.inputSchema.properties.fileTypes.description,
@@ -381,20 +365,47 @@ test("full server contract exposes all tools with stable annotations", async (t)
       /extension aliases/i,
     );
   }
+  assert.match(
+    search.inputSchema.properties.root.description,
+    /workspace root/,
+  );
+  assert.match(
+    search.inputSchema.properties.query.description,
+    /one primary hybrid-search group/i,
+  );
+  assert.match(
+    search.inputSchema.properties.queries.description,
+    /one or more primary hybrid-search groups/i,
+  );
+  assert.match(
+    search.inputSchema.properties.fts.description,
+    /supplemental lexical-route groups/i,
+  );
+  assert.match(
+    search.inputSchema.properties.fts.description,
+    /not hard result constraints/i,
+  );
+  assert.match(
+    search.inputSchema.properties.fuse.description,
+    /one ranked search plan/i,
+  );
+  assert.match(
+    search.inputSchema.properties.noIgnore.description,
+    /Do not respect ignore files/,
+  );
   const rg = tools.find((tool) => tool.name === "zvec_grep_rg");
-  assert.match(rg.description, /exhaustive, AST-enriched managed ripgrep/);
-  assert.match(rg.description, /source code or non-code workspace material/);
-  assert.match(rg.description, /known text, names, titles, dates/);
-  assert.match(rg.description, /unrelated open-world questions/);
-  assert.match(rg.description, /exhaustive by default/);
-  assert.match(rg.description, /append `\| head -N` only/);
+  assert.match(rg.description, /exhaustive, AST-enriched ripgrep/);
+  assert.match(rg.description, /code or non-code workspace material/);
+  assert.match(rg.description, /known word, symbol, filename/);
+  assert.match(rg.description, /exhaustive unless/);
+  assert.match(rg.description, /trailing `\| head -N`/);
   assert.deepEqual(Object.keys(rg.inputSchema.properties).toSorted(), [
     "command",
     "root",
   ]);
   assert.match(
     rg.inputSchema.properties.command.description,
-    /rg command you would otherwise run/i,
+    /must start with `rg`/i,
   );
   assert.match(
     rg.inputSchema.properties.command.description,
@@ -481,7 +492,7 @@ test("index drop returns the daemon deletion result", async (t) => {
   });
   assert.equal(result.isError, undefined);
   assert.deepEqual(result.structuredContent, { root, removed: true });
-  assert.match(result.content[0].text, /Dropped Workspace index/);
+  assert.match(result.content[0].text, /Dropped workspace index/);
 });
 
 test("index result includes an immediately available failure reason", async (t) => {

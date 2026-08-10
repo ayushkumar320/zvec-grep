@@ -17,6 +17,10 @@ import { delimiter, dirname, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { resolveServerUrl } from "../client/mode-router.js";
 import { type serverStatus } from "../daemon/server-controller.js";
+import {
+  formatPromptRules,
+  ZVEC_GREP_WORKSPACE_EVIDENCE_RULES,
+} from "../prompts/zvec-grep-guidance.js";
 import type { ParsedArgs } from "./types.js";
 
 type AgentInstaller = {
@@ -257,6 +261,7 @@ async function installOpenCodeIntegration(
     endMarker: ZVEC_GREP_AGENTS_END,
     block: agentGuidanceBlock({
       search: "zvec_grep_zvec_grep_search",
+      rg: "zvec_grep_zvec_grep_rg",
     }),
     force: true,
   });
@@ -1124,25 +1129,54 @@ default_tools_approval_mode = "approve"
 ${ZVEC_GREP_CONFIG_END}`;
 }
 
-function agentGuidanceBlock(toolNames?: { search: string }): string {
+function agentGuidanceBlock(toolNames?: {
+  search: string;
+  rg: string;
+}): string {
   const searchTool = toolNames?.search ?? "zvec_grep_search";
+  const rgTool = toolNames?.rg ?? "zvec_grep_rg";
+  const exactLookupRoute = `\`${rgTool}\` when it is listed by the current host; otherwise native Grep or \`rg\``;
   return `${ZVEC_GREP_AGENTS_START}
 ## zvec-grep
 
-Choose the evidence source before the retrieval mode. Treat the current indexed workspace as an evidence source only when the user asks to inspect, search, or ground the answer in local files, the workspace or repository, or its index; prior context has established the workspace as the intended evidence source; or the user asks whether relevant local material exists. Negative, incidental, or comparative mentions of a workspace do not establish workspace relevance. Do not infer workspace relevance merely because the workspace could contain or mention the topic or a workspace tool is available.
+Choose the evidence source before the retrieval mode.
 
-The workspace may contain source code, documentation, books, research material, meeting notes, knowledge-base exports, manuals, configuration, data, or mixed content. Non-code content does not make workspace search less appropriate.
+${formatPromptRules(
+  "### Workspace evidence",
+  ZVEC_GREP_WORKSPACE_EVIDENCE_RULES,
+)}
 
-Once workspace relevance is established, when an exact word, phrase, name, date, identifier, filename, path, configuration key, error message, source fragment, literal, or regex is known and locating its occurrences is sufficient, use the managed-rg MCP tool when it is available; otherwise use native Grep or rg.
+${formatPromptRules("### Retrieval routing", [
+  `When an exact word, phrase, name, date, identifier, filename, path, configuration key, error message, source fragment, literal, or regex is known and locating its occurrences is sufficient, use ${exactLookupRoute}.`,
+  `Use \`${searchTool}\` when wording or location is unknown, or when the answer requires semantic, conceptual, fuzzy, or paraphrase discovery; relationships, chronology, causality, architecture, or data or control flow; or comparison or synthesis across files, sections, or documents.`,
+  `For a mixed task with exact anchors that still requires relationships or cross-file synthesis, call \`${searchTool}\` with the concept and anchors, then use ${exactLookupRoute} for focused follow-up.`,
+  `When no sufficient exact anchor is available and the user asks whether conceptually related material exists locally, make at most one focused \`${searchTool}\` probe using the question plus distinctive names, dates, or terms. This probe does not apply to exact quotations, configuration keys, filenames, regexes, or exhaustive occurrence requests. Continue only when results are relevant; otherwise stop and report that the indexed workspace did not establish the answer.`,
+  "Before broad file reads or delegating workspace discovery, use the appropriate search route. Do not delegate solely to locate material, and stop when the evidence is sufficient.",
+])}
 
-Within a workspace-grounded task, use \`${searchTool}\` when wording or location is unknown, or when the answer requires semantic, conceptual, fuzzy, or paraphrase discovery; relationships, chronology, causality, architecture, or data or control flow; or comparison or synthesis across files, sections, or documents.
+${formatPromptRules("### Search arguments and evidence", [
+  "`query` creates one primary hybrid result group; `queries` creates one or more primary hybrid result groups.",
+  "`fts` and `vector` add supplemental lexical and semantic routes. `fts` is a retrieval route, not a hard filter or constraint.",
+  "Without `fuse`, search groups are evaluated separately and returned as one deduplicated, reranked list with query-group metadata. Set `fuse: true` to collapse the supplied primary and supplemental intents into one search plan.",
+  "Search results include bounded source snippets. Treat a sufficient snippet as already-read evidence, and read a cited file only when a required detail falls outside the snippet.",
+])}
 
-Within a workspace-grounded mixed task, when exact anchors are known but the answer requires those relationships or cross-file synthesis, use \`${searchTool}\` with the concept and anchors, then use the managed-rg MCP tool when it is available or native Grep or rg otherwise for focused follow-up.
+Example mixed search:
 
-When semantic discovery is selected because no sufficient exact anchor is available and the user asks whether conceptually related material exists locally, make at most one focused \`${searchTool}\` probe using the user's question plus distinctive names, dates, or terms. This probe does not apply to exact quotations, configuration keys, filenames, regexes, or exhaustive occurrence requests. Continue only when the results are relevant; otherwise stop local discovery and report that the indexed workspace did not establish the answer.
+\`\`\`json
+{
+  "root": "/absolute/workspace",
+  "query": "how are search results ranked and fused",
+  "fts": ["RRF", "score"],
+  "fuse": true
+}
+\`\`\`
 
-Do not use workspace search for unrelated open-world questions, current external facts, or web knowledge that do not depend on local evidence. Before broad file reads or delegating workspace discovery, use the appropriate search route. Do not delegate solely to locate material, and stop when the evidence is sufficient.
-
-Pass a daemon-visible absolute \`root\` on every zvec-grep workspace call. Read \`freshness\` and \`indexing\` from search results without a status preflight, and use \`possibly_stale\` results when they are sufficient. If the index is missing but exact or regex lookup can answer the task, use the managed-rg MCP tool when it is available, or native Grep or rg otherwise; never silently create or rebuild an index.
+${formatPromptRules("### Freshness and index lifecycle", [
+  "Pass a daemon-visible absolute `root` on every zvec-grep workspace call.",
+  "Read `freshness` and `indexing` from search results without a status preflight, and use `possibly_stale` results when they are sufficient.",
+  `If the index is missing but exact or regex lookup can answer the task, use ${exactLookupRoute}.`,
+  "Creating, rebuilding, or dropping a persistent index requires an explicit user request or authorization; never do so silently.",
+])}
 ${ZVEC_GREP_AGENTS_END}`;
 }

@@ -310,8 +310,8 @@ test("Streamable HTTP serves health, MCP contracts and a real cached index searc
   });
   assert.equal(missing.isError, true);
   assert.match(missing.content[0].text, /INDEX_MISSING/);
-  assert.match(missing.content[0].text, /native grep or rg/);
-  assert.match(missing.content[0].text, /persistent indexing is authorized/);
+  assert.match(missing.content[0].text, /available exact-search fallback/);
+  assert.match(missing.content[0].text, /explicit user authorization/);
   await assert.rejects(access(join(unindexedRoot, ".zvec-grep")));
 
   await writeFile(

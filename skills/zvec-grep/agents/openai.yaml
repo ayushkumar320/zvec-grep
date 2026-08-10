@@ -1,4 +1,4 @@
 interface:
   display_name: "zvec-grep"
   short_description: "Search indexed workspaces across code and non-code content"
-  default_prompt: "Use $zvec-grep when the answer should be grounded in the current indexed workspace; it applies to code and non-code material. Use MCP search for conceptual retrieval and the zg CLI only for authorized index lifecycle or daemon diagnostics."
+  default_prompt: 'Use $zvec-grep to ground local requests and current-project implementation questions in the indexed workspace even when "workspace" is not explicit; do not use it for unrelated open-world questions.'
