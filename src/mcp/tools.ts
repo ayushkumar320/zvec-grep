@@ -215,35 +215,34 @@ export interface ZvecGrepDaemonBackend {
 }
 
 const ZVEC_GREP_WORKSPACE_ROUTING_MCP_INSTRUCTIONS = [
-  "Route retrieval in two stages: first decide whether the answer should be grounded in the current indexed workspace, and only then choose exact or semantic retrieval.",
-  "Do not use code versus non-code as the boundary. A workspace may contain source code, documentation, books, research material, meeting notes, knowledge-base exports, manuals, configuration, data, or mixed content.",
-  "Treat the workspace as an intended evidence source only when the user asks to inspect, search, or ground the answer in the workspace, index, repository, or local files; prior conversation established local material as the intended evidence source; or the user asks whether relevant material exists locally.",
-  "Negative, incidental, or comparative mentions of a workspace do not establish workspace relevance.",
-  "Do not invoke workspace search for unrelated open-world questions, current external facts, or web content merely because the topic overlaps indexed material or a workspace tool is available.",
+  "Treat the current indexed workspace as the intended evidence source when the user asks to inspect local material, prior conversation establishes it as the source, or the agent is operating inside a repository or project and the question asks how, where, or why an implementation, symbol, call chain, dependency, lifecycle, data flow, architecture, or interaction works.",
+  "Do not require the user to explicitly say workspace, repository, project, codebase, index, or local files when the question is clearly about the current checkout.",
+  "A workspace may contain source code, documentation, books, research material, meeting notes, knowledge-base exports, manuals, configuration, data, or mixed content.",
+  "Do not invoke workspace retrieval for unrelated open-world questions, current external facts, or web content.",
 ];
 
 const ZVEC_GREP_AGENT_SEARCH_MCP_INSTRUCTIONS = [
   ...ZVEC_GREP_WORKSPACE_ROUTING_MCP_INSTRUCTIONS,
-  "After workspace relevance is established, use native Grep or rg first for exact lookup when known text, names, titles, dates, quotations, keys, symbols, filenames, error messages, source fragments, or regexes can answer the question.",
-  "Within a workspace-grounded task, use zvec_grep_search when wording or location is unknown; the question is conceptual or fuzzy; you need paraphrases or related passages; you need relationships among people, events, concepts, or components; you need chronology or causality; or the answer requires comparison or synthesis across files or sections.",
-  "Within a workspace-grounded mixed task, include known names, titles, dates, quotations, keys, or symbols as anchors in zvec_grep_search, then use native Grep or rg for focused exact follow-up.",
-  "When semantic discovery is selected because no sufficient exact anchor is available and the user asks whether conceptually related material exists locally, make at most one focused zvec_grep_search probe. This probe does not apply to exact quotations, configuration keys, filenames, regexes, or exhaustive occurrence requests; if its results are irrelevant, stop workspace discovery.",
-  "Before broad file reads or a sub-agent for semantic workspace-material discovery, make at least one appropriate zvec_grep_search call.",
-  "Do not launch a sub-agent solely to locate workspace material. Stop discovery when the evidence covers the requested scope.",
+  "Use native Grep or rg first only when exact lookup alone is sufficient, such as locating one definition, literal, filename, configuration key, error message, regex match, or exhaustive occurrence list.",
+  "Use zvec_grep_search first when wording or location is unknown, or when the answer requires architecture, lifecycle, call relationships, dependencies, data or control flow, design rationale, comparison, or synthesis across files or components.",
+  "When exact symbols are present but the answer spans multiple files, components, stages, implementations, or relationships, treat the task as mixed: call zvec_grep_search with both the semantic intent and known symbols, then use native Grep, rg, or Read for focused verification.",
+  "Before broad native discovery for a semantic or mixed workspace task, make one focused zvec_grep_search call. If its results are irrelevant, stop semantic discovery and fall back to focused native tools.",
+  "After a search returns enough evidence to identify the relevant implementation, relationships, and files for the requested scope, stop calling zvec_grep_search. Answer from that evidence or use only focused Read, Grep, or rg checks needed to verify exact details. Do not issue another semantic search merely to confirm or broaden already-sufficient evidence.",
+  "Do not launch a sub-agent solely to locate workspace material.",
 ];
 
 const ZVEC_GREP_FULL_SEARCH_MCP_INSTRUCTIONS = [
   ...ZVEC_GREP_WORKSPACE_ROUTING_MCP_INSTRUCTIONS,
-  "After workspace relevance is established, use zvec_grep_rg first for exact lookup when known text, names, titles, dates, quotations, keys, symbols, filenames, error messages, source fragments, or regexes can answer the question.",
-  "Within a workspace-grounded task, use zvec_grep_search when wording or location is unknown; the question is conceptual or fuzzy; you need paraphrases or related passages; you need relationships among people, events, concepts, or components; you need chronology or causality; or the answer requires comparison or synthesis across files or sections.",
-  "Within a workspace-grounded mixed task, include known names, titles, dates, quotations, keys, or symbols as anchors in zvec_grep_search, then use zvec_grep_rg for focused exact follow-up.",
-  "When semantic discovery is selected because no sufficient exact anchor is available and the user asks whether conceptually related material exists locally, make at most one focused zvec_grep_search probe. This probe does not apply to exact quotations, configuration keys, filenames, regexes, or exhaustive occurrence requests; if its results are irrelevant, stop workspace discovery.",
-  "Before using native Grep, Glob, shell rg, broad file reads, or a sub-agent for workspace-material discovery, make at least one appropriate zvec-grep call.",
-  "Do not launch a sub-agent solely to locate workspace material. Stop discovery when the evidence covers the requested scope.",
+  "Use zvec_grep_rg first only when exact lookup alone is sufficient, such as locating one definition, literal, filename, configuration key, error message, regex match, or exhaustive occurrence list.",
+  "Use zvec_grep_search first when wording or location is unknown, or when the answer requires architecture, lifecycle, call relationships, dependencies, data or control flow, design rationale, comparison, or synthesis across files or components.",
+  "When exact symbols are present but the answer spans multiple files, components, stages, implementations, or relationships, treat the task as mixed: call zvec_grep_search with both the semantic intent and known symbols, then use zvec_grep_rg or Read for focused verification.",
+  "Before broad discovery for a semantic or mixed workspace task, make one focused zvec_grep_search call. If its results are irrelevant, stop semantic discovery and fall back to focused exact tools.",
+  "After a search returns enough evidence to identify the relevant implementation, relationships, and files for the requested scope, stop calling zvec_grep_search. Answer from that evidence or use only focused Read or zvec_grep_rg checks needed to verify exact details. Do not issue another semantic search merely to confirm or broaden already-sufficient evidence.",
+  "Do not launch a sub-agent solely to locate workspace material.",
 ];
 
 const ZVEC_GREP_SEARCH_TOOL_DESCRIPTION =
-  "Search an existing workspace index across source code and non-code material, including documentation, books, research material, meeting notes, knowledge-base exports, manuals, configuration, data, or mixed content. Use only when the user asks to inspect, search, or ground the answer in the current indexed workspace, prior conversation established local material as the intended evidence source, or the user asks whether relevant material exists locally. Negative, incidental, or comparative workspace mentions do not establish relevance, and unrelated open-world questions, current external facts, or web content do not become workspace tasks merely because the topic overlaps indexed material or the tool is available. Within a workspace-grounded task, use semantic search when wording or location is unknown, the request is conceptual or fuzzy, or it needs paraphrases, related passages, relationships among people, events, concepts, or components, chronology or causality, or comparison or synthesis across files or sections. For workspace-grounded mixed tasks, include known names, titles, dates, quotations, keys, or symbols as anchors, then use exact lookup for focused follow-up. When the user asks whether conceptually related material exists locally and no sufficient exact anchor is available, make at most one focused probe and stop if its results are irrelevant. Do not use that probe for exact quotations, configuration keys, filenames, regexes, or exhaustive occurrence requests.";
+  "Search the current indexed workspace, including a code repository, project directory, documentation collection, or mixed local material. When operating inside a repository or project, implementation-specific questions are workspace-grounded even if the user does not explicitly mention the workspace. Use this first for semantic, relational, cross-file, or multi-hop evidence such as architecture, call chains, dependencies, data or control flow, lifecycle, design rationale, or comparison across components. Use exact lookup first only when locating an exact item is sufficient. If exact symbols are present but the answer spans multiple files, components, stages, implementations, or relationships, use this search first with both the semantic intent and known symbols, then use exact tools for focused verification. Once the results cover the requested scope, do not call this search again merely to confirm or broaden sufficient evidence; answer or use focused exact verification. Do not use workspace retrieval for unrelated open-world questions or current external facts.";
 
 export const ZVEC_GREP_AGENT_MCP_INSTRUCTIONS = [
   ...ZVEC_GREP_AGENT_SEARCH_MCP_INSTRUCTIONS,
