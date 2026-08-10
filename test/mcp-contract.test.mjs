@@ -212,7 +212,8 @@ test("default agent contract exposes only indexed search", async (t) => {
   for (const rule of ZVEC_GREP_WORKSPACE_EVIDENCE_RULES) {
     assert.ok(instructions.includes(`- ${rule}`));
   }
-  assert.match(instructions, /current checkout/);
+  assert.match(instructions, /question concerns how the current project works/);
+  assert.match(instructions, /workspace is not mentioned explicitly/);
   assert.match(instructions, /unrelated open-world questions/);
   assert.match(instructions, /solely to locate workspace material/);
   assert.match(
@@ -299,7 +300,8 @@ test("full server contract exposes all tools with stable annotations", async (t)
   for (const rule of ZVEC_GREP_WORKSPACE_EVIDENCE_RULES) {
     assert.ok(instructions.includes(`- ${rule}`));
   }
-  assert.match(instructions, /current checkout/);
+  assert.match(instructions, /question concerns how the current project works/);
+  assert.match(instructions, /workspace is not mentioned explicitly/);
   assert.match(
     instructions,
     /zvec_grep_rg first only when exact lookup alone is sufficient/,
