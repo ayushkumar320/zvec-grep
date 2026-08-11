@@ -72,7 +72,8 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(error.exception.code, 2)
         self.assertIn(
-            "supported models: aliyun-glm-5.2, qwen3.7-max",
+            "supported models: aliyun-glm-5.2, custom-openai/glm-5.2, "
+            "qwen3.7-max",
             stderr.getvalue(),
         )
 
@@ -90,6 +91,22 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(args.agent, "opencode")
         self.assertEqual(args.model, "qwen3.7-max")
+
+    def test_accepts_independent_trial_count(self) -> None:
+        args = build_parser().parse_args(
+            [
+                "run",
+                "swe-qa-bench-manual",
+                "--agent",
+                "opencode",
+                "--model",
+                "custom-openai/glm-5.2",
+                "--n-attempts",
+                "3",
+            ]
+        )
+
+        self.assertEqual(args.n_attempts, 3)
 
     def test_legacy_package_fails_before_harbor(self) -> None:
         with self.assertRaisesRegex(SystemExit, "does not support"):

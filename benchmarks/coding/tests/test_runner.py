@@ -66,6 +66,10 @@ class LocalPackageTests(unittest.TestCase):
                     return_value=(package, digest),
                 ),
                 patch.object(runner.subprocess, "run", return_value=inspected),
+                patch.dict(
+                    runner.os.environ,
+                    {runner.ZVEC_GREP_INDEX_SEED_ENV: ""},
+                ),
             ):
                 prepared = runner.prepare_setup_cache(
                     "opencode",
@@ -88,11 +92,113 @@ class LocalPackageTests(unittest.TestCase):
                 f"local-{digest[:16]}",
                 overlay["volumes"]["agent-setup-cache"]["name"],
             )
+            self.assertIn(
+                "local-potion-code-16m-v2",
+                runner.setup_cache_volume_name(
+                    "opencode",
+                    "zvec-grep",
+                    zvec_grep_package_sha256=digest,
+                    embedding_model="local/potion-code-16m-v2",
+                ),
+            )
             self.assertEqual(
                 prepared.zvec_grep_package,
                 runner.LOCAL_ZVEC_GREP_PACKAGE_TARGET,
             )
             self.assertEqual(prepared.zvec_grep_package_sha256, digest)
+
+    def test_index_seed_mount_is_disabled_for_baseline_and_remote_embedding(
+        self,
+    ) -> None:
+        inspected = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache_dir = Path(temp_dir) / "agent-setup"
+            seed_dir = Path(temp_dir) / "index-seed"
+
+            with (
+                patch.object(runner, "SETUP_CACHE_DIR", cache_dir),
+                patch.object(runner.subprocess, "run", return_value=inspected),
+                patch.dict(
+                    runner.os.environ,
+                    {runner.ZVEC_GREP_INDEX_SEED_ENV: str(seed_dir)},
+                ),
+            ):
+                baseline = runner.prepare_setup_cache(
+                    "opencode",
+                    "baseline",
+                    embedding_model="local/potion-code-16m-v2",
+                )
+                baseline_overlay = json.loads(baseline.compose_path.read_text())
+                remote = runner.prepare_setup_cache(
+                    "opencode",
+                    "zvec-grep",
+                    embedding_model="qwen/text-embedding-v4",
+                )
+                remote_overlay = json.loads(remote.compose_path.read_text())
+
+            for overlay in (baseline_overlay, remote_overlay):
+                self.assertNotIn(str(seed_dir.resolve()), json.dumps(overlay))
+            self.assertFalse(seed_dir.exists())
+
+    def test_local_zvec_profile_creates_host_seed_without_mounting_it(
+        self,
+    ) -> None:
+        inspected = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache_dir = Path(temp_dir) / "agent-setup"
+            seed_dir = Path(temp_dir) / "nested" / "index-seed"
+
+            with (
+                patch.object(runner, "SETUP_CACHE_DIR", cache_dir),
+                patch.object(runner.subprocess, "run", return_value=inspected),
+                patch.dict(
+                    runner.os.environ,
+                    {runner.ZVEC_GREP_INDEX_SEED_ENV: str(seed_dir)},
+                ),
+            ):
+                prepared = runner.prepare_setup_cache(
+                    "opencode",
+                    "zvec-grep",
+                    embedding_model="local/potion-code-16m-v2",
+                )
+
+            overlay = json.loads(prepared.compose_path.read_text())
+            self.assertTrue(seed_dir.is_dir())
+            self.assertEqual(
+                overlay["services"]["main"]["volumes"],
+                [
+                    {
+                        "type": "volume",
+                        "source": "agent-setup-cache",
+                        "target": runner._SETUP_CACHE_TARGET,
+                    }
+                ],
+            )
+            self.assertNotIn(str(seed_dir.resolve()), json.dumps(overlay))
+
+    def test_index_seed_rejects_broad_host_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            github_workspace = Path(temp_dir) / "github-workspace"
+            github_workspace.mkdir()
+
+            with patch.dict(
+                runner.os.environ,
+                {"GITHUB_WORKSPACE": str(github_workspace)},
+            ):
+                forbidden = (
+                    Path("/"),
+                    Path.home(),
+                    Path.cwd(),
+                    github_workspace,
+                )
+                for path in forbidden:
+                    with self.subTest(path=path), self.assertRaisesRegex(
+                        ValueError,
+                        "dedicated cache directory",
+                    ):
+                        runner.resolve_zvec_grep_index_seed_dir(str(path))
 
     def test_version_shorthand_selects_published_npm_package(self) -> None:
         prepared = runner.prepare_zvec_grep_package("0.1.5")
@@ -127,6 +233,93 @@ class LocalPackageTests(unittest.TestCase):
 
 
 class RunValidationTests(unittest.TestCase):
+    def test_harbor_command_forwards_independent_trial_count(self) -> None:
+        suite = runner.load_suite("swe-qa-bench-manual", tier="ci")
+
+        command = runner.build_harbor_command(
+            suite,
+            profile="baseline",
+            agent="opencode",
+            model="custom-openai/glm-5.2",
+            job_name="three-trials",
+            n_attempts=3,
+        )
+
+        self.assertEqual(command[command.index("--n-attempts") + 1], "3")
+
+    def test_harbor_command_rejects_non_positive_trial_count(self) -> None:
+        suite = runner.load_suite("swe-qa-bench-manual", tier="ci")
+
+        with self.assertRaisesRegex(ValueError, "positive integer"):
+            runner.build_harbor_command(
+                suite,
+                profile="baseline",
+                agent="opencode",
+                model="custom-openai/glm-5.2",
+                job_name="invalid-trials",
+                n_attempts=0,
+            )
+
+    def test_custom_glm_uses_openai_compatible_provider(self) -> None:
+        suite = runner.load_suite("swebench-verified", tier="smoke")
+
+        command = runner.build_harbor_command(
+            suite,
+            profile="zvec-grep",
+            agent="opencode",
+            model="custom-openai/glm-5.2",
+            embedding_model="local/potion-code-16m-v2",
+            job_name="custom-glm-test",
+        )
+
+        self.assertEqual(
+            command[command.index("--model") + 1],
+            "custom-openai/glm-5.2",
+        )
+        self.assertIn(
+            "embedding_model=local/potion-code-16m-v2",
+            command,
+        )
+        config_argument = next(
+            value for value in command if value.startswith("opencode_config=")
+        )
+        config = json.loads(config_argument.removeprefix("opencode_config="))
+        provider = config["provider"]["custom-openai"]
+        self.assertEqual(
+            provider["options"]["apiKey"],
+            "{env:OPENAI_API_KEY}",
+        )
+        self.assertNotIn("GLM_API_KEY", json.dumps(config))
+        self.assertIn("mcp", config)
+
+    def test_custom_glm_environment_normalizes_and_scrubs_source_key(self) -> None:
+        with patch.dict(
+            runner.os.environ,
+            {"GLM_API_KEY": "glm-secret", "UNRELATED": "kept"},
+            clear=True,
+        ):
+            environment = runner.execution_environment(
+                agent="opencode",
+                model="custom-openai/glm-5.2",
+            )
+
+        self.assertEqual(environment["OPENAI_API_KEY"], "glm-secret")
+        self.assertNotIn("GLM_API_KEY", environment)
+        self.assertEqual(environment["UNRELATED"], "kept")
+
+    def test_local_embedding_does_not_require_embedding_key(self) -> None:
+        with patch.dict(
+            runner.os.environ,
+            {"GLM_API_KEY": "glm-secret"},
+            clear=True,
+        ):
+            runner.validate_profile_credentials(
+                ("baseline", "zvec-grep"),
+                agent="opencode",
+                model="custom-openai/glm-5.2",
+                embedding_model="local/potion-code-16m-v2",
+            )
+
     def test_qwen_code_model_is_supported(self) -> None:
         support = runner.resolve_agent_model("qwen-coder", "qwen3.7-max")
 
@@ -299,6 +492,34 @@ class RunValidationTests(unittest.TestCase):
 
 
 class SuiteTierTests(unittest.TestCase):
+    def test_local_swe_qa_suite_uses_harbor_path(self) -> None:
+        suite = runner.load_suite("swe-qa-bench-manual", tier="ci")
+
+        command = runner.build_harbor_command(
+            suite,
+            profile="baseline",
+            agent="opencode",
+            model="custom-openai/glm-5.2",
+            job_name="local-suite-test",
+        )
+
+        self.assertIsNone(suite.dataset)
+        self.assertIsNotNone(suite.path)
+        selection_path = (
+            Path(__file__).resolve().parents[1]
+            / "zg_bench"
+            / "swe_qa"
+            / "data"
+            / "selection.json"
+        )
+        selected_slugs = [
+            task["task_slug"]
+            for task in json.loads(selection_path.read_text())["tasks"]
+        ]
+        self.assertEqual(list(suite.tasks or ()), selected_slugs)
+        self.assertIn("--path", command)
+        self.assertNotIn("--dataset", command)
+
     def test_full_tier_runs_all_dataset_tasks(self) -> None:
         suite = runner.load_suite("swebench-verified", tier="full")
 
