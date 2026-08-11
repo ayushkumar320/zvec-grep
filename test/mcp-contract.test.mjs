@@ -216,13 +216,26 @@ test("default agent contract exposes only indexed search", async (t) => {
   assert.match(instructions, /workspace is not mentioned explicitly/);
   assert.match(instructions, /unrelated open-world questions/);
   assert.match(instructions, /solely to locate workspace material/);
+  assert.match(instructions, /user-provided or verified exact symbols/);
+  assert.match(
+    instructions,
+    /start discovery with focused zvec_grep_search before broad file discovery/,
+  );
+  assert.match(instructions, /user request and established context/);
+  assert.match(instructions, /supplemental hypotheses/);
   assert.match(instructions, /resolves material ambiguity/);
-  assert.match(instructions, /several results plausibly fit/);
+  assert.match(instructions, /requested answer shape/);
+  assert.match(instructions, /relevant path and material transitions/);
+  assert.match(instructions, /several candidates plausibly fit/);
   assert.match(
     instructions,
     /if they remain indistinguishable, state the ambiguity/,
   );
-  assert.match(instructions, /Once evidence is sufficient, stop searching/);
+  assert.match(instructions, /smallest focused follow-up needed/);
+  assert.match(instructions, /refine zvec_grep_search/);
+  assert.match(instructions, /verify with Read, Grep, or rg/);
+  assert.match(instructions, /fall back to native Grep or rg/);
+  assert.match(instructions, /do not continue merely to reconfirm or broaden/);
   assert.doesNotMatch(instructions, /solely to locate code/);
   assert.ok(
     instructions.indexOf(
@@ -235,7 +248,10 @@ test("default agent contract exposes only indexed search", async (t) => {
   assert.ok(
     instructions.indexOf(
       "Use zvec_grep_search first when wording or location is unknown",
-    ) < instructions.indexOf("start with a focused zvec_grep_search call"),
+    ) <
+      instructions.indexOf(
+        "start discovery with focused zvec_grep_search before broad file discovery",
+      ),
   );
   assert.match(
     search.description,
@@ -314,14 +330,25 @@ test("full server contract exposes all tools with stable annotations", async (t)
     /Use zvec_grep_search first when wording or location is unknown/,
   );
   assert.match(instructions, /treat the task as mixed/);
-  assert.match(instructions, /start with a focused zvec_grep_search call/);
+  assert.match(
+    instructions,
+    /start discovery with focused zvec_grep_search before broad file discovery/,
+  );
+  assert.match(instructions, /user request and established context/);
+  assert.match(instructions, /supplemental hypotheses/);
   assert.match(instructions, /`query` creates one primary hybrid/);
   assert.match(instructions, /retrieval routes, not hard constraints/);
   assert.match(instructions, /"root":"\/absolute\/workspace"/);
   assert.match(instructions, /bounded source snippets/);
   assert.match(instructions, /resolves material ambiguity/);
-  assert.match(instructions, /several results plausibly fit/);
-  assert.match(instructions, /Once evidence is sufficient, stop searching/);
+  assert.match(instructions, /requested answer shape/);
+  assert.match(instructions, /relevant path and material transitions/);
+  assert.match(instructions, /several candidates plausibly fit/);
+  assert.match(instructions, /smallest focused follow-up needed/);
+  assert.match(instructions, /refine zvec_grep_search/);
+  assert.match(instructions, /verify with Read or zvec_grep_rg/);
+  assert.match(instructions, /fall back to zvec_grep_rg/);
+  assert.match(instructions, /do not continue merely to reconfirm or broaden/);
   assert.match(instructions, /solely to locate workspace material/);
   assert.match(instructions, /workspace search, status, indexing, deletion/);
   assert.match(instructions, /unrelated open-world questions/);
