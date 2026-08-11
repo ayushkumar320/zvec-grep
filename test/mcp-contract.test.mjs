@@ -232,7 +232,7 @@ test("default agent contract exposes only indexed search", async (t) => {
   assert.ok(
     instructions.indexOf(
       "Use zvec_grep_search first when wording or location is unknown",
-    ) < instructions.indexOf("make one focused zvec_grep_search call"),
+    ) < instructions.indexOf("start with a focused zvec_grep_search call"),
   );
   assert.match(
     search.description,
@@ -311,7 +311,7 @@ test("full server contract exposes all tools with stable annotations", async (t)
     /Use zvec_grep_search first when wording or location is unknown/,
   );
   assert.match(instructions, /treat the task as mixed/);
-  assert.match(instructions, /make one focused zvec_grep_search call/);
+  assert.match(instructions, /start with a focused zvec_grep_search call/);
   assert.match(instructions, /`query` creates one primary hybrid/);
   assert.match(instructions, /retrieval routes, not hard constraints/);
   assert.match(instructions, /"root":"\/absolute\/workspace"/);
