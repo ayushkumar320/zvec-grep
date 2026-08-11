@@ -12,7 +12,6 @@ from .dataset import fetch
 from .doctor import format_report, run_doctor
 from .evaluate import export_manual, export_official
 from .index import build_index
-from .profiles import prepare_profiles
 from .report import generate_report
 from .runner import resume_benchmark, run_benchmark
 
@@ -56,24 +55,11 @@ def build_parser() -> argparse.ArgumentParser:
     index_build.add_argument("--zg-bin", default="zg")
     index_build.add_argument("--rebuild", action="store_true")
 
-    profiles = subparsers.add_parser("profiles", help="manage isolated Codex profiles")
-    profiles_subparsers = profiles.add_subparsers(
-        dest="profiles_command", required=True
-    )
-    profiles_prepare = profiles_subparsers.add_parser(
-        "prepare", help="prepare baseline and zvec-grep profiles"
-    )
-    profiles_prepare.add_argument("--codex-bin", default="codex")
-    profiles_prepare.add_argument("--zg-bin", default="zg")
-    profiles_prepare.add_argument("--source-codex-home", type=Path)
-
     prepare = subparsers.add_parser(
-        "prepare", help="fetch, materialize, index, and prepare profiles"
+        "prepare", help="fetch and materialize data, then build the index"
     )
     prepare.add_argument("--hf-token")
-    prepare.add_argument("--codex-bin", default="codex")
     prepare.add_argument("--zg-bin", default="zg")
-    prepare.add_argument("--source-codex-home", type=Path)
     prepare.add_argument("--yes", action="store_true", help="confirm first index build")
 
     for name, help_text in (
@@ -200,17 +186,6 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "index":
         print(build_index(config, artifacts, zg_bin=args.zg_bin, rebuild=args.rebuild))
         return 0
-    if args.command == "profiles":
-        print(
-            prepare_profiles(
-                config,
-                artifacts,
-                codex_bin=args.codex_bin,
-                zg_bin=args.zg_bin,
-                source_codex_home=args.source_codex_home,
-            )
-        )
-        return 0
     if args.command == "prepare":
         fetch(config, artifacts, token=args.hf_token or os.environ.get("HF_TOKEN"))
         materialize(config, artifacts)
@@ -223,16 +198,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             if answer not in {"y", "yes"}:
                 raise SystemExit("index build not confirmed")
-        build_index(config, artifacts, zg_bin=args.zg_bin)
-        print(
-            prepare_profiles(
-                config,
-                artifacts,
-                codex_bin=args.codex_bin,
-                zg_bin=args.zg_bin,
-                source_codex_home=args.source_codex_home,
-            )
-        )
+        print(build_index(config, artifacts, zg_bin=args.zg_bin))
         return 0
     if args.command in {"run", "smoke"}:
         root = run_benchmark(

@@ -46,9 +46,9 @@ def export_official(artifacts: Path, run_root: Path) -> Path:
 
 
 def export_manual(artifacts: Path, run_root: Path) -> Path:
-    path = run_root / "evaluation" / "manual-review.csv"
-    if path.is_file():
-        return path
+    output_path = run_root / "evaluation" / "manual-review.csv"
+    if output_path.is_file():
+        return output_path
     queries = load_queries(artifacts / "source" / "browsecomp_plus_decrypted.jsonl")
     by_id = {str(row["query_id"]): row for row in queries}
     metadata = read_json(run_root / "run.json")
@@ -69,8 +69,10 @@ def export_manual(artifacts: Path, run_root: Path) -> Path:
         query = by_id[str(query_id)]
         responses: dict[str, str] = {}
         for profile in PROFILES:
-            path = run_root / "cases" / str(query_id) / profile / "result.json"
-            result = read_json(path) if path.is_file() else None
+            result_path = (
+                run_root / "cases" / str(query_id) / profile / "result.json"
+            )
+            result = read_json(result_path) if result_path.is_file() else None
             responses[profile] = (
                 str(result["trace"].get("final_response", ""))
                 if result and result.get("status") == "completed"
@@ -88,5 +90,5 @@ def export_manual(artifacts: Path, run_root: Path) -> Path:
                 "notes": "",
             }
         )
-    atomic_write_text(path, output.getvalue())
-    return path
+    atomic_write_text(output_path, output.getvalue())
+    return output_path

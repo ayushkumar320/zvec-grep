@@ -1,23 +1,21 @@
 # BrowseComp-Plus
 
 This benchmark runs a native paired evaluation of Codex on the fixed
-[BrowseComp-Plus](https://github.com/texttron/BrowseComp-Plus) corpus. It does
-not require Docker or Harbor and supports macOS and Linux.
+[BrowseComp-Plus](https://github.com/texttron/BrowseComp-Plus) corpus.
 
 Each query is run twice with the same model, prompt, corpus, Codex settings, and
 limits:
 
-- **Baseline:** Codex with its standard shell tools, including raw `rg`.
-- **zvec-grep:** an isolated Codex profile prepared by
-  `zg install --target codex --yes`.
+- **Baseline:** Codex with its standard set of tools.
+- **zvec-grep:** the same Codex setup, with only the zvec-grep MCP tools and
+  usage instructions added by `zg install`.
 
 The benchmark records answer quality, token usage, wall-clock time, tool calls,
-and complete Codex JSONL trajectories. Index construction is reported
-separately from query execution.
+and complete Codex trajectories.
 
 ## Setup
 
-From this directory, install the pinned Python environment and verify the host:
+From this directory, install the Python environment and verify the host:
 
 ```sh
 cd benchmarks/browse-comp-plus
@@ -33,8 +31,7 @@ when they are not on `PATH`. The pinned `zg` 0.1.6 must be available on `PATH`.
 ## Prepare
 
 Download the pinned official data, materialize every corpus `text` field
-unchanged as `<docid>.md`, build the reusable index, and prepare isolated Codex
-profiles:
+unchanged as `<docid>.md`, and build the reusable index:
 
 ```sh
 zg-bench prepare
@@ -52,8 +49,8 @@ zg-bench index build --rebuild
 Index output is streamed to the terminal and retained in
 `artifacts/logs/index.stdout.log` and `index.stderr.log`.
 
-The individual preparation stages are also available as `fetch`,
-`materialize`, `index build`, and `profiles prepare`.
+The individual preparation stages are also available as `fetch`, `materialize`,
+and `index build`.
 
 ## Run
 
@@ -88,6 +85,13 @@ is written after every ten completed pairs.
 Both profiles run read-only against the same physical corpus root. The reusable
 zvec-grep index is verified and warmed before measured trials; this setup time
 is recorded separately in the run metadata.
+
+At the start of each run, the runner creates run-local Codex profiles and
+executes `zg install --target codex --yes` once for the treatment. It records the
+selected zvec-grep build and profile fingerprints, then restarts the benchmark
+daemon from that build. Every case in the run reuses those profile files. A
+resumed run fails rather than changing treatment when its build or profile
+fingerprint no longer matches.
 
 Inspect or resume a run:
 
@@ -124,6 +128,6 @@ zg-bench report <run-id>
 ## Artifacts
 
 Generated data is stored under `artifacts/` and is not committed. It contains
-the pinned source snapshots, materialized corpus, reusable index, isolated
-profiles, raw attempts, checkpoints, evaluator inputs, and reports. Gold data
-and manifests remain outside the agent workspace.
+the pinned source snapshots, materialized corpus, reusable index, run-local
+isolated profiles, raw attempts, checkpoints, evaluator inputs, and reports.
+Gold data and manifests remain outside the agent workspace.

@@ -1,52 +1,40 @@
 # Dependencies
 node_modules/
+.venv/
+.npm/
+.pnpm-store/
 
-
-# Build outputs
+# Build and test outputs
 dist/
 build/
 coverage/
-
-
-# Logs
 *.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
+*.tgz
+__pycache__/
+*.py[cod]
 
+# Local tool state
+.cache/
+.zvec-grep/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.turbo/
+.vite/
+.opencode/
+
+# Benchmark artifacts
+/benchmarks/browse-comp-plus/artifacts/
+/benchmarks/coding/runs/
+/benchmarks/coir-zg/work/
 
 # Environment files
 .env
 .env.*
 !.env.example
 
-
-# Local caches
-.cache/
-.zvec-grep/
-.turbo/
-.vite/
-__pycache__/
-*.py[cod]
-benchmarks/coding/.venv/
-benchmarks/coding/runs/
-benchmarks/coir-zg/work/
-benchmarks/browse-comp-plus/.venv/
-benchmarks/browse-comp-plus/work/
-benchmarks/browse-comp-plus/artifacts/
-benchmarks/browse-comp-plus/plan.md
-
-
-# Package manager metadata
-.npm/
-.pnpm-store/
-*.tgz
-
-
 # OS and editor files
 .DS_Store
 Thumbs.db
 .idea/
 .vscode/
-.opencode/

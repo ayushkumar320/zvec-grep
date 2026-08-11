@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
+import { realpathSync } from "node:fs";
+import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { workspaceIndexLocation } from "../../dist/engine/service/root.js";
 
@@ -16,8 +17,8 @@ test("workspace index locations resolve an existing index symlink", async () => 
     await mkdir(workspaceRoot, { recursive: true });
     await symlink(indexHome, join(workspaceRoot, ".zvec-grep"));
 
-    const canonicalHome = await realpath(indexHome);
-    const canonicalRoot = await realpath(corpusRoot);
+    const canonicalHome = realpathSync(indexHome);
+    const canonicalRoot = dirname(canonicalHome);
     assert.deepEqual(workspaceIndexLocation(workspaceRoot), {
       root: canonicalRoot,
       home: canonicalHome,

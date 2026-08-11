@@ -79,10 +79,10 @@ def _zvec_version(config: BenchmarkConfig, zg_bin: str) -> Check:
 
 
 def _prepared_checks(
-    config: BenchmarkConfig, artifacts: Path, zg_bin: str, codex_bin: str
+    config: BenchmarkConfig, artifacts: Path, zg_bin: str
 ) -> list[Check]:
     checks: list[Check] = []
-    for stage in ("dataset", "corpus", "index", "profiles"):
+    for stage in ("dataset", "corpus", "index"):
         path = artifacts / "state" / f"{stage}.json"
         checks.append(
             Check(
@@ -160,89 +160,6 @@ def _prepared_checks(
                 else "corpus root and documents must be physical, stable directories",
             )
         )
-    profiles_path = artifacts / "state" / "profiles.json"
-    if profiles_path.is_file():
-        profiles = read_json(profiles_path)
-        baseline = Path(profiles["baseline_home"])
-        treatment = Path(profiles["treatment_home"])
-        baseline_text = (baseline / "config.toml").read_text(encoding="utf-8")
-        baseline_agents = (
-            (baseline / "AGENTS.md").read_text(encoding="utf-8")
-            if (baseline / "AGENTS.md").is_file()
-            else ""
-        )
-        treatment_text = (treatment / "config.toml").read_text(encoding="utf-8")
-        treatment_agents = (
-            (treatment / "AGENTS.md").read_text(encoding="utf-8")
-            if (treatment / "AGENTS.md").is_file()
-            else ""
-        )
-        checks.extend(
-            (
-                Check(
-                    "Baseline isolation",
-                    "ZVEC_GREP_START" not in baseline_text
-                    and "ZVEC_GREP_START" not in baseline_agents,
-                    "zvec-grep MCP and guidance absent"
-                    if "ZVEC_GREP_START" not in baseline_text
-                    and "ZVEC_GREP_START" not in baseline_agents
-                    else "zvec-grep integration leaked into baseline",
-                ),
-                Check(
-                    "Treatment integration",
-                    "ZVEC_GREP_START" in treatment_text
-                    and "ZVEC_GREP_START" in treatment_agents,
-                    "zvec-grep MCP and guidance configured"
-                    if "ZVEC_GREP_START" in treatment_text
-                    and "ZVEC_GREP_START" in treatment_agents
-                    else "zvec-grep MCP or guidance missing",
-                ),
-            )
-        )
-        codex = resolve_executable(codex_bin)
-        if codex:
-            environment = dict(os.environ)
-            environment["CODEX_HOME"] = str(baseline)
-            environment["HOME"] = str(baseline)
-            authentication = run_command(
-                [codex, "login", "status"], env=environment, timeout=30
-            )
-            checks.append(
-                Check(
-                    "Isolated Codex authentication",
-                    authentication.ok,
-                    "available in isolated profiles"
-                    if authentication.ok
-                    else "isolated CODEX_HOME cannot access Codex authentication",
-                )
-            )
-            baseline_mcp = run_command(
-                [codex, "mcp", "list"], env=environment, timeout=30
-            )
-            treatment_environment = dict(environment)
-            treatment_environment["CODEX_HOME"] = str(treatment)
-            treatment_environment["HOME"] = str(treatment)
-            treatment_mcp = run_command(
-                [codex, "mcp", "list"], env=treatment_environment, timeout=30
-            )
-            checks.extend(
-                (
-                    Check(
-                        "Baseline MCP surface",
-                        baseline_mcp.ok and "zvec_grep" not in baseline_mcp.stdout,
-                        "zvec-grep absent from Codex MCP list"
-                        if "zvec_grep" not in baseline_mcp.stdout
-                        else "zvec-grep visible in baseline MCP list",
-                    ),
-                    Check(
-                        "Treatment MCP surface",
-                        treatment_mcp.ok and "zvec_grep" in treatment_mcp.stdout,
-                        "zvec-grep enabled in Codex MCP list"
-                        if "zvec_grep" in treatment_mcp.stdout
-                        else "zvec-grep absent from treatment MCP list",
-                    ),
-                )
-            )
     index_path = artifacts / "state" / "index.json"
     corpus_path = artifacts / "state" / "corpus.json"
     if index_path.is_file() and corpus_path.is_file():
@@ -305,7 +222,7 @@ def run_doctor(
                 else "set ZVEC_GREP_API_KEY or provider credential",
             )
         )
-    checks.extend(_prepared_checks(config, artifacts, zg_bin, codex_bin))
+    checks.extend(_prepared_checks(config, artifacts, zg_bin))
     report = {
         "stage": "doctor",
         "generated_at": utc_now(),

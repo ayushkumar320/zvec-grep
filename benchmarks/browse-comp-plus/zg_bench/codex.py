@@ -127,11 +127,7 @@ def _corpus_access_denied(trace: TraceSummary, stderr: str) -> bool:
 
 def validate_model(artifacts: Path, model: str) -> None:
     """Reject model IDs absent from the authenticated Codex model cache."""
-    profiles_state = artifacts / "state" / "profiles.json"
-    if profiles_state.is_file():
-        source_home = Path(read_json(profiles_state)["source_codex_home"])
-    else:
-        source_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
+    source_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
     cache = source_home / "models_cache.json"
     if not cache.is_file():
         return
@@ -167,6 +163,7 @@ def run_attempt(
     reasoning_effort: str,
     attempt: int,
     output_dir: Path,
+    profiles_root: Path,
     codex_bin: str = "codex",
     zg_bin: str = "zg",
     idle_timeout_seconds: int | None = None,
@@ -177,13 +174,10 @@ def run_attempt(
         raise RuntimeError(f"Codex executable not found: {codex_bin}")
     if zg is None:
         raise RuntimeError(f"zvec-grep executable not found: {zg_bin}")
-    profiles = artifacts / "profiles"
-    profile_root = profiles / profile
+    profile_root = profiles_root / profile
     codex_home = profile_root / "codex-home"
     if not codex_home.is_dir():
-        raise RuntimeError(
-            "Codex profiles are missing; run 'zg-bench profiles prepare'"
-        )
+        raise RuntimeError("run-local Codex profiles are missing")
     if profile == "zvec-grep":
         ensure_server(artifacts, zg_bin=str(zg))
 

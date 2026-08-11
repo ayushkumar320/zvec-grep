@@ -20,7 +20,7 @@ from .config import BenchmarkConfig, PROMPT_PATH, SUITES_DIR
 from .dataset import load_queries
 from .models import PROFILES, AttemptResult, Profile
 from .process import resolve_executable, run_command
-from .profiles import prepare_search_runtime
+from .profiles import prepare_profiles, prepare_search_runtime, validate_profiles
 
 
 def load_suite(name: str, queries: list[dict[str, Any]]) -> list[str]:
@@ -76,6 +76,7 @@ def _run_profile(
     profile: Profile,
     model: str,
     reasoning_effort: str,
+    profiles_root: Path,
     codex_bin: str,
     zg_bin: str,
 ) -> AttemptResult:
@@ -106,6 +107,7 @@ def _run_profile(
             reasoning_effort=reasoning_effort,
             attempt=number,
             output_dir=output,
+            profiles_root=profiles_root,
             codex_bin=codex_bin,
             zg_bin=zg_bin,
             idle_timeout_seconds=config.run.idle_timeout_seconds,
@@ -219,9 +221,25 @@ def run_benchmark(
     queries = load_queries(query_path)
     by_id = {str(row["query_id"]): row for row in queries}
     validate_model(artifacts, model)
+    codex = resolve_executable(codex_bin)
+    zg = resolve_executable(zg_bin)
+    if codex is None or zg is None:
+        raise RuntimeError("Codex and zvec-grep must be available before a run")
+    codex_version = run_command([codex, "--version"], timeout=30)
+    zg_version = run_command([zg, "version"], timeout=30)
+    actual_zg_version = (
+        zg_version.stdout.strip().splitlines()[0] if zg_version.stdout else ""
+    )
+    if not zg_version.ok or actual_zg_version != config.zvec_grep.version:
+        raise RuntimeError(
+            f"zvec-grep {config.zvec_grep.version} is required; found "
+            f"{actual_zg_version or 'unknown'}"
+        )
     run_id = run_id or new_run_id()
     run_root = artifacts / "runs" / run_id
     metadata_path = run_root / "run.json"
+    profiles_root = run_root / "profiles"
+    profiles_manifest_path = profiles_root / "manifest.json"
     if metadata_path.is_file():
         metadata = read_json(metadata_path)
         query_ids = [str(value) for value in metadata["query_ids"]]
@@ -229,10 +247,20 @@ def run_benchmark(
             raise RuntimeError("cannot resume a run with a different model")
         reasoning_effort = str(metadata["reasoning_effort"])
         suite = str(metadata["suite"])
+        if "profiles_manifest" not in metadata:
+            raise RuntimeError(
+                "run profile identity is missing; start a new run"
+            )
+        recorded_manifest = Path(metadata["profiles_manifest"])
+        if recorded_manifest.resolve() != profiles_manifest_path.resolve():
+            raise RuntimeError("run profile manifest path does not match its run")
+        profile_manifest = validate_profiles(recorded_manifest, zg_bin=str(zg))
+        if metadata.get("profiles_fingerprint") != profile_manifest["fingerprint"]:
+            raise RuntimeError("run profile fingerprint does not match its manifest")
     else:
         required_states = {
             name: artifacts / "state" / f"{name}.json"
-            for name in ("corpus", "index", "profiles")
+            for name in ("corpus", "index")
         }
         missing_states = [
             name for name, path in required_states.items() if not path.is_file()
@@ -243,20 +271,15 @@ def run_benchmark(
             )
         query_ids = load_suite(suite, queries)
         reasoning_effort = reasoning_effort or config.run.reasoning_effort
-        codex = resolve_executable(codex_bin)
-        zg = resolve_executable(zg_bin)
-        if codex is None or zg is None:
-            raise RuntimeError("Codex and zvec-grep must be available before a run")
-        codex_version = run_command([codex, "--version"], timeout=30)
-        zg_version = run_command([zg, "version"], timeout=30)
-        actual_zg_version = (
-            zg_version.stdout.strip().splitlines()[0] if zg_version.stdout else ""
+        prepare_profiles(
+            config,
+            artifacts,
+            codex_bin=str(codex),
+            zg_bin=str(zg),
+            profiles_root=profiles_root,
+            manifest_path=profiles_manifest_path,
         )
-        if not zg_version.ok or actual_zg_version != config.zvec_grep.version:
-            raise RuntimeError(
-                f"zvec-grep {config.zvec_grep.version} is required; found "
-                f"{actual_zg_version or 'unknown'}"
-            )
+        profile_manifest = validate_profiles(profiles_manifest_path, zg_bin=str(zg))
         corpus_state = read_json(required_states["corpus"])
         index_state = read_json(required_states["index"])
         metadata = {
@@ -267,6 +290,8 @@ def run_benchmark(
             "model": model,
             "reasoning_effort": reasoning_effort,
             "profiles": list(PROFILES),
+            "profiles_manifest": str(profiles_manifest_path.resolve()),
+            "profiles_fingerprint": profile_manifest["fingerprint"],
             "concurrency": concurrency or config.run.concurrency,
             "checkpoint_every": config.run.checkpoint_every,
             "configuration": str(config.path),
@@ -296,7 +321,12 @@ def run_benchmark(
             if _needs_run(_result_path(run_root, query_id, profile)):
                 tasks.append((by_id[query_id], profile))
     if any(profile == "zvec-grep" for _, profile in tasks):
-        runtime_setup = prepare_search_runtime(config, artifacts, zg_bin=zg_bin)
+        runtime_setup = prepare_search_runtime(
+            config,
+            artifacts,
+            zg_bin=str(zg),
+            restart_server=True,
+        )
         metadata["runtime_setups"].append(runtime_setup)
         write_json(metadata_path, metadata)
 
@@ -318,8 +348,9 @@ def run_benchmark(
                     profile,
                     model,
                     reasoning_effort,
-                    codex_bin,
-                    zg_bin,
+                    profiles_root,
+                    str(codex),
+                    str(zg),
                 )
                 futures[future] = (query_id, profile)
             for future in as_completed(futures):
