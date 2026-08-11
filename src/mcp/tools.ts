@@ -227,7 +227,7 @@ function searchRoutingRules(exactTool: string, focusedTools: string): string[] {
     "`query` creates one primary hybrid FTS-plus-vector group; `queries` creates one or more primary hybrid groups; `fts` and `vector` add supplemental lexical-only or semantic-only route groups. These are retrieval routes, not hard constraints. Without `fuse`, the response is one deduplicated and reranked list with query-group metadata; set `fuse: true` to collapse every group into one ranked search plan.",
     'For a fused mixed search, use arguments such as {"root":"/absolute/workspace","query":"how are results ranked and fused","fts":["RRF","score"],"fuse":true}.',
     "Search results include bounded source snippets. Treat a sufficient snippet as already-read evidence, and open only the cited file or range when a required detail falls outside it.",
-    `After a search covers the requested scope, stop calling zvec_grep_search. Answer from that evidence or use only focused ${focusedTools} checks needed to verify exact details; do not issue another semantic search merely to confirm already-sufficient evidence.`,
+    "Evidence is sufficient when it covers the requested scope and resolves material ambiguity. If a task requires identifying one target but several results plausibly fit, compare the leading candidates with focused exact checks before answering; if they remain indistinguishable, state the ambiguity. Once evidence is sufficient, stop searching.",
     "Do not launch a sub-agent solely to locate workspace material.",
   ];
 }

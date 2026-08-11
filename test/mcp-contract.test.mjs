@@ -216,10 +216,13 @@ test("default agent contract exposes only indexed search", async (t) => {
   assert.match(instructions, /workspace is not mentioned explicitly/);
   assert.match(instructions, /unrelated open-world questions/);
   assert.match(instructions, /solely to locate workspace material/);
+  assert.match(instructions, /resolves material ambiguity/);
+  assert.match(instructions, /several results plausibly fit/);
   assert.match(
     instructions,
-    /stop calling zvec_grep_search.*do not issue another semantic search/s,
+    /if they remain indistinguishable, state the ambiguity/,
   );
+  assert.match(instructions, /Once evidence is sufficient, stop searching/);
   assert.doesNotMatch(instructions, /solely to locate code/);
   assert.ok(
     instructions.indexOf(
@@ -316,6 +319,9 @@ test("full server contract exposes all tools with stable annotations", async (t)
   assert.match(instructions, /retrieval routes, not hard constraints/);
   assert.match(instructions, /"root":"\/absolute\/workspace"/);
   assert.match(instructions, /bounded source snippets/);
+  assert.match(instructions, /resolves material ambiguity/);
+  assert.match(instructions, /several results plausibly fit/);
+  assert.match(instructions, /Once evidence is sufficient, stop searching/);
   assert.match(instructions, /solely to locate workspace material/);
   assert.match(instructions, /workspace search, status, indexing, deletion/);
   assert.match(instructions, /unrelated open-world questions/);
