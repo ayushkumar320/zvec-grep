@@ -148,6 +148,10 @@ export class RuntimeManager {
     return this.runtimes.get(canonicalRoot);
   }
 
+  getByRequestedRoot(requestedRoot: string): RootRuntime | undefined {
+    return this.runtimes.get(this.aliases.get(requestedRoot) ?? requestedRoot);
+  }
+
   snapshot(): RuntimeManagerSnapshot {
     return { activeRuntimes: this.runtimes.size };
   }

@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { deleteWorkspaceManifest, workspaceManifestPath } from "../manifest.js";
 import {
@@ -25,10 +25,14 @@ export function workspaceHome(root: string): string {
 
 export function workspaceIndexLocation(root: string): WorkspaceIndexLocation {
   const resolvedRoot = resolve(root);
-  const home = workspaceHome(resolvedRoot);
+  const requestedHome = workspaceHome(resolvedRoot);
+  const home = existsSync(requestedHome)
+    ? realpathSync(requestedHome)
+    : requestedHome;
+  const canonicalRoot = dirname(home);
 
   return {
-    root: resolvedRoot,
+    root: canonicalRoot,
     home,
     manifestPath: workspaceManifestPath(home),
     indexPath: workspaceIndexPath(home),

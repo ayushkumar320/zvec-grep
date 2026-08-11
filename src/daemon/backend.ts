@@ -218,25 +218,38 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
     input: NormalizedSearchInput,
   ): Promise<RemoteEmbeddingAuthorizationPlan | undefined> {
     const requestedRoot = await resolveRequestedRoot(input.root, false);
-    const activeRuntime = this.runtimeManager.getByCanonicalRoot(requestedRoot);
+    let activeRuntime = this.runtimeManager.getByRequestedRoot(requestedRoot);
     if (
       activeRuntime?.embeddingProvider() &&
       activeRuntime.embeddingProvider() !== "qwen"
     ) {
       return undefined;
     }
+    let canonicalRoot = activeRuntime?.canonicalRoot;
+    let discoveredInfo: ZvecGrepInfoResult | undefined;
+    if (!canonicalRoot) {
+      discoveredInfo = await this.inspectRoot(input.root, false);
+      canonicalRoot = await resolveRequestedRoot(discoveredInfo.root, false);
+      activeRuntime = this.runtimeManager.getByCanonicalRoot(canonicalRoot);
+      const provider =
+        activeRuntime?.embeddingProvider() ??
+        discoveredInfo.workspaceIndex?.embedding?.provider;
+      if (provider && provider !== "qwen") {
+        return undefined;
+      }
+    }
     const cachedInfo = activeRuntime
-      ? this.statusCache.get(requestedRoot)
+      ? this.statusCache.get(canonicalRoot)
       : undefined;
     let info: ZvecGrepInfoResult;
     if (cachedInfo) {
       info = cachedInfo;
     } else {
       try {
-        info = await this.inspectRoot(input.root, true);
-        this.statusCache.set(requestedRoot, info);
+        info = await this.inspectRoot(canonicalRoot, true);
+        this.statusCache.set(canonicalRoot, info);
       } catch (error) {
-        const cached = this.statusCache.get(requestedRoot);
+        const cached = this.statusCache.get(canonicalRoot);
         if (
           !cached ||
           !isEngineError(error) ||
@@ -247,7 +260,6 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
         info = cached;
       }
     }
-    const canonicalRoot = await resolveRequestedRoot(info.root, false);
     const schema = info.workspaceIndex?.embedding;
     if (!info.indexed || !schema || schema.provider !== "qwen") {
       return undefined;

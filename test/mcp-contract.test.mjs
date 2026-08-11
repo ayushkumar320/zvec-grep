@@ -1301,7 +1301,11 @@ test("structured tools return schema-compatible content and searches preview eve
   });
   assert.equal(search.structuredContent, undefined);
   assert.match(search.content[0].text, /^freshness: possibly_stale$/m);
-  assert.match(search.content[0].text, /indexing: running \(12\/20\)/);
+  assert.match(search.content[0].text, /results: served_from_current_index/);
+  assert.match(
+    search.content[0].text,
+    /background_refresh: running \(12\/20\)/,
+  );
   assert.match(search.content[0].text, /src\/result-1\.ts:1-2/);
   assert.match(search.content[0].text, /src\/result-7\.ts:1-2/);
   assert.match(search.content[0].text, /seventh-expanded-snippet/);

@@ -739,7 +739,8 @@ function printStaleIndexStatus(
     completion?.completed === undefined || completion.total === undefined
       ? ""
       : ` (${completion.completed}/${completion.total})`;
-  console.error(`indexing: ${state}${progress}`);
+  console.error("results: served_from_current_index");
+  console.error(`background_refresh: ${state}${progress}`);
 }
 
 function daemonClient(options: CliOptions): DaemonClient {

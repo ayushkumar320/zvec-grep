@@ -384,7 +384,11 @@ test("Streamable HTTP serves health, MCP contracts and a real cached index searc
   assert.equal(writerSearch.isError, undefined);
   assert.equal(writerSearch.structuredContent, undefined);
   assert.match(writerSearch.content[0].text, /^freshness: possibly_stale$/m);
-  const progressMatch = /^indexing: running \((\d+)\/(\d+)\)$/m.exec(
+  assert.match(
+    writerSearch.content[0].text,
+    /^results: served_from_current_index$/m,
+  );
+  const progressMatch = /^background_refresh: running \((\d+)\/(\d+)\)$/m.exec(
     writerSearch.content[0].text,
   );
   assert.ok(progressMatch);

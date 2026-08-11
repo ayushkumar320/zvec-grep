@@ -7,10 +7,13 @@ name = "zvec-grep-browsecomp-plus-benchmark"
 version = "0.1.0"
 description = "Reproducible BrowseComp-Plus A/B benchmark for zvec-grep"
 requires-python = ">=3.12,<3.14"
-dependencies = []
+dependencies = [
+  "huggingface-hub>=0.34,<2",
+  "pyarrow>=19,<24",
+]
 
 [project.scripts]
-zg-bench = "bench:main"
+zg-bench = "zg_bench.cli:main"
 
 [tool.hatch.build.targets.wheel]
-only-include = ["bench.py", "doctor.py"]
+only-include = ["zg_bench"]

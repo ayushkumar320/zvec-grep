@@ -253,8 +253,8 @@ export const ZVEC_GREP_AGENT_MCP_INSTRUCTIONS = formatPromptRules(
     ...ZVEC_GREP_WORKSPACE_EVIDENCE_RULES,
     ...ZVEC_GREP_AGENT_SEARCH_MCP_INSTRUCTIONS,
     "Every workspace operation requires an absolute root path visible to the daemon.",
-    "Read freshness and indexing directly from zvec_grep_search responses without a status preflight.",
-    "Use possibly_stale search results immediately when they are sufficient; do not perform extra diagnostics merely because a background update is active.",
+    "Read freshness and background_refresh directly from zvec_grep_search responses without a status preflight.",
+    "When results are served_from_current_index, use them immediately when they are sufficient; do not perform extra diagnostics merely because a background refresh is active.",
     "When an index is missing and literal or regex search can answer the task, use native Grep or rg. Creating or rebuilding a persistent index requires explicit user authorization.",
   ],
 );
@@ -266,8 +266,8 @@ export const ZVEC_GREP_FULL_MCP_INSTRUCTIONS = formatPromptRules(
     ...ZVEC_GREP_FULL_SEARCH_MCP_INSTRUCTIONS,
     "Every workspace operation requires an absolute root path visible to the daemon.",
     "Use the zvec_grep_* tools directly for workspace search, status, indexing, deletion, and exhaustive lexical search.",
-    "Use freshness and indexing from zvec_grep_search without a status preflight; call zvec_grep_index_status only for a missing index, failed or cancelled indexing, diagnostics, or explicit progress monitoring.",
-    "Use possibly_stale search results immediately when they are sufficient; do not call status merely because a background update is active.",
+    "Use freshness and background_refresh from zvec_grep_search without a status preflight; call zvec_grep_index_status only for a missing index, failed or cancelled indexing, diagnostics, or explicit progress monitoring.",
+    "When results are served_from_current_index, use them immediately when they are sufficient; do not call status merely because a background refresh is active.",
     "Call zvec_grep_index only when persistent indexing or index deletion is explicitly requested. Never silently create, rebuild, or drop an index.",
     "For a new index, use a user-selected embedding or omit it only when a server default model is known; never guess a model.",
     "zvec_grep_index wait defaults to false; poll zvec_grep_index_status for background progress and set wait to true only when completion is required before continuing.",
@@ -419,8 +419,8 @@ export function registerZvecGrepTools(
     {
       title: "Search with zvec-grep",
       description: full
-        ? `${ZVEC_GREP_SEARCH_TOOL_DESCRIPTION} Use zvec_grep_rg instead when exact lookup alone is sufficient.`
-        : `${ZVEC_GREP_SEARCH_TOOL_DESCRIPTION} Use native Grep or rg instead when exact lookup alone is sufficient.`,
+        ? `${ZVEC_GREP_SEARCH_TOOL_DESCRIPTION} Use zvec_grep_rg instead when exact lookup alone is sufficient. Read freshness and background_refresh from the response; when results are served_from_current_index, use them if sufficient.`
+        : `${ZVEC_GREP_SEARCH_TOOL_DESCRIPTION} Use native Grep or rg instead when exact lookup alone is sufficient. Read freshness and background_refresh from the response without a status preflight; when results are served_from_current_index, use them if sufficient.`,
       inputSchema: zvecGrepSearchInputSchema,
       annotations: {
         readOnlyHint: false,
@@ -457,7 +457,10 @@ export function registerZvecGrepTools(
           const statusLines = [
             `freshness: ${response.freshness}`,
             ...(response.indexing
-              ? [`indexing: ${formatSearchIndexing(response.indexing)}`]
+              ? [
+                  "results: served_from_current_index",
+                  `background_refresh: ${formatSearchIndexing(response.indexing)}`,
+                ]
               : []),
           ];
           // Mirror the compact rg output: return agent-formatted text only and drop

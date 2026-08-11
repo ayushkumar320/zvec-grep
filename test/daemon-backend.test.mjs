@@ -572,6 +572,43 @@ test("search requests reuse active runtime metadata without rescanning", async (
   }
 });
 
+test("local search authorization discovers a parent index without a status scan", async () => {
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-local-authorization-"),
+  );
+  const root = join(temporaryDirectory, "repo");
+  const documents = join(root, "documents");
+  await mkdir(documents, { recursive: true });
+  await writeFile(join(documents, "answer.ts"), "export const answer = 42;\n");
+  const service = await createZvecGrep({
+    root,
+    embeddingModel: new TestEmbeddingModel(),
+  });
+  await service.index();
+  await service.close();
+
+  const inspections = [];
+  const backend = new DaemonBackend({
+    version: "1.0.0",
+    modelPoolOptions: { createModel: () => new TestEmbeddingModel() },
+    watchManagerFactory: noopWatchManagerFactory,
+    inspectRoot: async (...args) => {
+      inspections.push(args[2] ?? true);
+      return await inspectRoot(...args);
+    },
+  });
+  try {
+    const plan = await backend.planSearchAuthorization(
+      searchInput(documents, "answer", "eventual"),
+    );
+    assert.equal(plan, undefined);
+    assert.deepEqual(inspections, [false]);
+  } finally {
+    await backend.close();
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
 test("wait_for_fresh consumes a running watch job without a full reconciliation", async () => {
   const temporaryDirectory = await mkdtemp(
     join(tmpdir(), "zvec-grep-fresh-followup-"),

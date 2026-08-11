@@ -1,41 +1,129 @@
 # BrowseComp-Plus
 
-This standalone benchmark measures how zvec-grep affects agent quality,
-retrieval behavior, and efficiency on the fixed BrowseComp-Plus knowledge
-corpus.
+This benchmark runs a native paired evaluation of Codex on the fixed
+[BrowseComp-Plus](https://github.com/texttron/BrowseComp-Plus) corpus. It does
+not require Docker or Harbor and supports macOS and Linux.
 
-The baseline uses the materialized Markdown corpus and its standard tools,
-including raw `rg`. The treatment starts from an equivalent isolated agent
-profile and is changed only by the official zvec-grep installer.
+Each query is run twice with the same model, prompt, corpus, Codex settings, and
+limits:
 
-All orchestration is written in Python and runs through `uv`. The benchmark
-uses `zg` and supported agents as external command-line interfaces, keeping it
-independent of the zvec-grep implementation language.
+- **Baseline:** Codex with its standard shell tools, including raw `rg`.
+- **zvec-grep:** an isolated Codex profile prepared by
+  `zg install --target codex --yes`.
+
+The benchmark records answer quality, token usage, wall-clock time, tool calls,
+and complete Codex JSONL trajectories. Index construction is reported
+separately from query execution.
 
 ## Setup
 
-From the repository root:
+From this directory, install the pinned Python environment and verify the host:
 
 ```sh
 cd benchmarks/browse-comp-plus
 uv sync
 source .venv/bin/activate
-```
-
-Generated corpora, indexes, credentials, and run artifacts are stored under
-`benchmarks/browse-comp-plus/work/` and are not committed.
-
-## Environment check
-
-Set the credential used by the configured remote embedding provider, then run:
-
-```sh
-export DASHSCOPE_API_KEY="..."
 zg-bench doctor
 ```
 
-The command validates local dependencies, authentication, and disk capacity.
-It writes a machine-readable report to `work/state/doctor.json` without
-persisting credential values.
+Codex must already be installed and authenticated. On macOS, the `codex` and
+`rg` binaries bundled with the ChatGPT or Codex app are detected automatically
+when they are not on `PATH`. The pinned `zg` 0.1.6 must be available on `PATH`.
 
-Use `zg-bench --help` for available options.
+## Prepare
+
+Download the pinned official data, materialize every corpus `text` field
+unchanged as `<docid>.md`, build the reusable index, and prepare isolated Codex
+profiles:
+
+```sh
+zg-bench prepare
+```
+
+The first index build requires confirmation. For unattended setup, pass
+`--yes`. Preparation is resumable and reuses an index whose corpus, model, and
+runtime fingerprint matches the benchmark. Rebuilding a mismatched index always
+requires an explicit command:
+
+```sh
+zg-bench index build --rebuild
+```
+
+Index output is streamed to the terminal and retained in
+`artifacts/logs/index.stdout.log` and `index.stderr.log`.
+
+The individual preparation stages are also available as `fetch`,
+`materialize`, `index build`, and `profiles prepare`.
+
+## Run
+
+Verify the complete paired workflow on one query:
+
+```sh
+zg-bench smoke --model <codex-model> --reasoning medium
+```
+
+Use the exact model ID exposed to the authenticated Codex account (for
+example, `gpt-5.6-sol` rather than the family name `gpt-5.6`). The runner
+validates cached model metadata before creating trials.
+
+Run the fixed random 10-query CI subset:
+
+```sh
+zg-bench run --suite ci-10 --model <codex-model> --reasoning medium
+```
+
+Run the first 80 cases in the pinned official dataset order for the study:
+
+```sh
+zg-bench run --suite study-80 --model <codex-model> --reasoning medium
+```
+
+The CI sample is selected once from all 830 cases using the seed and SHA-256
+procedure recorded in `suites/ci-10.txt`; it does not change between runs. Run
+all 830 queries with `--suite full`. Pair order is deterministically
+counterbalanced, every trial is persisted immediately, and a checkpoint report
+is written after every ten completed pairs.
+
+Both profiles run read-only against the same physical corpus root. The reusable
+zvec-grep index is verified and warmed before measured trials; this setup time
+is recorded separately in the run metadata.
+
+Inspect or resume a run:
+
+```sh
+zg-bench status [run-id]
+zg-bench inspect <run-id> --case <query-id> --profile zvec-grep
+zg-bench resume <run-id>
+```
+
+## Evaluate and report
+
+Export the format accepted by the official evaluator:
+
+```sh
+zg-bench evaluate <run-id> --evaluator official
+```
+
+Alternatively, create a manual paired-review sheet:
+
+```sh
+zg-bench evaluate <run-id> --evaluator manual
+```
+
+Enter scores from 0 to 1 in the generated sheet, then regenerate the report.
+Retrieval recall is calculated directly from the dataset's official evidence
+document IDs.
+
+Regenerate the token, timing, completion, and paired-case report with:
+
+```sh
+zg-bench report <run-id>
+```
+
+## Artifacts
+
+Generated data is stored under `artifacts/` and is not committed. It contains
+the pinned source snapshots, materialized corpus, reusable index, isolated
+profiles, raw attempts, checkpoints, evaluator inputs, and reports. Gold data
+and manifests remain outside the agent workspace.

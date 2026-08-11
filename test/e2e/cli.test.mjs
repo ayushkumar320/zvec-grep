@@ -304,7 +304,8 @@ test("CLI completes index, search, explicit refresh, status, and rg workflows", 
   );
   assert.doesNotMatch(stale.stdout, /RefreshedWorkflowSymbol/);
   assert.match(stale.stderr, /status: possibly_stale/);
-  assert.match(stale.stderr, /indexing: idle \(0\/1\)/);
+  assert.match(stale.stderr, /results: served_from_current_index/);
+  assert.match(stale.stderr, /background_refresh: idle \(0\/1\)/);
   await assert.rejects(
     runCli(["status", "--check-ready", root], { cwd: root, env }),
     (error) => {
@@ -329,7 +330,8 @@ test("CLI completes index, search, explicit refresh, status, and rg workflows", 
     { cwd: root, env, timeout: 120_000 },
   );
   assert.match(background.stderr, /requires Server mode/);
-  assert.match(background.stderr, /indexing: idle \(0\/1\)/);
+  assert.match(background.stderr, /results: served_from_current_index/);
+  assert.match(background.stderr, /background_refresh: idle \(0\/1\)/);
 
   const refreshed = await runCli(
     [

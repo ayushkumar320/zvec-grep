@@ -1174,7 +1174,8 @@ Example mixed search:
 
 ${formatPromptRules("### Freshness and index lifecycle", [
   "Pass a daemon-visible absolute `root` on every zvec-grep workspace call.",
-  "Read `freshness` and `indexing` from search results without a status preflight, and use `possibly_stale` results when they are sufficient.",
+  "Read `freshness` and `background_refresh` from search results without a status preflight.",
+  "When results are `served_from_current_index`, use them when sufficient instead of waiting for the background refresh.",
   `If the index is missing but exact or regex lookup can answer the task, use ${exactLookupRoute}.`,
   "Creating, rebuilding, or dropping a persistent index requires an explicit user request or authorization; never do so silently.",
 ])}
