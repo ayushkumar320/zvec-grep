@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import difflib
 import platform
 import re
 import time
@@ -20,7 +21,6 @@ def build_index(
     artifacts: Path,
     *,
     zg_bin: str = "zg",
-    rebuild: bool = False,
 ) -> Path:
     executable = resolve_executable(zg_bin)
     if executable is None:
@@ -34,13 +34,13 @@ def build_index(
         )
     corpus_state_path = artifacts / "state" / "corpus.json"
     if not corpus_state_path.is_file():
-        raise RuntimeError("corpus is not materialized; run 'zg-bench materialize'")
+        raise RuntimeError("corpus is not prepared; run 'zg-bench prepare'")
     corpus_state = read_json(corpus_state_path)
     root = Path(corpus_state["root"])
     index_dir = root / ".zvec-grep"
 
     existing = artifacts / "state" / "index.json"
-    if existing.is_file() and index_dir.is_dir() and not rebuild:
+    if existing.is_file() and index_dir.is_dir():
         state = read_json(existing)
         expected = _index_fingerprint(config, corpus_state)
         if state["fingerprint"] == expected:
@@ -52,7 +52,7 @@ def build_index(
                 return existing
         raise RuntimeError(
             "the existing index does not match this benchmark or is not ready; "
-            "pass --rebuild explicitly"
+            "start with an empty artifacts directory"
         )
 
     command: list[str | Path] = [
@@ -73,15 +73,10 @@ def build_index(
         "documents/**/*.md",
         "--debug",
     ]
-    if rebuild:
-        command.append("--rebuild")
-
     environment = inherited_environment()
     environment["ZVEC_GREP_HOME"] = str((artifacts / "runtime" / "zvec-home").resolve())
     stdout_log = artifacts / "logs" / "index.stdout.log"
     stderr_log = artifacts / "logs" / "index.stderr.log"
-    print(f"Building zvec-grep index under {index_dir}", flush=True)
-    print(f"Live output is also saved under {stdout_log.parent}", flush=True)
     started_at = utc_now()
     started = time.monotonic()
     result = run_streaming_command(
@@ -93,7 +88,9 @@ def build_index(
     )
     build_wall_seconds = time.monotonic() - started
     if not result.ok:
-        raise RuntimeError(result.stderr.strip() or result.stdout.strip())
+        raise RuntimeError(
+            _index_failure(config, result.stderr, result.stdout, stderr_log)
+        )
     status = run_command(
         [executable, "status", root, "--mode", "direct", "--check-ready"],
         cwd=root,
@@ -122,6 +119,38 @@ def build_index(
     }
     write_json(existing, state)
     return existing
+
+
+def _index_failure(
+    config: BenchmarkConfig,
+    stderr: str,
+    stdout: str,
+    log: Path,
+) -> str:
+    output = f"{stderr}\n{stdout}"
+    reason = re.search(r"^Error:\s*(.+)$", output, re.MULTILINE)
+    models = sorted(
+        set(
+            re.findall(
+                r"^\s{2}((?:local|qwen)/\S+?)(?:\s|$)",
+                output,
+                re.MULTILINE,
+            )
+        )
+    )
+    embedding = config.zvec_grep.embedding
+    suggestion = difflib.get_close_matches(embedding, models, n=1, cutoff=0.6)
+    details = [
+        "zvec-grep index build failed",
+        f"Reason: {reason.group(1) if reason else 'zvec-grep exited with an error'}",
+        f"Config: {config.path}",
+        "Setting: [zvec_grep].embedding",
+        f"Value: {embedding}",
+    ]
+    if suggestion:
+        details.append(f"Did you mean: {suggestion[0]}")
+    details.append(f"Log: {log.resolve()}")
+    return "\n".join(details)
 
 
 def _directory_bytes(root: Path) -> int:

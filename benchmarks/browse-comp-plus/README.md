@@ -13,7 +13,7 @@ limits:
 The benchmark records answer quality, token usage, wall-clock time, tool calls,
 and complete Codex trajectories.
 
-## Setup
+## Prerequisites
 
 From this directory, install the Python environment and verify the host:
 
@@ -24,11 +24,13 @@ source .venv/bin/activate
 zg-bench doctor
 ```
 
-Codex must already be installed and authenticated. On macOS, the `codex` and
-`rg` binaries bundled with the ChatGPT or Codex app are detected automatically
-when they are not on `PATH`. The pinned `zg` 0.1.6 must be available on `PATH`.
+The host environment should provide:
 
-## Prepare
+- macOS or Linux with `uv`;
+- an installed and authenticated Codex CLI;
+- `zg` installed.
+
+## Prepare the benchmark
 
 Download the pinned official data, materialize every corpus `text` field
 unchanged as `<docid>.md`, and build the reusable index:
@@ -37,27 +39,17 @@ unchanged as `<docid>.md`, and build the reusable index:
 zg-bench prepare
 ```
 
-The first index build requires confirmation. For unattended setup, pass
-`--yes`. Preparation is resumable and reuses an index whose corpus, model, and
-runtime fingerprint matches the benchmark. Rebuilding a mismatched index always
-requires an explicit command:
+Initial preparation requires network access and sufficient disk space for the
+downloaded data, materialized corpus, and index.
 
-```sh
-zg-bench index build --rebuild
-```
-
-Index output is streamed to the terminal and retained in
-`artifacts/logs/index.stdout.log` and `index.stderr.log`.
-
-The individual preparation stages are also available as `fetch`, `materialize`,
-and `index build`.
+Subsequent runs reuse completed download, corpus, and index stages.
 
 ## Run
 
 Verify the complete paired workflow on one query:
 
 ```sh
-zg-bench smoke --model <codex-model> --reasoning medium
+zg-bench run --suite smoke --model <codex-model> --reasoning medium
 ```
 
 Use the exact model ID exposed to the authenticated Codex account (for

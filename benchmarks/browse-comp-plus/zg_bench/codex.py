@@ -184,7 +184,7 @@ def run_attempt(
     corpus_root = artifacts / "corpus"
     index_dir = corpus_root / ".zvec-grep"
     if profile == "zvec-grep" and not index_dir.is_dir():
-        raise RuntimeError("zvec-grep index is missing; run 'zg-bench index build'")
+        raise RuntimeError("zvec-grep index is missing; run 'zg-bench prepare'")
 
     output_dir.mkdir(parents=True, exist_ok=True)
     events_path = output_dir / "events.jsonl"

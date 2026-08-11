@@ -51,6 +51,36 @@ def _write_clean_config(path: Path) -> None:
     )
 
 
+def _authentication_status(codex: Path, home: Path) -> str:
+    environment = inherited_environment()
+    environment.update(
+        {
+            "CODEX_HOME": str(home),
+            "HOME": str(home),
+            "NO_COLOR": "1",
+        }
+    )
+    result = run_command(
+        [codex, "login", "status"],
+        env=environment,
+        timeout=30,
+    )
+    if not result.ok:
+        detail = result.stderr.strip() or result.stdout.strip()
+        raise RuntimeError(
+            f"Codex authentication is unavailable in profile {home}: "
+            f"{detail or 'login status failed'}"
+        )
+    return next(
+        (
+            line.strip()
+            for line in (*result.stdout.splitlines(), *result.stderr.splitlines())
+            if line.lower().startswith("logged in")
+        ),
+        "authenticated",
+    )
+
+
 def prepare_profiles(
     config: BenchmarkConfig,
     artifacts: Path,
@@ -128,6 +158,10 @@ def prepare_profiles(
     if CONFIG_START not in treatment_config or AGENTS_START not in treatment_agents:
         raise RuntimeError("treatment profile is missing zvec-grep integration")
 
+    authentication = {
+        "baseline": _authentication_status(codex, baseline),
+        "zvec-grep": _authentication_status(codex, treatment),
+    }
     baseline_config_path = baseline / "config.toml"
     treatment_config_path = treatment / "config.toml"
     treatment_agents_path = treatment / "AGENTS.md"
@@ -154,6 +188,7 @@ def prepare_profiles(
         "treatment_home": str(treatment.resolve()),
         "zvec_grep_home": environment["ZVEC_GREP_HOME"],
         "zvec_grep_build": build,
+        "authentication": authentication,
         "files": files,
         "fingerprint": profile_fingerprint,
         "baseline": {"zvec_mcp": False, "zvec_guidance": False},

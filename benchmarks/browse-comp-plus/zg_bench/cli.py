@@ -6,9 +6,10 @@ import os
 import sys
 from pathlib import Path
 
+from .console import Console
 from .config import DEFAULT_ARTIFACTS_DIR, DEFAULT_CONFIG_PATH, load_config
-from .corpus import materialize
-from .dataset import fetch
+from .corpus import materialize, prepared_corpus
+from .dataset import fetch, prepared_dataset
 from .doctor import format_report, run_doctor
 from .evaluate import export_manual, export_official
 from .index import build_index
@@ -39,46 +40,27 @@ def build_parser() -> argparse.ArgumentParser:
     doctor = subparsers.add_parser("doctor", help="validate the local environment")
     doctor.add_argument("--codex-bin", default="codex")
     doctor.add_argument("--zg-bin", default="zg")
-    doctor.add_argument("--minimum-free-gib", type=float, default=30.0)
     doctor.add_argument("--json", action="store_true")
 
-    fetch_parser = subparsers.add_parser("fetch", help="download pinned official data")
-    fetch_parser.add_argument("--hf-token")
-
-    subparsers.add_parser(
-        "materialize", help="write official corpus text fields as Markdown files"
-    )
-
-    index_parser = subparsers.add_parser("index", help="manage the reusable index")
-    index_subparsers = index_parser.add_subparsers(dest="index_command", required=True)
-    index_build = index_subparsers.add_parser("build", help="build or resume the index")
-    index_build.add_argument("--zg-bin", default="zg")
-    index_build.add_argument("--rebuild", action="store_true")
-
     prepare = subparsers.add_parser(
-        "prepare", help="fetch and materialize data, then build the index"
+        "prepare", help="prepare benchmark data and the reusable index"
     )
     prepare.add_argument("--hf-token")
     prepare.add_argument("--zg-bin", default="zg")
     prepare.add_argument("--yes", action="store_true", help="confirm first index build")
 
-    for name, help_text in (
-        ("run", "run a paired suite"),
-        ("smoke", "run the fixed one-query smoke suite"),
-    ):
-        run = subparsers.add_parser(name, help=help_text)
-        if name == "run":
-            run.add_argument(
-                "--suite",
-                default="study-80",
-                help="suite name or .txt path (default: study-80)",
-            )
-        run.add_argument("--model", required=True)
-        run.add_argument("--reasoning")
-        run.add_argument("--concurrency", type=int)
-        run.add_argument("--run-id")
-        run.add_argument("--codex-bin", default="codex")
-        run.add_argument("--zg-bin", default="zg")
+    run = subparsers.add_parser("run", help="run a paired suite")
+    run.add_argument(
+        "--suite",
+        default="study-80",
+        help="suite name or .txt path (default: study-80)",
+    )
+    run.add_argument("--model", required=True)
+    run.add_argument("--reasoning")
+    run.add_argument("--concurrency", type=int)
+    run.add_argument("--run-id")
+    run.add_argument("--codex-bin", default="codex")
+    run.add_argument("--zg-bin", default="zg")
 
     resume = subparsers.add_parser("resume", help="resume an interrupted run")
     resume.add_argument("run_id")
@@ -161,50 +143,119 @@ def _status(artifacts: Path, run_id: str | None) -> int:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     config = load_config(args.config)
-    artifacts = args.artifacts.expanduser().resolve()
 
     if args.command == "doctor":
-        report, output = run_doctor(
+        report = run_doctor(
             config,
-            artifacts,
             codex_bin=args.codex_bin,
             zg_bin=args.zg_bin,
-            minimum_free_gib=args.minimum_free_gib,
+        )
+        color = (
+            sys.stdout.isatty()
+            and "NO_COLOR" not in os.environ
+            and os.environ.get("TERM") != "dumb"
         )
         print(
-            json.dumps(report, indent=2) if args.json else format_report(report, output)
+            json.dumps(report, indent=2)
+            if args.json
+            else format_report(report, color=color)
         )
         return 0 if report["ready"] else 1
-    if args.command == "fetch":
-        print(
-            fetch(config, artifacts, token=args.hf_token or os.environ.get("HF_TOKEN"))
-        )
-        return 0
-    if args.command == "materialize":
-        print(materialize(config, artifacts))
-        return 0
-    if args.command == "index":
-        print(build_index(config, artifacts, zg_bin=args.zg_bin, rebuild=args.rebuild))
-        return 0
+    artifacts = args.artifacts.expanduser().resolve()
     if args.command == "prepare":
-        fetch(config, artifacts, token=args.hf_token or os.environ.get("HF_TOKEN"))
-        materialize(config, artifacts)
+        console = Console()
+        console.heading("BrowseComp-Plus prepare")
+        console.detail("Artifacts", artifacts)
+
+        console.step(1, 3, "Prepare official data")
+        try:
+            dataset_state = prepared_dataset(config, artifacts)
+        except RuntimeError as error:
+            console.error(str(error))
+            return 1
+        if dataset_state:
+            console.success("Reused prepared official data")
+            console.detail("State", dataset_state)
+        else:
+            console.activity("Downloading pinned Hugging Face snapshots")
+            try:
+                fetch(
+                    config,
+                    artifacts,
+                    token=args.hf_token or os.environ.get("HF_TOKEN"),
+                    status=console.activity,
+                    progress=console.progress,
+                )
+            except RuntimeError as error:
+                console.error(str(error))
+                return 1
+            console.success("Official data downloaded and verified")
+
+        console.step(2, 3, "Prepare corpus")
+        try:
+            corpus_state = prepared_corpus(config, artifacts)
+        except RuntimeError as error:
+            console.error(str(error))
+            return 1
+        if corpus_state:
+            console.success(
+                f"Reused {config.dataset.expected_corpus_documents:,} documents"
+            )
+            console.detail("State", corpus_state)
+        else:
+            console.activity("Writing corpus documents")
+            try:
+                materialize(
+                    config,
+                    artifacts,
+                    progress=lambda current, total: console.progress(
+                        "Documents", current, total
+                    ),
+                )
+            except RuntimeError as error:
+                console.error(str(error))
+                return 1
+            finally:
+                console.finish_progress()
+            console.success(
+                f"Materialized {config.dataset.expected_corpus_documents:,} documents"
+            )
+
         index_state = artifacts / "state" / "index.json"
         if not index_state.is_file() and not args.yes:
             if not sys.stdin.isatty():
                 raise SystemExit("error: first index build requires --yes")
-            answer = (
-                input("Build the reusable zvec-grep index now? [y/N] ").strip().lower()
-            )
+            answer = console.prompt(
+                "Build the reusable zvec-grep index now? [y/N] "
+            ).strip().lower()
             if answer not in {"y", "yes"}:
                 raise SystemExit("index build not confirmed")
-        print(build_index(config, artifacts, zg_bin=args.zg_bin))
+
+        console.step(3, 3, "Prepare zvec-grep index")
+        console.detail("Embedding", config.zvec_grep.embedding)
+        console.detail("Concurrency", str(config.zvec_grep.embedding_concurrency))
+        console.detail("Logs", artifacts / "logs")
+        reuse_index = index_state.is_file() and (
+            artifacts / "corpus" / ".zvec-grep"
+        ).is_dir()
+        console.activity(
+            "Checking existing index" if reuse_index else "Building reusable index"
+        )
+        try:
+            output = build_index(config, artifacts, zg_bin=args.zg_bin)
+        except RuntimeError as error:
+            console.error(str(error))
+            return 1
+        console.success("Reused existing index" if reuse_index else "Index is ready")
+        console.detail("State", output)
+        console.blank()
+        console.success("Preparation complete")
         return 0
-    if args.command in {"run", "smoke"}:
+    if args.command == "run":
         root = run_benchmark(
             config,
             artifacts,
-            suite="smoke" if args.command == "smoke" else args.suite,
+            suite=args.suite,
             model=args.model,
             reasoning_effort=args.reasoning,
             concurrency=args.concurrency,
