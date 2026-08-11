@@ -609,7 +609,43 @@ test("local search authorization discovers a parent index without a status scan"
   }
 });
 
-test("wait_for_fresh consumes a running watch job without a full reconciliation", async () => {
+test("automatic remote watcher authorization reads metadata without a status scan", async () => {
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-remote-watch-authorization-"),
+  );
+  const root = join(temporaryDirectory, "repo");
+  await mkdir(root);
+  await writeFile(join(root, "answer.ts"), "export const answer = 42;\n");
+  const service = await createZvecGrep({
+    root,
+    embeddingModel: new QwenTestEmbeddingModel(),
+  });
+  await service.index();
+  await service.close();
+
+  const inspections = [];
+  const backend = new DaemonBackend({
+    version: "1.0.0",
+    modelPoolOptions: { createModel: () => new QwenTestEmbeddingModel() },
+    watchManagerFactory: noopWatchManagerFactory,
+    inspectRoot: async (...args) => {
+      inspections.push(args[2] ?? true);
+      return await inspectRoot(...args);
+    },
+  });
+  try {
+    const runtime = await backend.runtimeManager.activate(root);
+    const authorization = await backend.automaticIndexAuthorization(runtime);
+
+    assert.equal(authorization.allowed, false);
+    assert.deepEqual(inspections, [false]);
+  } finally {
+    await backend.close();
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("wait_for_fresh consumes a running watch job without a status scan or full reconciliation", async () => {
   const temporaryDirectory = await mkdtemp(
     join(tmpdir(), "zvec-grep-fresh-followup-"),
   );
@@ -633,6 +669,7 @@ test("wait_for_fresh consumes a running watch job without a full reconciliation"
     releaseWatch = resolve;
   });
   let blockWatchEmbedding = false;
+  const statusInspections = [];
   const backend = new DaemonBackend({
     version: "1.0.0",
     modelPoolOptions: {
@@ -663,6 +700,10 @@ test("wait_for_fresh consumes a running watch job without a full reconciliation"
         close: () => created.close(),
       };
     },
+    inspectRoot: async (...args) => {
+      statusInspections.push(args[2] ?? true);
+      return await inspectRoot(...args);
+    },
     watchManagerFactory: (options) => {
       watcherOptions = options;
       return {
@@ -674,6 +715,7 @@ test("wait_for_fresh consumes a running watch job without a full reconciliation"
   });
   try {
     await backend.search(searchInput(root, "answer", "eventual"));
+    statusInspections.length = 0;
     const canonicalRoot = await realpath(root);
     await writeFile(source, "export const changedAnswer = 43;\n");
     blockWatchEmbedding = true;
@@ -721,6 +763,7 @@ test("wait_for_fresh consumes a running watch job without a full reconciliation"
     assert.match(result.result.items[0].content, /changedAnswer/);
     assert.equal(backend.scheduler.getByRoot(canonicalRoot).id, watchJob.id);
     assert.equal(backend.scheduler.getByRoot(canonicalRoot).reason, "watch");
+    assert.deepEqual(statusInspections, [false, false]);
   } finally {
     releaseWatch();
     await backend.close();

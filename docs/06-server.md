@@ -142,6 +142,11 @@ Server searches may return useful results with `freshness: possibly_stale`
 while an update continues. Use the result immediately when it answers the
 question; use `--refresh wait` only when the latest file state is required.
 
+Watcher-reported path updates skip workspace-wide status scans. Because
+file-system watchers can silently miss events, the Server schedules an hourly
+full reconciliation probe; the next search uses it to scan the Workspace and
+repair index drift.
+
 ## Endpoint and toolset
 
 The default endpoint is:

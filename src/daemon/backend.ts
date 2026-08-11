@@ -585,7 +585,11 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
           freshness === "possibly_stale"
             ? searchIndexingSnapshot(
                 job,
-                this.currentIndexCompletion(runtime.canonicalRoot),
+                this.currentIndexCompletion(
+                  runtime.canonicalRoot,
+                  job,
+                  runtime,
+                ),
               )
             : undefined,
         result,
@@ -602,7 +606,20 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
     }
   }
 
-  private currentIndexCompletion(canonicalRoot: string) {
+  private currentIndexCompletion(
+    canonicalRoot: string,
+    job: IndexJobSnapshot | undefined,
+    runtime: RootRuntime,
+  ) {
+    // Narrow watcher updates skip the status scan, so the cached completion
+    // still describes the previous fresh snapshot rather than the active job.
+    if (
+      job?.reason === "watch" &&
+      runtime.needsReconciliation() &&
+      !runtime.requiresFullReconciliation()
+    ) {
+      return undefined;
+    }
     return indexCompletionFromStatus(
       this.statusCache.get(canonicalRoot)?.status,
     );
@@ -733,13 +750,19 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
     signal?: AbortSignal,
   ): Promise<IndexReconciliationProof> {
     const startedAt = Date.now();
-    const includeFinalStatus = !input.changedPaths;
-    const before = await inspectRoot(
+    // Watcher path updates already identify their indexing scope, so avoid a
+    // workspace-wide status scan here. Silent watcher misses are repaired by
+    // the periodic full-reconciliation probes scheduled by WatchManager.
+    const includeInitialStatus =
+      input.rebuild !== true && input.changedPaths === undefined;
+    const includeFinalStatus = input.changedPaths === undefined;
+    const before = await this.inspectRoot(
       runtime.canonicalRoot,
-      this.options.serviceOptions,
-      input.rebuild !== true,
+      includeInitialStatus,
     );
-    this.statusCache.set(runtime.canonicalRoot, before);
+    if (input.changedPaths === undefined) {
+      this.statusCache.set(runtime.canonicalRoot, before);
+    }
     const modelLoadRequest = this.indexModelLoadRequest(before, input);
     const model = modelLoadRequest.model;
     runtime.updateModelLoadRequest(modelLoadRequest);
@@ -810,9 +833,8 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
       await this.watchers.get(runtime.canonicalRoot)?.flushPending();
     }
     const proofReconciliationEpoch = runtime.reconciliationEpoch();
-    const after = await inspectRoot(
+    const after = await this.inspectRoot(
       runtime.canonicalRoot,
-      this.options.serviceOptions,
       includeFinalStatus,
     );
     if (includeFinalStatus) this.statusCache.set(runtime.canonicalRoot, after);
@@ -1006,7 +1028,7 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
     const knownProvider = runtime.embeddingProvider();
     if (knownProvider && knownProvider !== "qwen") return { allowed: true };
     const root = runtime.canonicalRoot;
-    const info = await inspectRoot(root, this.options.serviceOptions);
+    const info = await this.inspectRoot(root, false);
     const schema = info.workspaceIndex?.embedding;
     if (!schema || schema.provider !== "qwen") return { allowed: true };
     const modelInfo = await this.loadEmbeddingModelInfo(
