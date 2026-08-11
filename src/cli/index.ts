@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env -S node --liftoff-only
 
 import { parseArgs } from "./args.js";
 import { runParsedCommand } from "./commands.js";

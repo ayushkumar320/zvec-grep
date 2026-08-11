@@ -12,6 +12,8 @@ import {
   type McpToolset,
 } from "../mcp/toolset.js";
 
+const LIFTOFF_ONLY_FLAG = "--liftoff-only";
+
 export type DaemonInstanceRecord = {
   pid: number;
   hostname: string;
@@ -195,7 +197,7 @@ export async function startServer(options: {
       `zvec-grep server process ${current.pid} is running but not ready`,
     );
   }
-  const args = [options.cliPath, "server", "run"];
+  const args = [LIFTOFF_ONLY_FLAG, options.cliPath, "server", "run"];
   args.push("--mcp-toolset", requestedToolset);
   if (options.listen) args.push("--listen", options.listen);
   if (options.tokenFile) args.push("--token-file", options.tokenFile);
