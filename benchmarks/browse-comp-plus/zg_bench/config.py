@@ -31,7 +31,6 @@ class DatasetConfig:
 
 @dataclass(frozen=True)
 class ZvecGrepConfig:
-    version: str
     embedding: str
     embedding_concurrency: int
     max_filesize: str

@@ -241,11 +241,8 @@ def run_benchmark(
     actual_zg_version = (
         zg_version.stdout.strip().splitlines()[0] if zg_version.stdout else ""
     )
-    if not zg_version.ok or actual_zg_version != config.zvec_grep.version:
-        raise RuntimeError(
-            f"zvec-grep {config.zvec_grep.version} is required; found "
-            f"{actual_zg_version or 'unknown'}"
-        )
+    if not zg_version.ok or not actual_zg_version:
+        raise RuntimeError("could not determine the installed zvec-grep version")
     missing_states = []
     if prepared_corpus(config, artifacts) is None:
         missing_states.append("corpus")

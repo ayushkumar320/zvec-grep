@@ -49,11 +49,8 @@ def build_index(
         raise RuntimeError(f"zvec-grep executable not found: {zg_bin}")
     version = run_command([executable, "version"], timeout=30)
     actual_version = version.stdout.strip().splitlines()[0] if version.stdout else ""
-    if not version.ok or actual_version != config.zvec_grep.version:
-        raise RuntimeError(
-            f"zvec-grep {config.zvec_grep.version} is required; found "
-            f"{actual_version or 'unknown'}"
-        )
+    if not version.ok or not actual_version:
+        raise RuntimeError("could not determine the installed zvec-grep version")
     corpus_state_path = artifacts / "state" / "corpus.json"
     if not corpus_state_path.is_file():
         raise RuntimeError("corpus is not prepared; run 'zg-bench prepare'")
@@ -139,6 +136,7 @@ def build_index(
         "index": str(index_dir.resolve()),
         "fingerprint": _index_fingerprint(config, corpus_state),
         "platform": {"system": platform.system(), "machine": platform.machine()},
+        "zvec_grep_version": actual_version,
         "command": [str(part) for part in command],
         "build_wall_seconds": build_wall_seconds,
         "index_bytes": _directory_bytes(index_dir),
@@ -233,7 +231,6 @@ def _index_fingerprint(
     return {
         "corpus_fingerprint": corpus_state["fingerprint"],
         "embedding": config.zvec_grep.embedding,
-        "zvec_grep_version": config.zvec_grep.version,
         "max_filesize": config.zvec_grep.max_filesize,
         "device": config.zvec_grep.device,
         "system": platform.system(),

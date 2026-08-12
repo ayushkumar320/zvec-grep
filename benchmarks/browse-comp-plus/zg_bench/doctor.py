@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import platform
-import re
 import sys
 from dataclasses import asdict, dataclass
 from typing import Any
@@ -55,20 +54,16 @@ def _authentication(codex_bin: str) -> Check:
     )
 
 
-def _zvec_version(config: BenchmarkConfig, zg_bin: str) -> Check:
+def _zvec_version(zg_bin: str) -> Check:
     executable = resolve_executable(zg_bin)
     if executable is None:
         return Check("zvec-grep", False, f"{zg_bin!r} was not found")
     result = run_command([executable, "version"], timeout=30)
     value = result.stdout.strip()
-    match = re.match(r"^(\d+)\.(\d+)\.(\d+)", value)
-    actual = tuple(int(part) for part in match.groups()) if match else ()
-    expected = tuple(int(part) for part in config.zvec_grep.version.split("."))
-    ok = result.ok and bool(actual) and actual == expected
     return Check(
         "zvec-grep",
-        ok,
-        f"{value or 'unknown'}; pinned version is {config.zvec_grep.version} ({executable})",
+        result.ok and bool(value),
+        f"{value or 'unknown'} ({executable})",
     )
 
 
@@ -91,7 +86,7 @@ def run_doctor(
             system in {"Darwin", "Linux"},
             f"{system} {platform.machine()}; native macOS and Linux are supported",
         ),
-        _zvec_version(config, zg_bin),
+        _zvec_version(zg_bin),
         _command("Codex", codex_bin, ["--version"]),
         _authentication(codex_bin),
     ]

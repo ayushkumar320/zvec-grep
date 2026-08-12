@@ -84,6 +84,7 @@ def generate_report(run_root: Path) -> Path:
         "suite": metadata["suite"],
         "model": metadata["model"],
         "reasoning_effort": metadata["reasoning_effort"],
+        "environment": metadata["environment"],
         "planned_pairs": len(metadata["query_ids"]),
         "persisted_pairs": len(pairs),
         "completed_pairs": sum(bool(pair["eligible"]) for pair in pairs),
@@ -112,6 +113,8 @@ def generate_report(run_root: Path) -> Path:
 - Suite: `{summary["suite"]}`
 - Model: `{summary["model"]}`
 - Reasoning: `{summary["reasoning_effort"]}`
+- Codex: `{summary["environment"]["codex_version"]}`
+- zvec-grep: `{summary["environment"]["zg_version"]}`
 - Completed pairs: {summary["completed_pairs"]} / {summary["planned_pairs"]}
 - Quality: {quality_line}
 

@@ -9,7 +9,6 @@ corpus_split = "train"
 expected_corpus_documents = 100195
 
 [zvec_grep]
-version = "0.1.7"
 embedding = "local/potion-code-16m-v2"
 embedding_concurrency = 60
 max_filesize = "64M"
