@@ -1,9 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { open, readFile, unlink } from "node:fs/promises";
+import { createServer } from "node:net";
 import { hostname } from "node:os";
 import { join } from "node:path";
-import { daemonHome, resolveClientToken } from "./config.js";
+import {
+  configuredListenAddress,
+  daemonHome,
+  resolveClientToken,
+} from "./config.js";
 import { processIsAlive } from "../engine/utils/daemon-lease.js";
 import {
   DEFAULT_MCP_TOOLSET,
@@ -197,6 +202,8 @@ export async function startServer(options: {
       `zvec-grep server process ${current.pid} is running but not ready`,
     );
   }
+  const listen = configuredListenAddress(options.listen);
+  await assertListenAddressAvailable(listen.host, listen.port);
   const args = [LIFTOFF_ONLY_FLAG, options.cliPath, "server", "run"];
   args.push("--mcp-toolset", requestedToolset);
   if (options.listen) args.push("--listen", options.listen);
@@ -228,7 +235,47 @@ export async function stopServer(
     throw new Error(
       `Server shutdown request failed with HTTP ${response.status}`,
     );
-  return waitForStatus(home, false, timeoutMs);
+  return status.pid === undefined
+    ? waitForStatus(home, false, timeoutMs)
+    : waitForProcessExit(status.pid, timeoutMs);
+}
+
+async function assertListenAddressAvailable(
+  host: string,
+  port: number,
+): Promise<void> {
+  const probe = createServer();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      probe.once("error", reject);
+      probe.listen({ host, port, exclusive: true }, () => {
+        probe.removeListener("error", reject);
+        probe.close((error) => (error ? reject(error) : resolve()));
+      });
+    });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EADDRINUSE") {
+      throw new Error(
+        `Server address ${host}:${port} is already in use. Another or legacy zvec-grep server may still be running.`,
+        { cause: error },
+      );
+    }
+    throw error;
+  }
+}
+
+async function waitForProcessExit(
+  pid: number,
+  timeoutMs: number,
+): Promise<DaemonControlStatus> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!processIsAlive(pid)) return { running: false, ready: false };
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(
+    `Timed out waiting for zvec-grep server process ${pid} to stop.`,
+  );
 }
 
 async function waitForStatus(
