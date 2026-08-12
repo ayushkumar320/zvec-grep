@@ -64,6 +64,7 @@ def build_index(
     environment["ZVEC_GREP_HOME"] = str(
         (artifacts / "runtime" / "zvec-home").resolve()
     )
+    _prepare_remote_authorization(config, executable, root, environment)
 
     existing = artifacts / "state" / "index.json"
     if not rebuild and existing.is_file() and index_dir.is_dir():
@@ -80,9 +81,6 @@ def build_index(
                 timeout=120,
             )
             if check.ok:
-                _ensure_remote_authorization(
-                    config, executable, root, environment
-                )
                 return existing
         raise RuntimeError(
             "the existing index does not match this benchmark or is not ready; "
@@ -108,8 +106,6 @@ def build_index(
         command.append("--rebuild")
     if config.zvec_grep.embedding.startswith("local/"):
         command.extend(["--device", config.zvec_grep.device])
-    else:
-        command.append("--allow-remote")
     stdout_log = artifacts / "logs" / "index.stdout.log"
     stderr_log = artifacts / "logs" / "index.stderr.log"
     started_at = utc_now()
@@ -134,7 +130,6 @@ def build_index(
     )
     if not status.ok:
         raise RuntimeError(status.stderr.strip() or status.stdout.strip())
-    _ensure_remote_authorization(config, executable, root, environment)
 
     state = {
         "stage": "index",
@@ -157,7 +152,7 @@ def build_index(
     return existing
 
 
-def _ensure_remote_authorization(
+def _prepare_remote_authorization(
     config: BenchmarkConfig,
     executable: Path,
     root: Path,
@@ -185,8 +180,8 @@ def _ensure_remote_authorization(
     if not grant.ok:
         detail = grant.stderr.strip() or grant.stdout.strip()
         raise RuntimeError(
-            "the index is ready, but remote search authorization could not be "
-            f"prepared: {detail or 'authorization grant failed'}"
+            "remote embedding authorization could not be prepared: "
+            f"{detail or 'authorization grant failed'}"
         )
 
 
