@@ -158,6 +158,42 @@ test("server-mode index reports Workspace progress", async (t) => {
   assert.match(indexed.stdout, /Workspace index: succeeded/);
   assert.match(indexed.stderr, /Scanning/);
   assert.match(indexed.stderr, /Indexing complete/);
+
+  const groupedQueryArgs = [
+    "query",
+    "--vector",
+    "missing-symbol",
+    "--fts",
+    "ServerProgressSymbol",
+    "--limit",
+    "1",
+    "--preview",
+    "short",
+    "--refresh",
+    "off",
+    "--allow-remote",
+  ];
+  const directGrouped = await runCli(
+    [...groupedQueryArgs, "--mode", "direct"],
+    { cwd: root, env },
+  );
+  const serverGrouped = await runCli(
+    [...groupedQueryArgs, "--mode", "server"],
+    { cwd: root, env },
+  );
+  assert.equal(serverGrouped.stdout, directGrouped.stdout);
+  assert.equal(serverGrouped.stderr, directGrouped.stderr);
+  assert.match(serverGrouped.stdout, /^query groups \(2\):/);
+  assert.match(serverGrouped.stdout, /Q1 \[supplemental\]: missing-symbol/);
+  assert.match(
+    serverGrouped.stdout,
+    /Q2 \[supplemental\]: ServerProgressSymbol/,
+  );
+  assert.doesNotMatch(
+    serverGrouped.stdout,
+    /group_coverage|global_fill|groups: Q/,
+  );
+
   const indexedStatus = await runCli(["status", "--mode", "server", root], {
     cwd: root,
     env,
@@ -302,7 +338,8 @@ test("CLI completes index, search, explicit refresh, status, and rg workflows", 
     ],
     { cwd: root, env, timeout: 120_000 },
   );
-  assert.doesNotMatch(stale.stdout, /RefreshedWorkflowSymbol/);
+  assert.match(stale.stdout, /hits: 0/);
+  assert.doesNotMatch(stale.stdout, /example\.ts:/);
   assert.match(stale.stderr, /status: possibly_stale/);
   assert.match(stale.stderr, /results: served_from_current_index/);
   assert.match(stale.stderr, /background_refresh: idle \(0\/1\)/);

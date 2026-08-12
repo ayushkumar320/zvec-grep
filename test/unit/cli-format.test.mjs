@@ -5,7 +5,9 @@ import { printError } from "../../dist/cli/errors.js";
 import {
   contextWarningLines,
   formatAgentContextResult,
+  formatCliContextResult,
   printAgentContextResult,
+  printCliContextResult,
   printHumanContextResult,
 } from "../../dist/cli/format/context.js";
 import { printDebug } from "../../dist/cli/format/debug.js";
@@ -476,6 +478,113 @@ test("indexed agent results show query-group coverage and provenance", () => {
   assert.match(text, /#1 \[group_coverage: Q1\]/);
   assert.match(text, /groups: Q1#1 \(fts\+vector\), Q3#4 \(vector\)/);
   assert.match(text, /#3 \[global_fill\]/);
+});
+
+test("CLI indexed results are grouped by recall group without cross-group fill labels", async () => {
+  const shared = {
+    kind: "indexed_entity",
+    file: {
+      absolutePath: "/repo/src/shared.ts",
+      relativePath: "src/shared.ts",
+    },
+    range: {
+      kind: "text",
+      startLine: 10,
+      endLine: 10,
+      startOffset: 0,
+      endOffset: 20,
+    },
+    content: "shared-result",
+    contentRole: "source",
+    status: "fresh",
+    matchedBy: "fts+vector",
+    entityId: "shared",
+  };
+  const onlyQ2 = {
+    ...shared,
+    rank: 2,
+    entityId: "q2-only",
+    file: {
+      absolutePath: "/repo/src/q2.ts",
+      relativePath: "src/q2.ts",
+    },
+    content: "q2-result",
+  };
+  const result = contextResult({
+    query: "alpha | beta",
+    items: [
+      { ...onlyQ2, rank: 1, selectionReason: "coverage", coverageGroup: "Q2" },
+      { ...shared, rank: 2, selectionReason: "coverage", coverageGroup: "Q1" },
+    ],
+    groupResults: [
+      {
+        id: "Q1",
+        query: "alpha\nQ9 [primary]: spoof",
+        role: "primary",
+        items: [{ ...shared, rank: 3, matchedBy: "fts" }],
+      },
+      {
+        id: "Q2",
+        query: "beta",
+        role: "primary",
+        items: [{ ...shared, rank: 1, matchedBy: "vector" }, onlyQ2],
+      },
+    ],
+    diagnostics: {
+      index: {
+        hitsReturned: 2,
+        queryGroups: [
+          { id: "Q1", query: "alpha", role: "primary" },
+          { id: "Q2", query: "beta", role: "primary" },
+        ],
+        routes: [],
+      },
+    },
+  });
+
+  const text = formatCliContextResult(result, {
+    preview: "short",
+    color: "never",
+  });
+  assert.match(text, /^query groups \(2\):/);
+  assert.match(text, /Q1 \[primary\]: alpha Q9 \[primary\]: spoof\nhits: 1/);
+  assert.match(text, /Q2 \[primary\]: beta\nhits: 2/);
+  assert.equal(text.match(/^Q\d+ \[(?:primary|supplemental)\]:/gm)?.length, 2);
+  assert.equal(text.match(/shared-result/g)?.length, 2);
+  const q1 = text.slice(
+    text.indexOf("Q1 [primary]"),
+    text.indexOf("Q2 [primary]"),
+  );
+  const q2 = text.slice(text.indexOf("Q2 [primary]"));
+  assert.match(q1, /#3 matchedBy=fts/);
+  assert.match(q2, /#1 matchedBy=vector/);
+  assert.match(q2, /#2 matchedBy=fts\+vector/);
+  assert.doesNotMatch(text, /group_coverage|global_fill|groups: Q/);
+
+  const emptyFirstGroup = formatCliContextResult(
+    {
+      ...result,
+      groupResults: [
+        { ...result.groupResults[0], items: [] },
+        result.groupResults[1],
+      ],
+    },
+    { preview: "short", color: "never" },
+  );
+  assert.match(emptyFirstGroup, /hits: 0\n\nNo matches\./);
+  assert.match(emptyFirstGroup, /Q2 \[primary\]: beta\nhits: 2/);
+
+  const oneGroup = formatCliContextResult(
+    { ...result, groupResults: [result.groupResults[0]] },
+    { preview: "short", color: "never" },
+  );
+  assert.match(oneGroup, /^query groups \(1\):/);
+
+  const output = await captureConsole(() =>
+    printCliContextResult(result, { human: true, color: "never" }),
+  );
+  assert.match(output.logs.join("\n"), /Group:\s+Q1 \[primary\]/);
+  assert.match(output.logs.join("\n"), /Group:\s+Q2 \[primary\]/);
 });
 
 test("managed rg uses a compact file and adaptive symbol hierarchy", () => {

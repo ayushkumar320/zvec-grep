@@ -28,10 +28,8 @@ import { findNearestWorkspace } from "../engine/service/root.js";
 import type { ParsedArgs, CliOptions } from "./types.js";
 import {
   contextWarningLines,
-  printAgentContextResult,
-  printHumanContextResult,
+  printCliContextResult,
 } from "./format/context.js";
-import { createHighlighter, shouldUseColor } from "./format/highlight.js";
 import { printDebug } from "./format/debug.js";
 import { createIndexProgressReporter } from "./format/progress.js";
 import {
@@ -53,6 +51,10 @@ import {
 import type { NormalizedSearchInput } from "../mcp/input-normalization.js";
 import { indexProgressFromMessage } from "../index-progress.js";
 import { normalizeManagedRgInput } from "./managed-rg.js";
+import {
+  INCOMPATIBLE_SERVER_SEARCH_MESSAGE,
+  parseServerSearchResponse,
+} from "./server-search.js";
 import { runInstall, runUninstall } from "./install.js";
 import {
   runAuth,
@@ -661,11 +663,7 @@ async function runDirectQuery(
       () => zvecGrep.context(effectiveContextRequest),
     );
     progress.finish();
-    if (commandOptions.human) {
-      printHumanContextResult(result, commandOptions);
-    } else {
-      printAgentContextResult(result, commandOptions);
-    }
+    printCliContextResult(result, commandOptions);
     for (const line of contextWarningLines(result)) {
       console.error(line);
     }
@@ -695,21 +693,14 @@ async function runServerQuery(
   routes: readonly ZvecGrepContextRoute[],
 ): Promise<void> {
   const searchPolicy = resolveServerSearchPolicy(options);
-  const fts = routes
-    .filter((route) => route.mode === "fts")
-    .map((route) => route.query);
-  const vector = routes
-    .filter((route) => route.mode === "vector")
-    .map((route) => route.query);
-  const response = await daemonClient(options).callTextTool(
+  const structuredContent = await daemonClient(options).callTool(
     "zvec_grep_search",
     {
       root: resolve(process.cwd()),
       apiKey: options.apiKey,
       device: options.device,
       queries: queries.length ? queries : undefined,
-      fts: fts.length ? fts : undefined,
-      vector: vector.length ? vector : undefined,
+      routes: routes.length ? routes : undefined,
       fuse: options.fuse,
       limit: options.limit,
       trace: options.trace,
@@ -731,13 +722,24 @@ async function runServerQuery(
       freshness: searchPolicy.freshness,
       autoUpdate: searchPolicy.autoUpdate,
     },
+    {
+      toolContract: {
+        inputProperties: ["routes"],
+        outputProperties: ["result"],
+        errorMessage: INCOMPATIBLE_SERVER_SEARCH_MESSAGE,
+      },
+    },
   );
-  const highlighter = createHighlighter(
-    [...queries, ...fts, ...vector].join(" "),
-    shouldUseColor(options),
-  );
-  for (const line of response.split("\n")) {
-    console.log(highlighter(line));
+  const response = parseServerSearchResponse(structuredContent);
+  printCliContextResult(response.result, options);
+  for (const line of contextWarningLines(response.result)) {
+    console.error(line);
+  }
+  if (response.freshness === "possibly_stale") {
+    printStaleIndexStatus(response.indexing?.state, response.indexing);
+  }
+  if (options.debug) {
+    printDebug(response.result, { trace: options.trace === true });
   }
 }
 

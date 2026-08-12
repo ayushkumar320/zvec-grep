@@ -161,6 +161,13 @@ async function connectFull(backend = createBackend()) {
   return await connect(backend, { toolset: "full" });
 }
 
+async function connectCliAdmin(backend = createBackend()) {
+  return await connect(backend, {
+    toolset: "full",
+    includeSearchStructuredContent: true,
+  });
+}
+
 test("MCP toolset resolution prefers explicit configuration and defaults to agent", () => {
   assert.equal(DEFAULT_MCP_TOOLSET, "agent");
   assert.equal(resolveMcpToolset(), "agent");
@@ -1327,5 +1334,137 @@ test("structured tools return schema-compatible content and searches preview eve
       (await createBackend().rg({ root, command: "rg needle" })).result,
       {},
     ),
+  );
+});
+
+test("CLI admin search includes per-group recall while public MCP remains text-only", async (t) => {
+  const backend = createBackend();
+  const receivedSearches = [];
+  const base = (await backend.search({ root, queries: ["alpha"] })).result
+    .items[0];
+  backend.search = async (input) => {
+    receivedSearches.push(input);
+    return {
+      root: input.root,
+      freshness: "fresh",
+      result: {
+        query: "alpha | beta",
+        root: input.root,
+        source: "index",
+        coverage: "ranked_sample",
+        diagnostics: {
+          index: {
+            hitsReturned: 1,
+            queryGroups: [
+              { id: "Q1", query: "alpha", role: "primary" },
+              { id: "Q2", query: "beta", role: "primary" },
+            ],
+            routes: [],
+          },
+        },
+        items: [
+          {
+            ...base,
+            selectionReason: "coverage",
+            coverageGroup: "Q1",
+            queryGroups: [
+              {
+                id: "Q1",
+                query: "alpha",
+                role: "primary",
+                rank: 1,
+                matchedBy: "fts+vector",
+              },
+              {
+                id: "Q2",
+                query: "beta",
+                role: "primary",
+                rank: 2,
+                matchedBy: "vector",
+              },
+            ],
+          },
+        ],
+        groupResults: [
+          {
+            id: "Q1",
+            query: "alpha",
+            role: "primary",
+            items: [{ ...base, rank: 1 }],
+          },
+          {
+            id: "Q2",
+            query: "beta",
+            role: "primary",
+            items: [
+              { ...base, rank: 2, matchedBy: "vector", content: "beta-hit" },
+            ],
+          },
+        ],
+      },
+    };
+  };
+  const publicConnection = await connectFull(backend);
+  const adminConnection = await connectCliAdmin(backend);
+  t.after(async () => {
+    await publicConnection.client.close();
+    await publicConnection.server.close();
+    await adminConnection.client.close();
+    await adminConnection.server.close();
+  });
+
+  const publicTools = await publicConnection.client.listTools();
+  const adminTools = await adminConnection.client.listTools();
+  const publicSearchTool = publicTools.tools.find(
+    (tool) => tool.name === "zvec_grep_search",
+  );
+  const adminSearchTool = adminTools.tools.find(
+    (tool) => tool.name === "zvec_grep_search",
+  );
+  assert.equal(publicSearchTool.inputSchema.properties.routes, undefined);
+  assert.equal(publicSearchTool.outputSchema, undefined);
+  assert.ok(adminSearchTool.inputSchema.properties.routes);
+  assert.ok(adminSearchTool.outputSchema.properties.result);
+
+  const publicSearch = await publicConnection.client.callTool({
+    name: "zvec_grep_search",
+    arguments: { root, queries: ["alpha", "beta"] },
+  });
+  assert.equal(publicSearch.structuredContent, undefined);
+  assert.match(publicSearch.content[0].text, /group_coverage: Q1/);
+  assert.doesNotMatch(publicSearch.content[0].text, /beta-hit/);
+
+  const adminSearch = await adminConnection.client.callTool({
+    name: "zvec_grep_search",
+    arguments: {
+      root,
+      routes: [
+        { mode: "vector", query: "  alpha  " },
+        { mode: "fts", query: "beta" },
+      ],
+      fts: ["beta"],
+      vector: ["alpha"],
+    },
+  });
+  assert.deepEqual(receivedSearches[1].routes, [
+    { mode: "vector", query: "alpha" },
+    { mode: "fts", query: "beta" },
+  ]);
+  assert.equal(adminSearch.content[0].text, publicSearch.content[0].text);
+  assert.equal(adminSearch.structuredContent.freshness, "fresh");
+  assert.deepEqual(adminSearch.structuredContent.result.items, []);
+  assert.deepEqual(
+    adminSearch.structuredContent.result.groupResults.map((group) => [
+      group.id,
+      group.items.length,
+    ]),
+    [
+      ["Q1", 1],
+      ["Q2", 1],
+    ],
+  );
+  assert.equal(
+    adminSearch.structuredContent.result.groupResults[1].items[0].content,
+    "beta-hit",
   );
 });

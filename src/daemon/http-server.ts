@@ -72,6 +72,7 @@ export class DaemonHttpServer {
       {
         toolset: "full",
         acceptEmbeddingEnvironmentMeta: true,
+        includeSearchStructuredContent: true,
         requestStateCodec,
         requestStateReplayGuard,
       },

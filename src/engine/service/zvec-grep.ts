@@ -969,10 +969,11 @@ async function contextFromOpenWorkspaceIndex(input: {
     searches.push(search);
   }
 
+  const groupItems = searches.map((search, index) =>
+    searchPlanToContextItems(search, input.root, groups[index]!),
+  );
   const items = selectAndRankContextItems(
-    searches.flatMap((search, index) =>
-      searchPlanToContextItems(search, input.root, groups[index]!),
-    ),
+    groupItems.flat(),
     groups.filter((group) => group.role === "primary").map((group) => group.id),
   );
 
@@ -987,6 +988,12 @@ async function contextFromOpenWorkspaceIndex(input: {
       path: input.workspaceIndex.info.path,
     },
     items,
+    groupResults: groups.map((group, index) => ({
+      id: group.id,
+      query: group.query,
+      role: group.role,
+      items: groupItems[index] ?? [],
+    })),
     diagnostics: {
       emptyReason: items.length === 0 ? "no_matches" : undefined,
       index: {

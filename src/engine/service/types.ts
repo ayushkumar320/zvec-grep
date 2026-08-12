@@ -173,6 +173,13 @@ export type ZvecGrepContextItem = {
   coverageGroup?: string;
 };
 
+export type ZvecGrepContextGroupResult = {
+  id: string;
+  query: string;
+  role: "primary" | "supplemental";
+  items: ZvecGrepContextItem[];
+};
+
 export type ZvecGrepContextWorkspaceIndex = {
   id: string;
   name: string;
@@ -230,6 +237,8 @@ export type ZvecGrepContextResult = {
   coverage: ZvecGrepContextCoverage;
   workspaceIndex?: ZvecGrepContextWorkspaceIndex;
   items: ZvecGrepContextItem[];
+  /** Per-query-group recall lists before cross-group deduplication and reranking. */
+  groupResults?: ZvecGrepContextGroupResult[];
   diagnostics: ZvecGrepContextDiagnostics;
 };
 

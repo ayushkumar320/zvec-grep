@@ -49,11 +49,86 @@ export function printAgentContextResult(
   }
 }
 
+/** Print the CLI query layout without the MCP cross-group fill presentation. */
+export function printCliContextResult(
+  result: ZvecGrepContextResult,
+  options: CliOptions,
+): void {
+  if (options.human) {
+    printCliHumanContextResult(result, options);
+    return;
+  }
+  for (const line of cliAgentContextLines(result, options)) {
+    console.log(line);
+  }
+}
+
+export function formatCliContextResult(
+  result: ZvecGrepContextResult,
+  options: CliOptions,
+): string {
+  return cliAgentContextLines(result, options).join("\n");
+}
+
 export function formatAgentContextResult(
   result: ZvecGrepContextResult,
   options: CliOptions,
 ): string {
   return agentContextLines(result, options).join("\n");
+}
+
+function cliAgentContextLines(
+  result: ZvecGrepContextResult,
+  options: CliOptions,
+): string[] {
+  if (result.source === "rg" || result.groupResults === undefined) {
+    return agentContextLines(result, options);
+  }
+
+  const lines = [`query groups (${result.groupResults.length}):`];
+  for (const [index, group] of result.groupResults.entries()) {
+    if (index > 0) {
+      lines.push("");
+    }
+    lines.push(`${group.id} [${group.role}]: ${oneLine(group.query)}`);
+    lines.push(`hits: ${group.items.length}`);
+    const groupResult = contextResultForGroup(result, group);
+    const itemLines = agentContextLines(groupResult, options);
+    if (itemLines.length > 0) {
+      lines.push("", ...itemLines);
+    }
+  }
+  return lines;
+}
+
+function contextResultForGroup(
+  result: ZvecGrepContextResult,
+  group: NonNullable<ZvecGrepContextResult["groupResults"]>[number],
+): ZvecGrepContextResult {
+  return {
+    ...result,
+    query: group.query,
+    items: group.items.map((item) => ({
+      ...item,
+      queryGroups: undefined,
+      selectionReason: undefined,
+      coverageGroup: undefined,
+    })),
+    groupResults: undefined,
+    diagnostics: {
+      ...result.diagnostics,
+      emptyReason: group.items.length === 0 ? "no_matches" : undefined,
+      index: result.diagnostics.index
+        ? {
+            ...result.diagnostics.index,
+            hitsReturned: group.items.length,
+            queryGroups: [
+              { id: group.id, query: group.query, role: group.role },
+            ],
+          }
+        : undefined,
+    },
+  };
 }
 
 function agentContextLines(
@@ -389,6 +464,54 @@ function plainText(value: string): string {
   return value;
 }
 
+function printCliHumanContextResult(
+  result: ZvecGrepContextResult,
+  options: CliOptions,
+): void {
+  if (result.source === "rg" || result.groupResults === undefined) {
+    printHumanContextResult(result, options);
+    return;
+  }
+
+  const theme = createHumanTheme(options);
+  const allItems = result.groupResults.flatMap((group) => group.items);
+  printHumanField(theme, "Context", contextLabel(result));
+  printHumanField(theme, "Query", result.query);
+  const routes = routeLabel(result);
+  if (routes) {
+    printHumanField(theme, "Routes", theme.accent(routes));
+  }
+  printHumanField(theme, "Coverage", theme.status(result.coverage));
+  printHumanField(theme, "Groups", String(result.groupResults.length));
+  printHumanField(theme, "Files", String(groupContextItems(allItems).length));
+  printHumanField(theme, "Hits", String(allItems.length));
+
+  for (const group of result.groupResults) {
+    console.log("");
+    printHumanField(theme, "Group", `${group.id} [${group.role}]`);
+    printHumanField(
+      theme,
+      "Query",
+      createHighlighter(
+        group.query,
+        shouldUseColor(options),
+      )(oneLine(group.query)),
+    );
+    printHumanField(theme, "Hits", String(group.items.length));
+    if (group.items.length === 0) {
+      printHumanField(theme, "Reason", "No matches");
+      continue;
+    }
+    printHumanItemGroups(
+      groupContextItems(group.items),
+      createHighlighter(group.query, shouldUseColor(options)),
+      theme,
+      previewMode(result, options),
+      options,
+    );
+  }
+}
+
 export function printHumanContextResult(
   result: ZvecGrepContextResult,
   options: CliOptions,
@@ -421,6 +544,16 @@ export function printHumanContextResult(
     return;
   }
 
+  printHumanItemGroups(groups, highlighter, theme, preview, options);
+}
+
+function printHumanItemGroups(
+  groups: readonly ContextItemGroup[],
+  highlighter: (value: string) => string,
+  theme: ReturnType<typeof createHumanTheme>,
+  preview: PreviewMode,
+  options: CliOptions,
+): void {
   for (const group of groups) {
     console.log("");
     printHumanField(theme, "File", theme.path(group.file.relativePath));

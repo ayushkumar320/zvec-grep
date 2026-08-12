@@ -4,6 +4,7 @@ import { parseManagedRgCommand } from "../cli/managed-rg.js";
 import type {
   StringListInput,
   TimeInput,
+  ZvecGrepCliSearchInput,
   ZvecGrepRgInput,
   ZvecGrepSearchInput,
 } from "./schemas.js";
@@ -37,7 +38,7 @@ export type NormalizedSearchInput = {
 };
 
 export function normalizeSearchInput(
-  input: ZvecGrepSearchInput,
+  input: ZvecGrepSearchInput | ZvecGrepCliSearchInput,
 ): NormalizedSearchInput {
   const common = normalizeSearchFields(input);
   return {
@@ -98,7 +99,8 @@ function normalizeSearchFields(
     | "modifiedBefore"
     | "limit"
     | "trace"
-  >,
+  > &
+    Partial<Pick<ZvecGrepCliSearchInput, "routes">>,
 ) {
   const queries = [
     ...normalizeQueryList(input.query),
@@ -106,7 +108,16 @@ function normalizeSearchFields(
   ];
   const fts = normalizeQueryList(input.fts);
   const vector = normalizeQueryList(input.vector);
-  if (queries.length === 0 && fts.length === 0 && vector.length === 0) {
+  const orderedRoutes = (input.routes ?? []).flatMap((route) => {
+    const query = route.query.trim();
+    return query.length > 0 ? [{ mode: route.mode, query }] : [];
+  });
+  if (
+    queries.length === 0 &&
+    fts.length === 0 &&
+    vector.length === 0 &&
+    orderedRoutes.length === 0
+  ) {
     throw new Error(
       "zvec_grep_search requires query, queries, fts, or vector.",
     );
@@ -114,10 +125,13 @@ function normalizeSearchFields(
 
   return {
     queries: queries.length > 0 ? queries : undefined,
-    routes: [
-      ...fts.map((query) => ({ mode: "fts" as const, query })),
-      ...vector.map((query) => ({ mode: "vector" as const, query })),
-    ],
+    routes:
+      orderedRoutes.length > 0
+        ? orderedRoutes
+        : [
+            ...fts.map((query) => ({ mode: "fts" as const, query })),
+            ...vector.map((query) => ({ mode: "vector" as const, query })),
+          ],
     fuse: input.fuse,
     limit: input.limit,
     trace: input.trace,

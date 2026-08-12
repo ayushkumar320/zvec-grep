@@ -66,6 +66,11 @@ Result controls:
 | `--modified-after <time>` | Search files modified after a time |
 | `--modified-before <time>` | Search files modified before a time |
 
+Indexed CLI results are separated by query group and preserve the rank assigned
+inside that group. The CLI does not apply the MCP response's cross-group
+coverage/global-fill presentation. A result recalled by several groups appears
+under each of those groups. `--limit` continues to bound each group.
+
 Valid symbol types are `module`, `class`, `interface`, `function`, `value`, and
 `alias`.
 

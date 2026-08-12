@@ -4,8 +4,9 @@ export function printDebug(
   result: ZvecGrepContextResult,
   options: { trace?: boolean } = {},
 ): void {
+  const items = cliVisibleItems(result);
   console.error(
-    `source=${result.source} coverage=${result.coverage} items=${result.items.length}`,
+    `source=${result.source} coverage=${result.coverage} items=${items.length}`,
   );
 
   if (result.workspaceIndex) {
@@ -54,23 +55,34 @@ export function printDebug(
   }
 
   if (options.trace) {
-    printTrace(result);
+    printTrace(result, items);
   }
 }
 
-function printTrace(result: ZvecGrepContextResult): void {
+function printTrace(
+  result: ZvecGrepContextResult,
+  items: readonly ZvecGrepContextResult["items"][number][],
+): void {
   if (result.source !== "index") {
     console.error(`trace=unavailable source=${result.source}`);
     return;
   }
 
-  const traced = result.items.filter((item) => item.trace);
+  const traced = items.filter((item) => item.trace);
   if (traced.length === 0) {
     console.error("trace=unavailable reason=no-hit-trace");
     return;
   }
 
   console.error(`trace=inline items=${traced.length}`);
+}
+
+function cliVisibleItems(
+  result: ZvecGrepContextResult,
+): ZvecGrepContextResult["items"] {
+  return result.groupResults
+    ? result.groupResults.flatMap((group) => group.items)
+    : result.items;
 }
 
 function shellArg(value: string): string {

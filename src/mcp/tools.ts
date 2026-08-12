@@ -32,7 +32,9 @@ import {
   zvecGrepIndexStatusInputSchema,
   zvecGrepIndexStatusOutputSchema,
   zvecGrepRgInputSchema,
+  zvecGrepCliSearchInputSchema,
   zvecGrepSearchInputSchema,
+  zvecGrepSearchOutputSchema,
   zvecGrepServerStatusInputSchema,
   zvecGrepServerStatusOutputSchema,
   type ZvecGrepIndexRequest,
@@ -280,6 +282,8 @@ export const ZVEC_GREP_MCP_INSTRUCTIONS = ZVEC_GREP_AGENT_MCP_INSTRUCTIONS;
 
 export type ZvecGrepMcpServerOptions = {
   acceptEmbeddingEnvironmentMeta?: boolean;
+  /** Internal CLI transport only; public MCP search remains compact text. */
+  includeSearchStructuredContent?: boolean;
   requestStateCodec?: RequestStateCodec<RemoteEmbeddingRequestState>;
   requestStateReplayGuard?: RemoteEmbeddingRequestStateReplayGuard;
   toolset?: McpToolset;
@@ -421,7 +425,12 @@ export function registerZvecGrepTools(
       description: full
         ? `${ZVEC_GREP_SEARCH_TOOL_DESCRIPTION} Use zvec_grep_rg instead when exact lookup alone is sufficient. Read freshness and background_refresh from the response; when results are served_from_current_index, use them if sufficient.`
         : `${ZVEC_GREP_SEARCH_TOOL_DESCRIPTION} Use native Grep or rg instead when exact lookup alone is sufficient. Read freshness and background_refresh from the response without a status preflight; when results are served_from_current_index, use them if sufficient.`,
-      inputSchema: zvecGrepSearchInputSchema,
+      inputSchema: options.includeSearchStructuredContent
+        ? zvecGrepCliSearchInputSchema
+        : zvecGrepSearchInputSchema,
+      ...(options.includeSearchStructuredContent
+        ? { outputSchema: zvecGrepSearchOutputSchema }
+        : {}),
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -467,14 +476,36 @@ export function registerZvecGrepTools(
           // the verbose structuredContent (per-item outline + full source), which
           // otherwise dominates the agent's context. `short` keeps a bounded source
           // snippet per hit so relevance is judgeable without extra file reads.
-          return textToolResult(
-            `${statusLines.join("\n")}\n${formatAgentContextResult(
-              response.result,
-              {
-                preview: "short",
-              },
-            )}`,
-          );
+          const text = `${statusLines.join("\n")}\n${formatAgentContextResult(
+            response.result,
+            {
+              preview: "short",
+            },
+          )}`;
+          return options.includeSearchStructuredContent
+            ? toolResult(text, {
+                root: response.root,
+                freshness: response.freshness,
+                indexing: response.indexing,
+                // The CLI renders per-group recall and does not consume the
+                // cross-group list. Avoid serializing every full item twice.
+                result: {
+                  ...response.result,
+                  items: [],
+                  groupResults: response.result.groupResults?.map((group) => ({
+                    ...group,
+                    items: group.items.map(
+                      ({
+                        queryGroups: _queryGroups,
+                        selectionReason: _selectionReason,
+                        coverageGroup: _coverageGroup,
+                        ...item
+                      }) => item,
+                    ),
+                  })),
+                },
+              })
+            : textToolResult(text);
         },
       ),
   );

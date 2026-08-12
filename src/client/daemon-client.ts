@@ -14,6 +14,11 @@ import { EMBEDDING_ENVIRONMENT_META_KEY } from "../mcp/request-metadata.js";
 type DaemonToolCallOptions = {
   onProgress?: (progress: Progress) => void;
   embeddingEnvironment?: string;
+  toolContract?: {
+    inputProperties?: readonly string[];
+    outputProperties?: readonly string[];
+    errorMessage: string;
+  };
 };
 
 export class DaemonClient {
@@ -153,6 +158,13 @@ export class DaemonClient {
     );
     try {
       await client.connect(transport);
+      if (callOptions.toolContract) {
+        const listed = await client.listTools();
+        const tool = listed.tools.find((candidate) => candidate.name === name);
+        if (!toolSatisfiesContract(tool, callOptions.toolContract)) {
+          throw new Error(callOptions.toolContract.errorMessage);
+        }
+      }
       const result = await client.callTool(
         {
           name,
@@ -198,6 +210,31 @@ export class DaemonClient {
       await client.close().catch(() => undefined);
     }
   }
+}
+
+export function toolSatisfiesContract(
+  tool: { inputSchema?: unknown; outputSchema?: unknown } | null | undefined,
+  contract: {
+    inputProperties?: readonly string[];
+    outputProperties?: readonly string[];
+  },
+): boolean {
+  if (!tool) return false;
+  return (
+    hasSchemaProperties(tool.inputSchema, contract.inputProperties) &&
+    hasSchemaProperties(tool.outputSchema, contract.outputProperties)
+  );
+}
+
+function hasSchemaProperties(
+  schema: unknown,
+  required: readonly string[] | undefined,
+): boolean {
+  if (!required || required.length === 0) return true;
+  if (typeof schema !== "object" || schema === null) return false;
+  const properties = (schema as { properties?: unknown }).properties;
+  if (typeof properties !== "object" || properties === null) return false;
+  return required.every((property) => property in properties);
 }
 
 export function daemonAdminServerUrl(serverUrl: string): URL {

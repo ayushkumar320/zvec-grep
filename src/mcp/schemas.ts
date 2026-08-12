@@ -256,6 +256,24 @@ export const zvecGrepSearchInputSchema = z.object({
     ),
 });
 
+const cliSearchRouteInputSchema = z.object({
+  mode: z.enum(["fts", "vector"]),
+  query: boundedString(
+    "One ordered supplemental retrieval group supplied by the CLI.",
+  ),
+});
+
+/** Internal daemon-admin schema used to preserve CLI route argument order. */
+export const zvecGrepCliSearchInputSchema = zvecGrepSearchInputSchema.extend({
+  routes: z
+    .array(cliSearchRouteInputSchema)
+    .max(MCP_MAX_QUERY_GROUPS * 2)
+    .optional()
+    .describe(
+      "Ordered supplemental retrieval groups. Internal CLI transport only.",
+    ),
+});
+
 export const zvecGrepIndexStatusInputSchema = z.object({
   root: absoluteRootSchema,
 });
@@ -348,6 +366,25 @@ const contextItemSchema = z.object({
     })
     .optional(),
   trace: z.unknown().optional(),
+  queryGroups: z
+    .array(
+      z.object({
+        id: z.string(),
+        query: z.string(),
+        role: z.enum(["primary", "supplemental"]),
+        rank: z.number().int().positive(),
+        matchedBy: z.enum(["fts", "vector", "fts+vector"]),
+      }),
+    )
+    .optional(),
+  selectionReason: z.enum(["coverage", "global_fill"]).optional(),
+  coverageGroup: z.string().optional(),
+});
+const contextGroupResultSchema = z.object({
+  id: z.string(),
+  query: z.string(),
+  role: z.enum(["primary", "supplemental"]),
+  items: z.array(contextItemSchema),
 });
 const searchResultSchema = z.object({
   query: z.string(),
@@ -391,6 +428,7 @@ const searchResultSchema = z.object({
       .optional(),
   }),
   items: z.array(contextItemSchema),
+  groupResults: z.array(contextGroupResultSchema).optional(),
 });
 
 export const zvecGrepIndexOutputSchema = z.object({
@@ -569,6 +607,9 @@ export type ZvecGrepIndexDropInput = z.infer<
   typeof zvecGrepIndexDropInputSchema
 >;
 export type ZvecGrepSearchInput = z.infer<typeof zvecGrepSearchInputSchema>;
+export type ZvecGrepCliSearchInput = z.infer<
+  typeof zvecGrepCliSearchInputSchema
+>;
 export type ZvecGrepIndexStatusInput = z.infer<
   typeof zvecGrepIndexStatusInputSchema
 >;

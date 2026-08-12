@@ -209,6 +209,14 @@ test("service optionally fuses independent query groups into one result list", a
     routes: [routes[0], routes[0]],
     limit: 1,
   });
+  const mixedDuplicateGroups = await service.context({
+    routes: [
+      { mode: "vector", query: "AlphaNeedle" },
+      { mode: "fts", query: "AlphaNeedle" },
+    ],
+    globs: ["alpha.ts"],
+    limit: 1,
+  });
   const primaryGroups = await service.context({
     queries: ["AlphaNeedle", "BetaNeedle"],
     limit: 1,
@@ -272,6 +280,37 @@ test("service optionally fuses independent query groups into one result list", a
   assert.equal(fused.diagnostics.index?.routes.length, 2);
   assert.equal(fused.diagnostics.index?.queryGroups?.length, 1);
   assert.equal(duplicateGroups.items.length, 1);
+  assert.deepEqual(
+    duplicateGroups.groupResults?.map((group) => [
+      group.id,
+      group.items.length,
+      group.items[0]?.rank,
+    ]),
+    [
+      ["Q1", 1, 1],
+      ["Q2", 1, 1],
+    ],
+  );
+  assert.equal(
+    duplicateGroups.groupResults?.[0]?.items[0]?.entityId,
+    duplicateGroups.groupResults?.[1]?.items[0]?.entityId,
+  );
+  assert.deepEqual(
+    mixedDuplicateGroups.groupResults?.map((group) => [
+      group.id,
+      group.items[0]?.rank,
+      group.items[0]?.matchedBy,
+    ]),
+    [
+      ["Q1", 1, "vector"],
+      ["Q2", 1, "fts"],
+    ],
+  );
+  assert.equal(
+    mixedDuplicateGroups.groupResults?.[0]?.items[0]?.entityId,
+    mixedDuplicateGroups.groupResults?.[1]?.items[0]?.entityId,
+  );
+  assert.equal(fused.groupResults?.length, 1);
   assert.deepEqual(
     duplicateGroups.items[0]?.queryGroups?.map((group) => [
       group.id,

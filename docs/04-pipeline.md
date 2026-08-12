@@ -206,8 +206,10 @@ between `auto`, `server`, `direct`, and `--refresh`.
 
 ## Output for agents and people
 
-Default CLI output is compact and grouped by file. Indexed source previews are
-omitted unless requested, reducing context passed to an agent:
+Default indexed CLI output is compact, grouped by query group, and ordered by
+that group's retrieval rank. A result recalled by several groups appears in
+each matching group. Indexed source previews are omitted unless requested,
+reducing context passed to an agent:
 
 ```bash
 zg query "plugin lifecycle" --preview short --limit 5

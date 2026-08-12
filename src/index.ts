@@ -8,6 +8,7 @@ export type {
   ZvecGrepContextCoverage,
   ZvecGrepContextDiagnostics,
   ZvecGrepContextFile,
+  ZvecGrepContextGroupResult,
   ZvecGrepContextItem,
   ZvecGrepContextItemKind,
   ZvecGrepContextOptions,

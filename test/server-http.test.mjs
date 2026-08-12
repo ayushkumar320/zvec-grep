@@ -23,6 +23,11 @@ import { DaemonClient } from "../dist/client/daemon-client.js";
 
 const token = "server-http-test-token-at-least-32-characters";
 
+function assertAdminSearchStructured(search) {
+  assert.ok(search.structuredContent);
+  assert.ok(Array.isArray(search.structuredContent.result.groupResults));
+}
+
 test("HTTP server rolls back state after a listen failure", async () => {
   const backend = {};
   const first = new DaemonHttpServer({
@@ -251,9 +256,21 @@ test("Streamable HTTP serves health, MCP contracts and a real cached index searc
     },
   });
   assert.equal(freshSearch.isError, undefined);
-  assert.equal(freshSearch.structuredContent, undefined);
+  assertAdminSearchStructured(freshSearch);
   assert.match(freshSearch.content[0].text, /^freshness: fresh$/m);
   assert.match(freshSearch.content[0].text, /src\/answer\.ts:/);
+
+  const publicSearch = await publicClient.callTool({
+    name: "zvec_grep_search",
+    arguments: {
+      root,
+      query: "answer to everything",
+      limit: 3,
+      freshness: "wait_for_fresh",
+    },
+  });
+  assert.equal(publicSearch.structuredContent, undefined);
+  assert.equal(publicSearch.content[0].text, freshSearch.content[0].text);
 
   const searchRoots = [root, join(root, "src")];
   const searches = await Promise.all(
@@ -271,7 +288,7 @@ test("Streamable HTTP serves health, MCP contracts and a real cached index searc
   await backend.scheduler.waitForRootIdle(canonicalRoot);
   for (const search of searches) {
     assert.equal(search.isError, undefined);
-    assert.equal(search.structuredContent, undefined);
+    assertAdminSearchStructured(search);
     assert.match(search.content[0].text, /src\/answer\.ts:/);
   }
   assert.equal(modelLoads, 1);
@@ -299,7 +316,7 @@ test("Streamable HTTP serves health, MCP contracts and a real cached index searc
     arguments: { root, fts: "updatedAnswer" },
   });
   assert.equal(refreshedSearch.isError, undefined);
-  assert.equal(refreshedSearch.structuredContent, undefined);
+  assertAdminSearchStructured(refreshedSearch);
   assert.match(refreshedSearch.content[0].text, /updatedAnswer/);
 
   const unindexedRoot = join(temporaryDirectory, "unindexed");
@@ -382,7 +399,7 @@ test("Streamable HTTP serves health, MCP contracts and a real cached index searc
   assert.equal(searchSettled, true);
   const writerSearch = await writerSearchPromise;
   assert.equal(writerSearch.isError, undefined);
-  assert.equal(writerSearch.structuredContent, undefined);
+  assertAdminSearchStructured(writerSearch);
   assert.match(writerSearch.content[0].text, /^freshness: possibly_stale$/m);
   assert.match(
     writerSearch.content[0].text,
@@ -417,7 +434,7 @@ test("Streamable HTTP serves health, MCP contracts and a real cached index searc
     arguments: { root: unindexedRoot, query: "newly indexed" },
   });
   assert.equal(newSearch.isError, undefined);
-  assert.equal(newSearch.structuredContent, undefined);
+  assertAdminSearchStructured(newSearch);
   assert.match(newSearch.content[0].text, /new\.ts:/);
   assert.equal(modelLoads, 1);
 
@@ -548,7 +565,7 @@ test("Streamable HTTP indexes and searches with qwen text-embedding-v4", async (
     },
   });
   assert.equal(search.isError, undefined);
-  assert.equal(search.structuredContent, undefined);
+  assertAdminSearchStructured(search);
   assert.match(search.content[0].text, /^freshness: fresh$/m);
   assert.match(search.content[0].text, /answer\.ts:/);
   assert.ok(requests.length > requestsAfterIndex);

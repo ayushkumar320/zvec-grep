@@ -127,6 +127,9 @@ Result options:
                                     In direct mode, background warns and falls back to off
   --mode <direct|server|auto>       Select indexed query transport (default: auto)
 
+Indexed results are shown by query group, preserving each group's own rank.
+A result that matches more than one group is shown in each matching group.
+
 Embedding runtime:
   --api-key <key>                   Embedding provider API key
   --model-cache <path>              Local model cache directory
