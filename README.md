@@ -80,6 +80,14 @@ explicitly:
 zg install --target codex --yes
 ```
 
+Installation starts the shared daemon immediately. The default MCP transport is
+stdio: the agent runs `zg server --stdio`, which safely starts or reuses it
+again after a reboot. Advanced users can keep direct HTTP configuration with
+`zg install --mcp-transport http` and `zg server on`.
+
+Use `zg install --mcp-toolset full` when the installed MCP integration should
+also expose managed rg, index, and status tools. The default is `agent`.
+
 ### 2. Index your workspace
 
 ```bash

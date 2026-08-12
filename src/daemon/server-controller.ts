@@ -198,12 +198,18 @@ export async function startServer(options: {
       );
     }
     if (current.ready) return current;
-    throw new Error(
-      `zvec-grep server process ${current.pid} is running but not ready`,
-    );
+    return waitForStatus(options.home, true, options.timeoutMs ?? 10_000);
   }
   const listen = configuredListenAddress(options.listen);
-  await assertListenAddressAvailable(listen.host, listen.port);
+  try {
+    await assertListenAddressAvailable(listen.host, listen.port);
+  } catch (error) {
+    const starting = await waitForRunningRecord(options.home, 500);
+    if (starting) {
+      return waitForStatus(options.home, true, options.timeoutMs ?? 10_000);
+    }
+    throw error;
+  }
   const args = [LIFTOFF_ONLY_FLAG, options.cliPath, "server", "run"];
   args.push("--mcp-toolset", requestedToolset);
   if (options.listen) args.push("--listen", options.listen);
@@ -293,6 +299,18 @@ async function waitForStatus(
   throw new Error(
     `Timed out waiting for zvec-grep server to ${running ? "start" : "stop"}.`,
   );
+}
+
+async function waitForRunningRecord(
+  home: string | undefined,
+  timeoutMs: number,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if ((await serverStatus(home)).running) return true;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return false;
 }
 
 async function readRecordPath(

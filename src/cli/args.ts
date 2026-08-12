@@ -4,6 +4,7 @@ import type {
   CliOptions,
   CliRgOptions,
   ColorMode,
+  McpInstallTransport,
   ParsedArgs,
   PreviewMode,
   QueryRefreshMode,
@@ -159,6 +160,8 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
       options.mode = parseClientMode(readOptionValue(args, ++index, arg));
     } else if (arg === "--force-direct") {
       options.forceDirect = true;
+    } else if (arg === "--stdio") {
+      options.serverStdio = true;
     } else if (isLongOptionWithValue(arg, "--mcp-toolset")) {
       options.mcpToolset = parseMcpToolset(valueFromLongOption(arg));
     } else if (arg === "--mcp-toolset") {
@@ -200,6 +203,14 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
       options.installMcpTokenEnv = parseEnvironmentVariable(
         readOptionValue(args, ++index, arg),
         arg,
+      );
+    } else if (isLongOptionWithValue(arg, "--mcp-transport")) {
+      options.installMcpTransport = parseMcpInstallTransport(
+        valueFromLongOption(arg),
+      );
+    } else if (arg === "--mcp-transport") {
+      options.installMcpTransport = parseMcpInstallTransport(
+        readOptionValue(args, ++index, arg),
       );
     } else if (arg === "--yes") {
       options.yes = true;
@@ -734,13 +745,17 @@ function validateCliShape(
   }
 
   if (command === "server") {
-    if (!options.serverAction) {
-      throw new Error("zg server requires on, off, status, or run");
+    if (!options.serverAction && !options.serverStdio) {
+      throw new Error("zg server requires on, off, status, run, or --stdio");
+    }
+    if (options.serverAction && options.serverStdio) {
+      throw new Error("--stdio cannot be combined with a server action");
     }
     if (
       options.listen !== undefined &&
       options.serverAction !== "run" &&
-      options.serverAction !== "on"
+      options.serverAction !== "on" &&
+      !options.serverStdio
     ) {
       throw new Error("--listen can only be used with zg server on or run");
     }
@@ -753,14 +768,19 @@ function validateCliShape(
     if (
       options.mcpToolset !== undefined &&
       options.serverAction !== "on" &&
-      options.serverAction !== "run"
+      options.serverAction !== "run" &&
+      !options.serverStdio
     ) {
       throw new Error(
         "--mcp-toolset can only be used with zg server on or run",
       );
     }
-  } else if (options.mcpToolset !== undefined) {
-    throw new Error("--mcp-toolset can only be used with zg server on or run");
+  } else if (options.mcpToolset !== undefined && command !== "install") {
+    throw new Error(
+      "--mcp-toolset can only be used with zg server on, run, --stdio, or zg install",
+    );
+  } else if (options.serverStdio !== undefined) {
+    throw new Error("--stdio can only be used with zg server");
   }
 
   if (
@@ -841,6 +861,16 @@ function validateCliShape(
   }
   if (options.installMcpTokenEnv !== undefined && command !== "install") {
     throw new Error("--mcp-token-env can only be used with zg install");
+  }
+  if (options.installMcpTransport !== undefined && command !== "install") {
+    throw new Error("--mcp-transport can only be used with zg install");
+  }
+  if (
+    command === "install" &&
+    options.installMcpTransport !== "http" &&
+    options.installMcpTokenEnv !== undefined
+  ) {
+    throw new Error("--mcp-token-env requires --mcp-transport http");
   }
   if (options.force && command !== "install") {
     throw new Error("--force can only be used with zg install");
@@ -1273,6 +1303,11 @@ function parseEnvironmentVariable(value: string, option: string): string {
     throw new Error(`${option} requires a valid environment variable name`);
   }
   return value;
+}
+
+function parseMcpInstallTransport(value: string): McpInstallTransport {
+  if (value === "stdio" || value === "http") return value;
+  throw new Error("--mcp-transport must be stdio or http");
 }
 
 function parseByteSize(value: string, option: string): number {

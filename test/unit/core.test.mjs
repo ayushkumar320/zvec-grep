@@ -282,6 +282,8 @@ test("CLI parser covers utility commands, provider controls, routes, and equals 
     "--target",
     "cursor",
     "--mcp-tool-timeout=30",
+    "--mcp-transport=stdio",
+    "--mcp-toolset=full",
     "--yes",
   ]);
   assert.equal(install.command, "install");
@@ -291,6 +293,12 @@ test("CLI parser covers utility commands, provider controls, routes, and equals 
     "cursor",
   ]);
   assert.equal(install.options.installMcpToolTimeoutSeconds, 30);
+  assert.equal(install.options.installMcpTransport, "stdio");
+  assert.equal(install.options.mcpToolset, "full");
+  assert.throws(
+    () => parseArgs(["install", "--mcp-token-env", "TOKEN"]),
+    /requires --mcp-transport http/,
+  );
 
   assert.throws(() => parseArgs(["serve", "--mcp"]), /removed/i);
   assert.equal(parseArgs(["-h"]).command, "help");

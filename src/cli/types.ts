@@ -8,6 +8,8 @@ export type PreviewMode = "none" | "short" | "full";
 
 export type QueryRefreshMode = "background" | "wait" | "off";
 
+export type McpInstallTransport = "stdio" | "http";
+
 export type CliOptions = {
   configAction?: "model-set" | "provider-set";
   defaultModel?: boolean;
@@ -16,6 +18,7 @@ export type CliOptions = {
   authorizationScope?: "workspace";
   allowRemote?: boolean;
   serverAction?: "on" | "off" | "status" | "run";
+  serverStdio?: boolean;
   mcpToolset?: McpToolset;
   listen?: string;
   serverTokenFile?: string;
@@ -24,6 +27,7 @@ export type CliOptions = {
   installTargets?: string[];
   installMcpToolTimeoutSeconds?: number;
   installMcpTokenEnv?: string;
+  installMcpTransport?: McpInstallTransport;
   yes?: boolean;
   rg?: boolean;
   rgCompatibilityOptions?: string[];

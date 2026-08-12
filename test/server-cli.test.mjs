@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
+import { Client } from "@modelcontextprotocol/client";
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { parseArgs } from "../dist/cli/args.js";
 import {
   resolveDirectSearchPolicy,
@@ -34,6 +36,11 @@ test("server run parses a loopback listen address", () => {
 });
 
 test("server lifecycle and client mode arguments are parsed", () => {
+  assert.equal(parseArgs(["server", "--stdio"]).options.serverStdio, true);
+  assert.throws(
+    () => parseArgs(["server", "on", "--stdio"]),
+    /cannot be combined/i,
+  );
   for (const action of ["on", "off", "status"]) {
     const parsed = parseArgs(["server", action]);
     assert.equal(parsed.options.serverAction, action);
@@ -70,6 +77,45 @@ test("server lifecycle and client mode arguments are parsed", () => {
     () => parseArgs(["query", "--force-direct", "query"]),
     /requires --mode direct/i,
   );
+});
+
+test("stdio bootstrap starts and reuses the shared daemon", async (t) => {
+  const home = await mkdtemp(join(tmpdir(), "zvec-grep-stdio-bridge-"));
+  const port = await availablePort();
+  t.after(async () => {
+    await execFileAsync(process.execPath, [
+      cliPath,
+      "server",
+      "off",
+      "--home",
+      home,
+    ]).catch(() => undefined);
+    await rm(home, { recursive: true, force: true });
+  });
+
+  const client = new Client({ name: "stdio-bridge-test", version: "1.0.0" });
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [
+      cliPath,
+      "server",
+      "--stdio",
+      "--home",
+      home,
+      "--listen",
+      `127.0.0.1:${port}`,
+    ],
+    stderr: "pipe",
+  });
+  await client.connect(transport);
+  const tools = await client.listTools();
+  assert.ok(tools.tools.some((tool) => tool.name === "zvec_grep_search"));
+  const daemon = await readInstanceRecord(home);
+  assert.ok(daemon?.pid);
+
+  await client.close();
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal((await readInstanceRecord(home))?.pid, daemon.pid);
 });
 
 test("server queries map refresh modes to search policy", () => {

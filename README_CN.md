@@ -79,6 +79,14 @@ zg install
 zg install --target codex --yes
 ```
 
+安装时会立即启动共享 Daemon。默认 MCP 传输方式为 stdio：Agent 会运行
+`zg server --stdio`，电脑重启后该命令会再次安全启动或复用 Daemon。高级用户
+可以通过 `zg install --mcp-transport http` 保留 HTTP 直连，并自行使用
+`zg server on` 管理后续启动。
+
+如需让安装后的 MCP 集成额外暴露 managed rg、index 和 status 工具，可使用
+`zg install --mcp-toolset full`；默认值为 `agent`。
+
 ### 2. 为工作区建索引
 
 ```bash

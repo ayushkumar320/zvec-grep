@@ -13,6 +13,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { createServer } from "node:net";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
@@ -33,6 +34,59 @@ test("interactive installer marker follows the active agent", () => {
   assert.match(codex[1], /● Codex\s+detected/);
   assert.match(codex.at(-1), /Use ↑↓ to move · Enter to select/);
   assert.doesNotMatch(codex.join("\n"), /Space|\[●\]/);
+});
+
+test("install starts the shared server with the selected MCP toolset", async (t) => {
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-install-server-"),
+  );
+  const home = join(temporaryDirectory, "home");
+  const port = await availablePort();
+  const serverUrl = `http://127.0.0.1:${port}/mcp`;
+  await mkdir(join(temporaryDirectory, ".zvec-grep"), { recursive: true });
+  await writeFile(
+    join(temporaryDirectory, ".zvec-grep", "config.json"),
+    `${JSON.stringify({
+      version: 1,
+      client: { serverUrl },
+      server: { host: "127.0.0.1", port },
+    })}\n`,
+  );
+  const environment = {
+    ...process.env,
+    HOME: temporaryDirectory,
+    CODEX_HOME: join(temporaryDirectory, ".codex"),
+    ZVEC_GREP_HOME: home,
+  };
+  t.after(async () => {
+    await execFileAsync(
+      process.execPath,
+      [cliPath, "server", "off", "--home", home],
+      { env: environment },
+    ).catch(() => undefined);
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  });
+
+  const { stdout } = await execFileAsync(
+    process.execPath,
+    [cliPath, "install", "--target", "codex", "--mcp-toolset", "full", "--yes"],
+    { env: environment },
+  );
+  assert.match(stdout, new RegExp(`ready at ${serverUrl}`));
+  const { stdout: statusOutput } = await execFileAsync(
+    process.execPath,
+    [cliPath, "server", "status", "--check-ready", "--home", home],
+    { env: environment },
+  );
+  assert.match(statusOutput, /MCP toolset: full/);
+  const config = await readFile(
+    join(temporaryDirectory, ".codex", "config.toml"),
+    "utf8",
+  );
+  assert.match(
+    config,
+    /^args = \["server", "--stdio", "--mcp-toolset", "full"\]$/m,
+  );
 });
 
 test("Codex installer removes orphaned managed markers", async (t) => {
@@ -67,9 +121,10 @@ test("Codex installer removes orphaned managed markers", async (t) => {
 
   const installed = await readFile(configPath, "utf8");
   assert.match(installed, /\[mcp_servers\.other\]/);
-  assert.match(installed, /^url = "http:\/\/127\.0\.0\.1:7999\/mcp"$/m);
+  assert.match(installed, /^command = "zg"$/m);
+  assert.match(installed, /^args = \["server", "--stdio"\]$/m);
   assert.doesNotMatch(installed, /^bearer_token_env_var\s*=/m);
-  assert.doesNotMatch(installed, /^command\s*=\s*"zg"$/m);
+  assert.doesNotMatch(installed, /^url\s*=/m);
   assert.match(installed, /^tool_timeout_sec = 600$/m);
   assert.match(installed, /^default_tools_approval_mode = "approve"$/m);
   assert.doesNotMatch(installed, /^default_tools_approval_mode = "auto"$/m);
@@ -94,6 +149,8 @@ test("Codex installer writes an explicit MCP token environment variable", async 
       "install",
       "--target",
       "codex",
+      "--mcp-transport",
+      "http",
       "--mcp-token-env",
       "ZVEC_GREP_SERVER_TOKEN",
       "--yes",
@@ -485,9 +542,10 @@ test("Claude Code installer configures MCP trust and guidance", async (t) => {
   );
 
   assert.deepEqual(mcpConfig.mcpServers.zvec_grep, {
-    type: "http",
-    url: "http://127.0.0.1:7999/mcp",
     alwaysLoad: true,
+    type: "stdio",
+    command: "zg",
+    args: ["server", "--stdio"],
   });
   assert.ok(settings.permissions.allow.includes("mcp__zvec_grep__*"));
   assert.match(guidance, /zvec_grep_search/);
@@ -583,6 +641,8 @@ test("Claude Code installer writes MCP token environment expansion", async (t) =
       "install",
       "--target",
       "claude",
+      "--mcp-transport",
+      "http",
       "--mcp-token-env",
       "ZVEC_GREP_SERVER_TOKEN",
       "--yes",
@@ -620,7 +680,8 @@ test("Claude Code installer accepts cc and claude-code compatibility aliases", a
     const config = JSON.parse(
       await readFile(join(configDirectory, ".claude.json"), "utf8"),
     );
-    assert.equal(config.mcpServers.zvec_grep.url, "http://127.0.0.1:7999/mcp");
+    assert.equal(config.mcpServers.zvec_grep.command, "zg");
+    assert.deepEqual(config.mcpServers.zvec_grep.args, ["server", "--stdio"]);
   }
 });
 
@@ -635,6 +696,8 @@ test("Cursor installer manages a global Streamable HTTP MCP server", async (t) =
   });
 
   await installTarget("cursor", { CURSOR_CONFIG_DIR: cursorConfigDirectory }, [
+    "--mcp-transport",
+    "http",
     "--mcp-token-env",
     "ZVEC_GREP_SERVER_TOKEN",
   ]);
@@ -670,6 +733,7 @@ test("OpenCode installer preserves config and manages a remote MCP server", asyn
     `${JSON.stringify({ model: "custom/model", mcp: { other: { type: "remote", url: "https://example.com/mcp" } } }, null, 2)}\n`,
   );
   await installTarget("opencode", { OPENCODE_CONFIG: configPath }, [
+    "--mcp-transport=http",
     "--mcp-tool-timeout=900",
     "--mcp-token-env=ZVEC_GREP_SERVER_TOKEN",
   ]);
@@ -738,7 +802,10 @@ test("JSON installers require force before replacing an unmanaged server", async
     installTarget("opencode", { OPENCODE_CONFIG: configPath }),
     /--force/,
   );
-  await installTarget("opencode", { OPENCODE_CONFIG: configPath }, ["--force"]);
+  await installTarget("opencode", { OPENCODE_CONFIG: configPath }, [
+    "--force",
+    "--mcp-transport=http",
+  ]);
   const config = JSON.parse(await readFile(configPath, "utf8"));
   assert.equal(config.mcp.zvec_grep.url, "http://127.0.0.1:7999/mcp");
 });
@@ -840,4 +907,18 @@ async function uninstallTarget(target, env, extraArgs = []) {
 
 function countOccurrences(value, search) {
   return value.split(search).length - 1;
+}
+
+async function availablePort() {
+  const server = createServer();
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  await new Promise((resolve, reject) =>
+    server.close((error) => (error ? reject(error) : resolve())),
+  );
+  return address.port;
 }

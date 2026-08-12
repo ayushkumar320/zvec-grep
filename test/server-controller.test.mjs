@@ -133,6 +133,28 @@ test("server on reports an occupied listen address without timing out", async (t
   );
 });
 
+test("concurrent server starts converge on one daemon", async (t) => {
+  const home = await mkdtemp(join(tmpdir(), "zvec-grep-controller-race-"));
+  const port = await availablePort();
+  t.after(async () => {
+    await stopServer(home).catch(() => undefined);
+    await rm(home, { recursive: true, force: true });
+  });
+  const options = {
+    cliPath: new URL("../dist/cli/index.js", import.meta.url).pathname,
+    listen: `127.0.0.1:${port}`,
+    home,
+  };
+
+  const [first, second] = await Promise.all([
+    startServer(options),
+    startServer(options),
+  ]);
+  assert.equal(first.ready, true);
+  assert.equal(second.ready, true);
+  assert.equal(first.pid, second.pid);
+});
+
 test("a dead daemon instance record is replaced", async (t) => {
   const home = await mkdtemp(join(tmpdir(), "zvec-grep-controller-stale-"));
   t.after(async () => rm(home, { recursive: true, force: true }));

@@ -42,8 +42,6 @@ const ENVIRONMENT_VARIABLES = {
   QWEN_API_KEY: "Qwen credential fallback after DASHSCOPE_API_KEY",
   ZVEC_GREP_AUTHORIZATION_KEY_FILE:
     "Workspace grant signing-key file (advanced)",
-  ZVEC_GREP_INSTALL_SKIP_SERVER:
-    "Set to 1 to keep zg install from starting the Server (advanced)",
   ZVEC_GREP_METAL_KEEP_RESIDENCY:
     "Set to 1 to keep llama.cpp Metal residency enabled (advanced)",
   ZVEC_GREP_LLAMA_CONTEXT_PARALLELISM:
@@ -265,10 +263,15 @@ ${formatEnvironmentVariables([
 ])}`;
     case "server":
       return `Usage:
+  zg server --stdio [--token-file <path>] [--mcp-toolset <agent|full>]
   zg server on [--listen 127.0.0.1:7999] [--token-file <path>] [--mcp-toolset <agent|full>]
   zg server off [--token-file <path>]
   zg server status [--check-ready]
   zg server run [--listen 127.0.0.1:7999] [--token-file <path>] [--mcp-toolset <agent|full>]
+
+--stdio is the MCP client bootstrap transport. It safely starts or reuses the
+shared daemon, proxies MCP over stdin/stdout, and leaves the daemon running
+when the client disconnects.
 
 The server listens on loopback. Authentication is disabled by default; pass a
 token file or set ZVEC_GREP_SERVER_TOKEN to require Bearer authentication.
@@ -290,17 +293,21 @@ ${formatEnvironmentVariables([
 See zg help environment for daemon startup scope.`;
     case "install":
       return `Usage:
-  zg install [--target codex|claude|opencode|cursor|all|auto] [--yes] [--force]
+  zg install [--target codex|claude|opencode|cursor|all|auto] [--mcp-transport stdio|http] [--mcp-toolset agent|full] [--yes] [--force]
 
 Options:
   --target <agent>                  codex, claude, opencode, cursor, auto, or all; repeatable
+  --mcp-transport <stdio|http>      MCP connection mode (default: stdio)
+  --mcp-toolset <agent|full>        Daemon MCP toolset (default: agent)
   --mcp-tool-timeout <seconds>      Codex MCP tool timeout (default: 600)
-  --mcp-token-env <name>            Bearer token environment variable
+  --mcp-token-env <name>            HTTP mode Bearer token environment variable
   --yes                             Install detected agents without prompting
   --force                           Replace conflicting unmanaged configuration
 
-Interactive setup detects supported agents, configures the local MCP server,
-and starts it. Codex, Claude Code, and OpenCode also receive managed guidance;
+Interactive setup detects supported agents, configures stdio by default, and
+starts the shared daemon. In stdio mode an agent reconnect also starts the
+daemon automatically after a reboot. HTTP users manage later daemon restarts.
+Codex, Claude Code, and OpenCode also receive managed guidance;
 Codex and Claude Code receive local tool pre-approval. Remote Embedding
 authorization remains separate and is requested by zvec-grep on first remote
 use. This does not install the npm package.`;
@@ -526,7 +533,6 @@ ${formatEnvironmentVariables([
 
 Advanced:
 ${formatEnvironmentVariables([
-  "ZVEC_GREP_INSTALL_SKIP_SERVER",
   "ZVEC_GREP_METAL_KEEP_RESIDENCY",
   "ZVEC_GREP_LLAMA_CONTEXT_PARALLELISM",
   "NO_COLOR",

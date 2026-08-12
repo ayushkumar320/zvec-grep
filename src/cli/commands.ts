@@ -466,10 +466,22 @@ async function confirmIndexDrop(
 async function runServer(parsed: ParsedArgs): Promise<void> {
   if (parsed.positionals.length > 0) {
     throw new Error(
-      `zg server ${parsed.options.serverAction} does not accept positional arguments`,
+      `zg server ${parsed.options.serverStdio ? "--stdio" : parsed.options.serverAction} does not accept positional arguments`,
     );
   }
   const { readPackageVersion } = await import("./version.js");
+  if (parsed.options.serverStdio) {
+    const { runStdioBootstrapBridge } = await import("../mcp/stdio-bridge.js");
+    await runStdioBootstrapBridge({
+      cliPath: process.argv[1]!,
+      version: readPackageVersion(),
+      home: parsed.options.home,
+      tokenFile: parsed.options.serverTokenFile,
+      listen: parsed.options.listen,
+      mcpToolset: parsed.options.mcpToolset,
+    });
+    return;
+  }
   if (parsed.options.serverAction === "on") {
     const { startServer } = await import("../daemon/server-controller.js");
     const status = await startServer({

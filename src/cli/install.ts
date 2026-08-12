@@ -16,12 +16,13 @@ import { homedir } from "node:os";
 import { delimiter, dirname, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { resolveServerUrl } from "../client/mode-router.js";
-import { type serverStatus } from "../daemon/server-controller.js";
+import type { DaemonControlStatus } from "../daemon/server-controller.js";
+import type { McpToolset } from "../mcp/toolset.js";
 import {
   formatPromptRules,
   ZVEC_GREP_WORKSPACE_EVIDENCE_RULES,
 } from "../prompts/zvec-grep-guidance.js";
-import type { ParsedArgs } from "./types.js";
+import type { McpInstallTransport, ParsedArgs } from "./types.js";
 
 type AgentInstaller = {
   id: string;
@@ -33,6 +34,8 @@ type AgentInstaller = {
 
 type InstallAgentOptions = {
   force: boolean;
+  transport: McpInstallTransport;
+  mcpToolset?: McpToolset;
   mcpToolTimeoutSeconds: number;
   mcpTokenEnv?: string;
 };
@@ -86,11 +89,14 @@ export async function runInstall(parsed: ParsedArgs): Promise<void> {
     console.log("\nNo agent integrations selected.");
     return;
   }
+  const transport = await resolveInstallTransport(parsed);
 
   console.log("\nInstalling integrations\n");
   for (const installer of installers) {
     await installer.install({
       force: parsed.options.force === true,
+      transport,
+      mcpToolset: parsed.options.mcpToolset,
       mcpToolTimeoutSeconds:
         parsed.options.installMcpToolTimeoutSeconds ??
         DEFAULT_MCP_TOOL_TIMEOUT_SECONDS,
@@ -101,13 +107,17 @@ export async function runInstall(parsed: ParsedArgs): Promise<void> {
     console.log("");
   }
 
-  const server = await ensureInstalledServer();
+  const server = await ensureInstalledServer(parsed.options.mcpToolset);
   if (server.ready) {
     console.log(`  ${installSuccessMark()} Server`);
     console.log(`    ready at ${server.serverUrl ?? resolveServerUrl()}`);
   } else {
     console.log(`  ${installMutedMark()} Server`);
     console.log("    not started; run `zg server on`");
+  }
+  if (transport === "stdio") {
+    console.log(`  ${installSuccessMark()} Connection`);
+    console.log("    stdio; reconnects start the server automatically");
   }
 
   console.log("\nzvec-grep is ready\n");
@@ -151,7 +161,7 @@ async function installCodexIntegration(
     path: configPath,
     startMarker: ZVEC_GREP_CONFIG_START,
     endMarker: ZVEC_GREP_CONFIG_END,
-    block: codexConfigBlock(options.mcpToolTimeoutSeconds, options.mcpTokenEnv),
+    block: codexConfigBlock(options),
     force: options.force,
     hasConflict: hasCodexMcpServerConfig,
     conflictMessage: `Existing [mcp_servers.zvec_grep] found in ${configPath}. Re-run with --force after removing or moving that table into the zvec-grep managed block.`,
@@ -180,6 +190,8 @@ async function installClaudeIntegration(
   await updateClaudeMcpConfig({
     path: mcpConfigPath,
     force: options.force,
+    transport: options.transport,
+    mcpToolset: options.mcpToolset,
     tokenEnv: options.mcpTokenEnv,
   });
   await updateClaudePermissionSettings(settingsPath, true);
@@ -238,20 +250,28 @@ async function installOpenCodeIntegration(
   await installJsonMcpServer({
     path: configPath,
     containerKey: "mcp",
-    server: {
-      type: "remote",
-      url: resolveServerUrl(),
-      enabled: true,
-      timeout: options.mcpToolTimeoutSeconds * 1_000,
-      oauth: false,
-      ...(options.mcpTokenEnv
+    server:
+      options.transport === "stdio"
         ? {
-            headers: {
-              Authorization: `Bearer {env:${options.mcpTokenEnv}}`,
-            },
+            type: "local",
+            command: stdioCommand(options.mcpToolset),
+            enabled: true,
+            timeout: options.mcpToolTimeoutSeconds * 1_000,
           }
-        : {}),
-    },
+        : {
+            type: "remote",
+            url: resolveServerUrl(),
+            enabled: true,
+            timeout: options.mcpToolTimeoutSeconds * 1_000,
+            oauth: false,
+            ...(options.mcpTokenEnv
+              ? {
+                  headers: {
+                    Authorization: `Bearer {env:${options.mcpTokenEnv}}`,
+                  },
+                }
+              : {}),
+          },
     force: options.force,
     label: "OpenCode",
   });
@@ -287,16 +307,19 @@ async function installCursorIntegration(
   await installJsonMcpServer({
     path: configPath,
     containerKey: "mcpServers",
-    server: {
-      url: resolveServerUrl(),
-      ...(options.mcpTokenEnv
-        ? {
-            headers: {
-              Authorization: `Bearer \${${options.mcpTokenEnv}}`,
-            },
-          }
-        : {}),
-    },
+    server:
+      options.transport === "stdio"
+        ? { command: "zg", args: stdioArgs(options.mcpToolset) }
+        : {
+            url: resolveServerUrl(),
+            ...(options.mcpTokenEnv
+              ? {
+                  headers: {
+                    Authorization: `Bearer \${${options.mcpTokenEnv}}`,
+                  },
+                }
+              : {}),
+          },
     force: options.force,
     label: "Cursor",
   });
@@ -332,6 +355,37 @@ async function resolveInstallers(
   }
 
   return promptInstallers(action, detected);
+}
+
+async function resolveInstallTransport(
+  parsed: ParsedArgs,
+): Promise<McpInstallTransport> {
+  if (parsed.options.installMcpTransport) {
+    return parsed.options.installMcpTransport;
+  }
+  if (
+    parsed.options.yes === true ||
+    !process.stdin.isTTY ||
+    !process.stdout.isTTY
+  ) {
+    return "stdio";
+  }
+
+  const readline = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+  try {
+    const answer = await readline.question(
+      "MCP transport [stdio] (stdio/http): ",
+    );
+    const value = answer.trim().toLowerCase();
+    if (!value || value === "stdio") return "stdio";
+    if (value === "http") return "http";
+    throw new Error("MCP transport must be stdio or http");
+  } finally {
+    readline.close();
+  }
 }
 
 async function promptInstallers(
@@ -586,14 +640,14 @@ function installStyle(code: string, value: string): string {
     : value;
 }
 
-async function ensureInstalledServer(): Promise<
-  Awaited<ReturnType<typeof serverStatus>>
-> {
+async function ensureInstalledServer(
+  mcpToolset?: McpToolset,
+): Promise<DaemonControlStatus> {
   if (process.env.ZVEC_GREP_INSTALL_SKIP_SERVER === "1") {
     return { running: false, ready: false };
   }
   const { startServer } = await import("../daemon/server-controller.js");
-  return startServer({ cliPath: process.argv[1]! });
+  return startServer({ cliPath: process.argv[1]!, mcpToolset });
 }
 
 function splitTargetTokens(value: string): string[] {
@@ -695,6 +749,8 @@ type JsonObject = Record<string, unknown>;
 async function updateClaudeMcpConfig(options: {
   path: string;
   force: boolean;
+  transport: McpInstallTransport;
+  mcpToolset?: McpToolset;
   tokenEnv?: string;
 }): Promise<void> {
   const root = await readJsonObject(options.path);
@@ -712,7 +768,7 @@ async function updateClaudeMcpConfig(options: {
   const current = mcpServers.zvec_grep;
   if (
     current !== undefined &&
-    (!isJsonObject(current) || current.url !== resolveServerUrl()) &&
+    !isManagedJsonMcpServer(current) &&
     !options.force
   ) {
     throw new Error(
@@ -721,22 +777,34 @@ async function updateClaudeMcpConfig(options: {
   }
 
   const existingServer = isJsonObject(current) ? current : {};
-  const existingHeaders = isJsonObject(existingServer.headers)
-    ? existingServer.headers
-    : {};
-  mcpServers.zvec_grep = {
-    ...existingServer,
-    type: "http",
-    url: resolveServerUrl(),
-    ...(options.tokenEnv
+  const {
+    type: _type,
+    url: _url,
+    command: _command,
+    args: _args,
+    headers: _headers,
+    ...retained
+  } = existingServer;
+  mcpServers.zvec_grep =
+    options.transport === "stdio"
       ? {
-          headers: {
-            ...existingHeaders,
-            Authorization: `Bearer \${${options.tokenEnv}}`,
-          },
+          ...retained,
+          type: "stdio",
+          command: "zg",
+          args: stdioArgs(options.mcpToolset),
         }
-      : {}),
-  };
+      : {
+          ...retained,
+          type: "http",
+          url: resolveServerUrl(),
+          ...(options.tokenEnv
+            ? {
+                headers: {
+                  Authorization: `Bearer \${${options.tokenEnv}}`,
+                },
+              }
+            : {}),
+        };
   root.mcpServers = mcpServers;
   await writeJsonObject(options.path, root);
 }
@@ -747,7 +815,7 @@ async function removeClaudeMcpConfig(path: string): Promise<void> {
   const root = parseJsonObject(path, source);
   if (!isJsonObject(root.mcpServers)) return;
   const current = root.mcpServers.zvec_grep;
-  if (!isJsonObject(current) || current.url !== resolveServerUrl()) return;
+  if (!isManagedJsonMcpServer(current)) return;
 
   delete root.mcpServers.zvec_grep;
   if (Object.keys(root.mcpServers).length === 0) {
@@ -824,7 +892,48 @@ function isJsonObject(value: unknown): value is JsonObject {
 }
 
 function isManagedJsonMcpServer(value: unknown): boolean {
-  return isJsonObject(value) && value.url === resolveServerUrl();
+  if (!isJsonObject(value)) return false;
+  if (value.url === resolveServerUrl()) return true;
+  if (value.command === "zg" && isStdioArgs(value.args)) return true;
+  return (
+    value.type === "local" &&
+    Array.isArray(value.command) &&
+    (value.command.length === 3 || value.command.length === 5) &&
+    value.command[0] === "zg" &&
+    value.command[1] === "server" &&
+    value.command[2] === "--stdio" &&
+    (value.command.length === 3 ||
+      (value.command[3] === "--mcp-toolset" &&
+        (value.command[4] === "agent" || value.command[4] === "full")))
+  );
+}
+
+function isStdioArgs(value: unknown): boolean {
+  return (
+    Array.isArray(value) &&
+    (value.length === 2 || value.length === 4) &&
+    value[0] === "server" &&
+    value[1] === "--stdio" &&
+    (value.length === 2 ||
+      (value[2] === "--mcp-toolset" &&
+        (value[3] === "agent" || value[3] === "full")))
+  );
+}
+
+function stdioArgs(mcpToolset?: McpToolset): string[] {
+  return [
+    "server",
+    "--stdio",
+    ...(mcpToolset ? ["--mcp-toolset", mcpToolset] : []),
+  ];
+}
+
+function stdioCommand(mcpToolset?: McpToolset): string[] {
+  return ["zg", ...stdioArgs(mcpToolset)];
+}
+
+function tomlStringArray(values: readonly string[]): string {
+  return `[${values.map((value) => JSON.stringify(value)).join(", ")}]`;
 }
 
 async function writeJsonObject(path: string, value: JsonObject): Promise<void> {
@@ -1112,19 +1221,21 @@ function isCodexMcpServerTableName(tableName: string): boolean {
   );
 }
 
-function codexConfigBlock(
-  mcpToolTimeoutSeconds: number,
-  tokenEnv?: string,
-): string {
+function codexConfigBlock(options: InstallAgentOptions): string {
   return `${ZVEC_GREP_CONFIG_START}
 [mcp_servers.zvec_grep]
-url = "${resolveServerUrl()}"
 ${
-  tokenEnv
-    ? `bearer_token_env_var = "${tokenEnv}"
+  options.transport === "stdio"
+    ? `command = "zg"
+args = ${tomlStringArray(stdioArgs(options.mcpToolset))}`
+    : `url = "${resolveServerUrl()}"`
+}
+${
+  options.mcpTokenEnv
+    ? `bearer_token_env_var = "${options.mcpTokenEnv}"
 `
     : ""
-}tool_timeout_sec = ${mcpToolTimeoutSeconds}
+}tool_timeout_sec = ${options.mcpToolTimeoutSeconds}
 default_tools_approval_mode = "approve"
 ${ZVEC_GREP_CONFIG_END}`;
 }
