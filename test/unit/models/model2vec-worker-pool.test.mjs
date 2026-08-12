@@ -14,17 +14,11 @@ function createPool(maxWorkers = 2) {
       rows: 1,
     },
     maxWorkers,
-    {
-      compute: new URL("../../fixtures/model2vec-worker.mjs", import.meta.url),
-      tokenizer: new URL(
-        "../../fixtures/model2vec-tokenizer-worker.mjs",
-        import.meta.url,
-      ),
-    },
+    new URL("../../fixtures/model2vec-worker.mjs", import.meta.url),
   );
 }
 
-test("Model2Vec worker pool runs simultaneous batches on separate threads", async (t) => {
+test("Model2Vec worker pool runs simultaneous complete batches on separate threads", async (t) => {
   const pool = createPool(2);
   t.after(() => pool.dispose());
   await pool.start();
@@ -69,13 +63,7 @@ test("Model2Vec worker pool reports worker startup failures", async () => {
       rows: 1,
     },
     1,
-    {
-      compute: new URL("../../fixtures/missing-worker.mjs", import.meta.url),
-      tokenizer: new URL(
-        "../../fixtures/model2vec-tokenizer-worker.mjs",
-        import.meta.url,
-      ),
-    },
+    new URL("../../fixtures/missing-worker.mjs", import.meta.url),
   );
   await assert.rejects(pool.start(), /Cannot find module/);
   await pool.dispose();

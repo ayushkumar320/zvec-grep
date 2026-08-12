@@ -1,6 +1,7 @@
 import { parentPort, workerData } from "node:worker_threads";
+import { loadModel2VecTokenizer } from "./model2vec-tokenizer.js";
 import {
-  embedPackedModel2VecTokenLists,
+  embedModel2VecTexts,
   staticEmbeddingTableFromWorkerData,
   type Model2VecWorkerData,
   type Model2VecWorkerRequest,
@@ -13,29 +14,31 @@ if (!port) {
 }
 
 const data = workerData as Model2VecWorkerData;
+const tokenizer = await loadModel2VecTokenizer(data.tokenizerSource);
 const table = staticEmbeddingTableFromWorkerData(data);
 
 port.postMessage({ type: "ready" } satisfies Model2VecWorkerResponse);
 port.on("message", async (request: Model2VecWorkerRequest) => {
   try {
-    const vectors = embedPackedModel2VecTokenLists(
-      {
-        tokenIds: new Int32Array(request.tokenIds),
-        offsets: new Uint32Array(request.offsets),
-      },
+    const result = await embedModel2VecTexts(
+      request.texts,
+      tokenizer,
       table,
+      data.maxInputTokens,
       data.normalize,
     );
-    const flatVectors = new Float32Array(vectors.length * data.dimension);
-    for (const [index, vector] of vectors.entries()) {
+    const flatVectors = new Float32Array(
+      result.vectors.length * data.dimension,
+    );
+    for (const [index, vector] of result.vectors.entries()) {
       flatVectors.set(vector, index * data.dimension);
     }
     const response: Model2VecWorkerResponse = {
       type: "result",
       id: request.id,
       vectors: flatVectors.buffer,
-      vectorCount: vectors.length,
-      truncated: [],
+      vectorCount: result.vectors.length,
+      truncated: result.truncated,
     };
     port.postMessage(response, [flatVectors.buffer]);
   } catch (error) {

@@ -39,12 +39,6 @@ export type Model2VecWorkerData = {
 
 export type Model2VecWorkerRequest = {
   id: number;
-  tokenIds: ArrayBuffer;
-  offsets: ArrayBuffer;
-};
-
-export type Model2VecTokenizerWorkerRequest = {
-  id: number;
   texts: string[];
 };
 
@@ -69,29 +63,9 @@ export type Model2VecWorkerResponse =
       error: SerializedWorkerError;
     };
 
-export type Model2VecTokenizerWorkerResponse =
-  | { type: "ready" }
-  | {
-      type: "tokenized";
-      id: number;
-      tokenIds: ArrayBuffer;
-      offsets: ArrayBuffer;
-      truncated: number[];
-    }
-  | {
-      type: "error";
-      id: number;
-      error: SerializedWorkerError;
-    };
-
 export type TokenizedModel2VecTexts = {
   tokenLists: number[][];
   truncated: number[];
-};
-
-export type PackedModel2VecTokenLists = {
-  tokenIds: Int32Array;
-  offsets: Uint32Array;
 };
 
 export async function embedModel2VecTexts(
@@ -146,46 +120,6 @@ export async function tokenizeModel2VecTexts(
     tokenLists,
     truncated: truncatedInputIndexes.sort((left, right) => left - right),
   };
-}
-
-export function packModel2VecTokenLists(
-  tokenLists: readonly (readonly number[])[],
-): PackedModel2VecTokenLists {
-  const totalTokenCount = tokenLists.reduce(
-    (total, tokenIds) => total + tokenIds.length,
-    0,
-  );
-  const tokenIds = new Int32Array(totalTokenCount);
-  const offsets = new Uint32Array(tokenLists.length + 1);
-  let offset = 0;
-  for (const [index, list] of tokenLists.entries()) {
-    tokenIds.set(list, offset);
-    offset += list.length;
-    offsets[index + 1] = offset;
-  }
-  return { tokenIds, offsets };
-}
-
-export function embedPackedModel2VecTokenLists(
-  packed: PackedModel2VecTokenLists,
-  table: StaticEmbeddingTable,
-  normalize: boolean,
-): number[][] {
-  validatePackedTokenLists(packed);
-  const vectors: number[][] = [];
-  for (let index = 0; index + 1 < packed.offsets.length; index++) {
-    vectors.push(
-      embedStaticTokenList(
-        packed.tokenIds.subarray(
-          packed.offsets[index],
-          packed.offsets[index + 1],
-        ),
-        table,
-        normalize,
-      ),
-    );
-  }
-  return vectors;
 }
 
 export function embedModel2VecTokenLists(
@@ -274,20 +208,6 @@ function embedStaticTokenList(
     }
   }
   return vector;
-}
-
-function validatePackedTokenLists(packed: PackedModel2VecTokenLists): void {
-  if (packed.offsets.length === 0 || packed.offsets[0] !== 0) {
-    throw new Error("Model2Vec token offsets must start at zero");
-  }
-  for (let index = 1; index < packed.offsets.length; index++) {
-    if (packed.offsets[index] < packed.offsets[index - 1]) {
-      throw new Error("Model2Vec token offsets must be ordered");
-    }
-  }
-  if (packed.offsets[packed.offsets.length - 1] !== packed.tokenIds.length) {
-    throw new Error("Model2Vec token offsets do not match the token buffer");
-  }
 }
 
 let cachedHalfFloatValues: Float32Array | null = null;

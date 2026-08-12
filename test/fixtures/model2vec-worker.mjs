@@ -1,10 +1,8 @@
 import { threadId, parentPort } from "node:worker_threads";
 
 parentPort.postMessage({ type: "ready" });
-parentPort.on("message", ({ id, tokenIds, offsets }) => {
-  const tokens = new Int32Array(tokenIds);
-  const tokenOffsets = new Uint32Array(offsets);
-  if (tokens[0] === -1) {
+parentPort.on("message", ({ id, texts }) => {
+  if (texts[0] === "error") {
     parentPort.postMessage({
       type: "error",
       id,
@@ -12,7 +10,7 @@ parentPort.on("message", ({ id, tokenIds, offsets }) => {
     });
     return;
   }
-  if (tokens[0] === -2) {
+  if (texts[0] === "malformed") {
     parentPort.postMessage({
       type: "result",
       id,
@@ -22,9 +20,9 @@ parentPort.on("message", ({ id, tokenIds, offsets }) => {
     });
     return;
   }
-  const delayMs = tokens[0] || 0;
+  const delayMs = Number.parseInt(texts[0] ?? "0", 10) || 0;
   setTimeout(() => {
-    const vectorCount = tokenOffsets.length - 1;
+    const vectorCount = texts.length;
     const vectors = new Float32Array(vectorCount * 2).fill(threadId);
     parentPort.postMessage(
       {
