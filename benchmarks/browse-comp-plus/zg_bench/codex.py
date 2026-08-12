@@ -14,6 +14,7 @@ from typing import BinaryIO
 
 from .artifacts import atomic_write_text, read_json, write_json
 from .config import BenchmarkConfig
+from .corpus import workspace_root
 from .models import AttemptResult, Profile, TraceSummary
 from .process import resolve_executable
 from .profiles import ensure_server
@@ -181,8 +182,8 @@ def run_attempt(
     if profile == "zvec-grep":
         ensure_server(artifacts, zg_bin=str(zg))
 
-    corpus_root = artifacts / "corpus"
-    index_dir = corpus_root / ".zvec-grep"
+    workspace = workspace_root(artifacts, profile)
+    index_dir = workspace_root(artifacts, "zvec-grep") / ".zvec-grep"
     if profile == "zvec-grep" and not index_dir.is_dir():
         raise RuntimeError("zvec-grep index is missing; run 'zg-bench prepare'")
 
@@ -200,12 +201,6 @@ def run_attempt(
 
     with tempfile.TemporaryDirectory(prefix="zg-bench-") as temporary_name:
         temporary_root = Path(temporary_name)
-        # Make the physical documents directory the sandbox root. A symlink from
-        # a temporary workspace is not readable under macOS Seatbelt, and it also
-        # gives the zvec daemon a different workspace identity for every attempt.
-        # Keeping .zvec-grep in the parent also prevents the baseline agent from
-        # observing treatment-only index artifacts.
-        workspace = corpus_root / "documents"
         runtime_home = temporary_root / "codex-home"
         runtime_final_path = temporary_root / "response.md"
         _runtime_profile(codex_home, runtime_home)

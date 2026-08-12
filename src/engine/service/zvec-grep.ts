@@ -270,12 +270,20 @@ class ZvecGrepService implements ZvecGrep {
               );
             }
 
+            const embeddingRuntime = embeddingRuntimeAfterIndex(
+              existing,
+              existingRuntime,
+              embeddingModel,
+              effectiveRuntime,
+              this.options,
+            );
+
             const manifest = prepareWorkspaceManifest(
               location,
               existingAfterRebuild,
               rootPaths,
               embeddingModel,
-              existingRuntime,
+              embeddingRuntime,
             );
             const workspaceIndex = new WorkspaceIndex(manifest, {
               mode: "write",
@@ -302,20 +310,14 @@ class ZvecGrepService implements ZvecGrep {
                 });
                 writeWorkspaceManifest(location.home, {
                   ...manifest,
-                  embeddingRuntime: embeddingRuntimeAfterSuccessfulIndex(
-                    existing,
-                    existingRuntime,
-                    embeddingModel,
-                    effectiveRuntime,
-                    this.options,
-                  ),
+                  embeddingRuntime,
                   updatedTime: Date.now(),
                 });
                 return result;
               } catch (error) {
                 writeWorkspaceManifest(location.home, {
                   ...manifest,
-                  embeddingRuntime: existingRuntime,
+                  embeddingRuntime,
                   updatedTime: Date.now(),
                 });
                 throw error;
@@ -1533,7 +1535,7 @@ function runtimeForModelProvider(
     : workspaceRuntime;
 }
 
-function embeddingRuntimeAfterSuccessfulIndex(
+function embeddingRuntimeAfterIndex(
   existing: WorkspaceIndexInfo | null,
   existingRuntime: EmbeddingRuntimeConfig,
   model: EmbeddingModel,

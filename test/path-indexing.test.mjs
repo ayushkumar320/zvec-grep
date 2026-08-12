@@ -216,8 +216,8 @@ test("indexing applies the model input limit to code, markdown, and text chunks"
     assert.equal(
       model.embeddedTexts.filter((text) =>
         text.includes("symbol: function nearLimit"),
-      ).length,
-      1,
+      ).length > 1,
+      true,
     );
     assert.ok(
       model.embeddedTexts.filter((text) =>
@@ -228,6 +228,10 @@ test("indexing applies the model input limit to code, markdown, and text chunks"
     assert.ok(textChunks.length > 2);
     assert.equal(
       textChunks.every((text) => text.length <= 120 * 2),
+      true,
+    );
+    assert.equal(
+      model.embeddedTexts.every((text) => text.length <= 120 * 2),
       true,
     );
     const markdownChunks = model.embeddedTexts.flatMap((text) => {

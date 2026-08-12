@@ -13,6 +13,7 @@ class Console:
         self.color = self.interactive and "NO_COLOR" not in os.environ
         self._progress_active = False
         self._progress_bucket = -1
+        self._progress_name: str | None = None
 
     def _styled(self, value: str, *codes: str) -> str:
         if not self.color:
@@ -57,6 +58,10 @@ class Console:
         return input(f"{label} {value}")
 
     def progress(self, name: str, current: int, total: int) -> None:
+        if self._progress_name != name:
+            self.finish_progress()
+            self._progress_bucket = -1
+            self._progress_name = name
         ratio = min(1.0, current / total) if total else 1.0
         current_text = f"{current:,}".rjust(len(f"{total:,}"))
         line = f"  {name:<12} {current_text} / {total:,}  {ratio:.1%}"
@@ -83,3 +88,4 @@ class Console:
             self.stream.write("\n")
             self.stream.flush()
             self._progress_active = False
+        self._progress_name = None

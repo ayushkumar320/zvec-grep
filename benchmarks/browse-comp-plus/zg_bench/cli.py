@@ -7,26 +7,14 @@ import sys
 from pathlib import Path
 
 from .console import Console
-from .config import DEFAULT_ARTIFACTS_DIR, DEFAULT_CONFIG_PATH, load_config
+from .config import DEFAULT_ARTIFACTS_DIR, load_config
 from .corpus import materialize, prepared_corpus
 from .dataset import fetch, prepared_dataset
 from .doctor import format_report, run_doctor
 from .evaluate import export_manual, export_official
-from .index import build_index
+from .index import build_index, prepared_index
 from .report import generate_report
 from .runner import resume_benchmark, run_benchmark
-
-
-def _common(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--config", type=Path, default=DEFAULT_CONFIG_PATH, help="benchmark TOML"
-    )
-    parser.add_argument(
-        "--artifacts",
-        type=Path,
-        default=DEFAULT_ARTIFACTS_DIR,
-        help="generated data, indexes, runs, and reports",
-    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -34,7 +22,6 @@ def build_parser() -> argparse.ArgumentParser:
         prog="zg-bench",
         description="Native Codex A/B benchmark on BrowseComp-Plus.",
     )
-    _common(parser)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     doctor = subparsers.add_parser("doctor", help="validate the local environment")
@@ -142,7 +129,7 @@ def _status(artifacts: Path, run_id: str | None) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    config = load_config(args.config)
+    config = load_config()
 
     if args.command == "doctor":
         report = run_doctor(
@@ -161,7 +148,7 @@ def main(argv: list[str] | None = None) -> int:
             else format_report(report, color=color)
         )
         return 0 if report["ready"] else 1
-    artifacts = args.artifacts.expanduser().resolve()
+    artifacts = DEFAULT_ARTIFACTS_DIR.resolve()
     if args.command == "prepare":
         console = Console()
         console.heading("BrowseComp-Plus prepare")
@@ -191,7 +178,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             console.success("Official data downloaded and verified")
 
-        console.step(2, 3, "Prepare corpus")
+        console.step(2, 3, "Prepare workspaces")
         try:
             corpus_state = prepared_corpus(config, artifacts)
         except RuntimeError as error:
@@ -199,18 +186,17 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         if corpus_state:
             console.success(
-                f"Reused {config.dataset.expected_corpus_documents:,} documents"
+                "Reused two workspaces with "
+                f"{config.dataset.expected_corpus_documents:,} documents each"
             )
             console.detail("State", corpus_state)
         else:
-            console.activity("Writing corpus documents")
+            console.activity("Writing two independent corpus copies")
             try:
                 materialize(
                     config,
                     artifacts,
-                    progress=lambda current, total: console.progress(
-                        "Documents", current, total
-                    ),
+                    progress=console.progress,
                 )
             except RuntimeError as error:
                 console.error(str(error))
@@ -218,11 +204,12 @@ def main(argv: list[str] | None = None) -> int:
             finally:
                 console.finish_progress()
             console.success(
-                f"Materialized {config.dataset.expected_corpus_documents:,} documents"
+                "Prepared two workspaces with "
+                f"{config.dataset.expected_corpus_documents:,} documents each"
             )
 
-        index_state = artifacts / "state" / "index.json"
-        if not index_state.is_file() and not args.yes:
+        reuse_index = prepared_index(config, artifacts) is not None
+        if not reuse_index and not args.yes:
             if not sys.stdin.isatty():
                 raise SystemExit("error: first index build requires --yes")
             answer = console.prompt(
@@ -235,9 +222,6 @@ def main(argv: list[str] | None = None) -> int:
         console.detail("Embedding", config.zvec_grep.embedding)
         console.detail("Concurrency", str(config.zvec_grep.embedding_concurrency))
         console.detail("Logs", artifacts / "logs")
-        reuse_index = index_state.is_file() and (
-            artifacts / "corpus" / ".zvec-grep"
-        ).is_dir()
         console.activity(
             "Checking existing index" if reuse_index else "Building reusable index"
         )

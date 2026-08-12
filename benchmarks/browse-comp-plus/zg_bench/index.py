@@ -8,12 +8,33 @@ from pathlib import Path
 
 from .artifacts import read_json, utc_now, write_json
 from .config import BenchmarkConfig
+from .corpus import workspace_root
 from .process import (
     inherited_environment,
     resolve_executable,
     run_command,
     run_streaming_command,
 )
+
+
+def prepared_index(config: BenchmarkConfig, artifacts: Path) -> Path | None:
+    corpus_state_path = artifacts / "state" / "corpus.json"
+    state_path = artifacts / "state" / "index.json"
+    root = workspace_root(artifacts, "zvec-grep")
+    if (
+        not corpus_state_path.is_file()
+        or not state_path.is_file()
+        or not (root / ".zvec-grep").is_dir()
+    ):
+        return None
+    corpus_state = read_json(corpus_state_path)
+    state = read_json(state_path)
+    if (
+        state.get("fingerprint") != _index_fingerprint(config, corpus_state)
+        or state.get("root") != str(root)
+    ):
+        return None
+    return state_path
 
 
 def build_index(
@@ -36,19 +57,31 @@ def build_index(
     if not corpus_state_path.is_file():
         raise RuntimeError("corpus is not prepared; run 'zg-bench prepare'")
     corpus_state = read_json(corpus_state_path)
-    root = Path(corpus_state["root"])
+    root = workspace_root(artifacts, "zvec-grep")
     index_dir = root / ".zvec-grep"
+    environment = inherited_environment()
+    environment["ZVEC_GREP_HOME"] = str(
+        (artifacts / "runtime" / "zvec-home").resolve()
+    )
 
     existing = artifacts / "state" / "index.json"
     if existing.is_file() and index_dir.is_dir():
         state = read_json(existing)
         expected = _index_fingerprint(config, corpus_state)
-        if state["fingerprint"] == expected:
+        if (
+            state.get("fingerprint") == expected
+            and state.get("root") == str(root)
+        ):
             check = run_command(
                 [executable, "status", root, "--mode", "direct", "--check-ready"],
+                cwd=root,
+                env=environment,
                 timeout=120,
             )
             if check.ok:
+                _ensure_remote_authorization(
+                    config, executable, root, environment
+                )
                 return existing
         raise RuntimeError(
             "the existing index does not match this benchmark or is not ready; "
@@ -67,14 +100,13 @@ def build_index(
         str(config.zvec_grep.embedding_concurrency),
         "--max-filesize",
         config.zvec_grep.max_filesize,
-        "--device",
-        config.zvec_grep.device,
         "--glob",
-        "documents/**/*.md",
-        "--debug",
+        "*.md",
     ]
-    environment = inherited_environment()
-    environment["ZVEC_GREP_HOME"] = str((artifacts / "runtime" / "zvec-home").resolve())
+    if config.zvec_grep.embedding.startswith("local/"):
+        command.extend(["--device", config.zvec_grep.device])
+    else:
+        command.append("--allow-remote")
     stdout_log = artifacts / "logs" / "index.stdout.log"
     stderr_log = artifacts / "logs" / "index.stderr.log"
     started_at = utc_now()
@@ -99,6 +131,7 @@ def build_index(
     )
     if not status.ok:
         raise RuntimeError(status.stderr.strip() or status.stdout.strip())
+    _ensure_remote_authorization(config, executable, root, environment)
 
     state = {
         "stage": "index",
@@ -119,6 +152,39 @@ def build_index(
     }
     write_json(existing, state)
     return existing
+
+
+def _ensure_remote_authorization(
+    config: BenchmarkConfig,
+    executable: Path,
+    root: Path,
+    environment: dict[str, str],
+) -> None:
+    if config.zvec_grep.embedding.startswith("local/"):
+        return
+    grant = run_command(
+        [
+            executable,
+            "auth",
+            "grant",
+            root,
+            "--capability",
+            "embedding",
+            "--scope",
+            "workspace",
+            "--embedding",
+            config.zvec_grep.embedding,
+        ],
+        cwd=root,
+        env=environment,
+        timeout=120,
+    )
+    if not grant.ok:
+        detail = grant.stderr.strip() or grant.stdout.strip()
+        raise RuntimeError(
+            "the index is ready, but remote search authorization could not be "
+            f"prepared: {detail or 'authorization grant failed'}"
+        )
 
 
 def _index_failure(

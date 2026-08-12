@@ -8,6 +8,7 @@ import { makeEntityId } from "../ids.js";
 import { validateSourceFile, type Source, type TextSource } from "../source.js";
 import { extractPlainTextFragments } from "../text/extractor.js";
 import type { ChunkOptions } from "../types.js";
+import { chunkOptionsForMetadata, fitTextToChars } from "../vector-content.js";
 
 const DEFAULT_MARKDOWN_CHUNK_CHARS = 3600;
 const DEFAULT_MARKDOWN_CHUNK_OVERLAP_CHARS = 540;
@@ -55,13 +56,17 @@ export class MarkdownExtractor {
 
     for (const section of sections) {
       const metadata = markdownMetadata(section);
+      const contentChunkOptions = chunkOptionsForMetadata(
+        chunkOptions,
+        metadata,
+      );
       const windows = splitMarkdownSection({
         lines,
         lineOffsets,
         fenceLines,
         section,
-        maxChars: chunkOptions.maxChunkChars,
-        overlapChars: chunkOptions.chunkOverlapChars,
+        maxChars: contentChunkOptions.maxChunkChars,
+        overlapChars: contentChunkOptions.chunkOverlapChars,
       });
 
       if (windows.length > 1) {
@@ -78,7 +83,10 @@ export class MarkdownExtractor {
           ).range,
           content: {
             kind: "text",
-            text: markdownOutline(metadata),
+            text: fitTextToChars(
+              markdownOutline(metadata),
+              contentChunkOptions.maxChunkChars,
+            ),
           },
           metadata,
         });

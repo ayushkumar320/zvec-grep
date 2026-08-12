@@ -185,7 +185,7 @@ test("large code entities emit searchable outlines and grouped source windows", 
     ].join("\n"),
     "large.ts",
   );
-  const maxChunkChars = 120;
+  const maxChunkChars = 140;
   const fragments = await new CodeExtractor().extract(source, {
     maxChunkChars,
     chunkOverlapChars: 30,

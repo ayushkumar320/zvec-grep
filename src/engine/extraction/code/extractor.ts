@@ -14,6 +14,7 @@ import type { TSNode } from "./tree-sitter/nodes.js";
 import { withParser } from "./tree-sitter/parser.js";
 import type { ChunkOptions } from "../types.js";
 import { extractPlainTextFragments } from "../text/extractor.js";
+import { chunkOptionsForMetadata } from "../vector-content.js";
 import { resolveAdapter, type LanguageAdapter } from "./adapter.js";
 import { hasJavascriptTypescriptFunctionValue } from "./families/js-ts.js";
 
@@ -263,29 +264,39 @@ function codeEntityToSearchFragments(
   maxChars: number,
   overlapChars: number,
 ): CodeFragmentOutput[] {
-  if (entity.node.text.length <= maxChars) {
+  const metadata = codeEntityMetadata(entity);
+  const contentChunkOptions = chunkOptionsForMetadata(
+    { maxChunkChars: maxChars, chunkOverlapChars: overlapChars },
+    metadata,
+  );
+  const contentMaxChars = contentChunkOptions.maxChunkChars;
+
+  if (entity.node.text.length <= contentMaxChars) {
     return [
       codeEntityWindowToFragment(source, entity, nodeToWindow(entity.node)),
     ];
   }
 
-  const metadata = codeEntityMetadata(entity);
   const major: CodeFragmentOutput = {
     group: "",
     fileId: source.file.id,
     range: nodeToWindow(entity.node).range,
     content: {
       kind: "text",
-      text: codeEntityOutline(entity, adapter, maxChars),
+      text: codeEntityOutline(entity, adapter, contentMaxChars),
     },
     metadata,
   };
 
   return [
     major,
-    ...[...splitLargeNode(entity.node, maxChars, overlapChars)].map((window) =>
-      codeEntityWindowToFragment(source, entity, window),
-    ),
+    ...[
+      ...splitLargeNode(
+        entity.node,
+        contentMaxChars,
+        contentChunkOptions.chunkOverlapChars,
+      ),
+    ].map((window) => codeEntityWindowToFragment(source, entity, window)),
   ];
 }
 

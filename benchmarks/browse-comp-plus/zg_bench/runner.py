@@ -17,7 +17,9 @@ from .codex import (
     validate_model,
 )
 from .config import BenchmarkConfig, PROMPT_PATH, SUITES_DIR
+from .corpus import prepared_corpus
 from .dataset import load_queries
+from .index import prepared_index
 from .models import PROFILES, AttemptResult, Profile
 from .process import resolve_executable, run_command
 from .profiles import prepare_profiles, prepare_search_runtime, validate_profiles
@@ -235,6 +237,15 @@ def run_benchmark(
             f"zvec-grep {config.zvec_grep.version} is required; found "
             f"{actual_zg_version or 'unknown'}"
         )
+    missing_states = []
+    if prepared_corpus(config, artifacts) is None:
+        missing_states.append("corpus")
+    if prepared_index(config, artifacts) is None:
+        missing_states.append("index")
+    if missing_states:
+        raise RuntimeError(
+            "benchmark preparation is incomplete: " + ", ".join(missing_states)
+        )
     run_id = run_id or new_run_id()
     run_root = artifacts / "runs" / run_id
     metadata_path = run_root / "run.json"
@@ -262,13 +273,6 @@ def run_benchmark(
             name: artifacts / "state" / f"{name}.json"
             for name in ("corpus", "index")
         }
-        missing_states = [
-            name for name, path in required_states.items() if not path.is_file()
-        ]
-        if missing_states:
-            raise RuntimeError(
-                "benchmark preparation is incomplete: " + ", ".join(missing_states)
-            )
         query_ids = load_suite(suite, queries)
         reasoning_effort = reasoning_effort or config.run.reasoning_effort
         prepare_profiles(

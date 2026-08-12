@@ -14,6 +14,7 @@ from .artifacts import (
     write_json,
 )
 from .config import BenchmarkConfig
+from .corpus import workspace_root
 from .process import inherited_environment, resolve_executable, run_command
 
 
@@ -134,7 +135,7 @@ def prepare_profiles(
             str(config.zvec_grep.mcp_tool_timeout_seconds),
             "--yes",
         ],
-        cwd=artifacts / "corpus",
+        cwd=workspace_root(artifacts, "zvec-grep"),
         env=environment,
         timeout=180,
     )
@@ -330,8 +331,7 @@ def prepare_search_runtime(
         zg_bin=str(executable),
         restart=restart_server,
     )
-    root = (artifacts / "corpus").resolve()
-    search_root = root / "documents"
+    root = workspace_root(artifacts, "zvec-grep")
     environment = inherited_environment()
     environment["ZVEC_GREP_HOME"] = str((artifacts / "runtime" / "zvec-home").resolve())
     warmup = run_command(
@@ -348,7 +348,7 @@ def prepare_search_runtime(
             "--preview",
             "none",
         ],
-        cwd=search_root,
+        cwd=root,
         env=environment,
         timeout=max(900, config.zvec_grep.mcp_tool_timeout_seconds),
     )
@@ -360,7 +360,6 @@ def prepare_search_runtime(
         "finished_at": utc_now(),
         "wall_seconds": wall_seconds,
         "root": str(root),
-        "search_root": str(search_root),
         "warmup_stdout": warmup.stdout,
         "warmup_stderr": warmup.stderr,
     }

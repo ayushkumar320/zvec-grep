@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
@@ -9,6 +10,17 @@ import pyarrow.parquet as parquet
 
 from .artifacts import fingerprint, read_json, sha256_file, utc_now, write_json
 from .config import BenchmarkConfig
+
+
+WORKSPACE_NAMES = {"baseline": "a", "zvec-grep": "b"}
+
+
+def workspace_root(artifacts: Path, profile: str) -> Path:
+    try:
+        name = WORKSPACE_NAMES[profile]
+    except KeyError as error:
+        raise ValueError(f"unknown benchmark profile: {profile}") from error
+    return (artifacts / "workspaces" / name).resolve()
 
 
 def _rows(files: list[Path]) -> Iterator[dict[str, Any]]:
@@ -51,14 +63,17 @@ def prepared_corpus(config: BenchmarkConfig, artifacts: Path) -> Path | None:
             "materialized corpus does not match benchmark.toml; "
             "start with an empty artifacts directory"
         )
-    root = (artifacts / "corpus").resolve()
-    documents = root / "documents"
+    baseline = workspace_root(artifacts, "baseline")
+    treatment = workspace_root(artifacts, "zvec-grep")
     manifest = artifacts / "state" / "corpus-manifest.jsonl"
+    workspaces = state.get("workspaces")
     if (
-        Path(state.get("root", "")).resolve() != root
-        or Path(state.get("documents", "")).resolve() != documents
-        or Path(state.get("manifest", "")).resolve() != manifest.resolve()
-        or not documents.is_dir()
+        not isinstance(workspaces, dict)
+        or workspaces.get("baseline") != str(baseline)
+        or workspaces.get("zvec-grep") != str(treatment)
+        or state.get("manifest") != str(manifest.resolve())
+        or not baseline.is_dir()
+        or not treatment.is_dir()
         or not manifest.is_file()
     ):
         return None
@@ -69,15 +84,17 @@ def materialize(
     config: BenchmarkConfig,
     artifacts: Path,
     *,
-    progress: Callable[[int, int], None] | None = None,
+    progress: Callable[[str, int, int], None] | None = None,
 ) -> Path:
     source = artifacts / "source" / "corpus"
     files = sorted(source.rglob("*.parquet"))
     if not files:
         raise RuntimeError("corpus source is missing; run 'zg-bench prepare'")
 
-    documents = artifacts / "corpus" / "documents"
-    documents.mkdir(parents=True, exist_ok=True)
+    baseline = workspace_root(artifacts, "baseline")
+    treatment = workspace_root(artifacts, "zvec-grep")
+    baseline.mkdir(parents=True, exist_ok=True)
+    treatment.mkdir(parents=True, exist_ok=True)
     manifest_path = artifacts / "state" / "corpus-manifest.jsonl"
     temporary_manifest = manifest_path.with_suffix(".jsonl.tmp")
     temporary_manifest.parent.mkdir(parents=True, exist_ok=True)
@@ -88,15 +105,15 @@ def materialize(
     aggregate_parts: list[str] = [config.dataset.corpus_revision]
     expected_count = config.dataset.expected_corpus_documents
     if progress:
-        progress(0, expected_count)
+        progress("Baseline", 0, expected_count)
     with temporary_manifest.open("w", encoding="utf-8") as manifest:
         for row in _rows(files):
             docid = _safe_docid(row["docid"])
             text = str(row["text"])
             encoded = text.encode("utf-8")
             digest = hashlib.sha256(encoded).hexdigest()
-            relative = Path("documents") / f"{docid}.md"
-            output = artifacts / "corpus" / relative
+            relative = Path(f"{docid}.md")
+            output = baseline / relative
             if not output.is_file() or sha256_file(output) != digest:
                 output.parent.mkdir(parents=True, exist_ok=True)
                 output.write_text(text, encoding="utf-8")
@@ -113,22 +130,57 @@ def materialize(
             maximum_bytes = max(maximum_bytes, len(encoded))
             aggregate_parts.extend((docid, digest))
             if progress and count % 1000 == 0:
-                progress(count, expected_count)
+                progress("Baseline", count, expected_count)
 
     if progress and count % 1000:
-        progress(count, expected_count)
+        progress("Baseline", count, expected_count)
     if count != expected_count:
         temporary_manifest.unlink(missing_ok=True)
         raise RuntimeError(
             f"expected {expected_count} corpus documents, found {count}"
         )
+    if sum(1 for path in baseline.glob("*.md") if path.is_file()) != count:
+        raise RuntimeError(
+            "baseline workspace contains unexpected Markdown files; "
+            "start with an empty artifacts directory"
+        )
+
+    if progress:
+        progress("Treatment", 0, expected_count)
+    copied = 0
+    with temporary_manifest.open(encoding="utf-8") as manifest:
+        for line in manifest:
+            entry = json.loads(line)
+            source_path = baseline / entry["path"]
+            target_path = treatment / entry["path"]
+            target_digest = sha256_file(target_path) if target_path.is_file() else None
+            if target_digest != entry["sha256"]:
+                shutil.copy2(source_path, target_path)
+                target_digest = sha256_file(target_path)
+            if target_digest != entry["sha256"]:
+                raise RuntimeError(
+                    f"copied corpus file failed verification: {target_path}"
+                )
+            copied += 1
+            if progress and copied % 1000 == 0:
+                progress("Treatment", copied, expected_count)
+    if progress and copied % 1000:
+        progress("Treatment", copied, expected_count)
+    if sum(1 for path in treatment.glob("*.md") if path.is_file()) != count:
+        raise RuntimeError(
+            "treatment workspace contains unexpected Markdown files; "
+            "start with an empty artifacts directory"
+        )
+
     temporary_manifest.replace(manifest_path)
     state = {
         "stage": "materialize",
         "generated_at": utc_now(),
         "source_revision": config.dataset.corpus_revision,
-        "root": str((artifacts / "corpus").resolve()),
-        "documents": str(documents.resolve()),
+        "workspaces": {
+            "baseline": str(baseline),
+            "zvec-grep": str(treatment),
+        },
         "manifest": str(manifest_path.resolve()),
         "count": count,
         "total_bytes": total_bytes,

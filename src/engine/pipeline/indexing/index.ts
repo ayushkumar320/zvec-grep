@@ -16,7 +16,6 @@ import type {
   WorkspaceIndexStatus,
   WorkspaceIndexInfo,
   Content,
-  EntityMetadata,
   EntityFragment,
   FileScanDiagnostics,
   FileInfo,
@@ -32,6 +31,7 @@ import {
   extract,
   type ChunkOptions,
   type Source,
+  vectorContentForFragment,
 } from "../../extraction/index.js";
 import {
   scanDirectoryPath,
@@ -866,7 +866,10 @@ async function embedAndCommitBatch(
 
   try {
     throwIfIndexCancelled(ctx);
-    const contents = fragments.map(vectorContentForFragment);
+    const maxChars = indexChunkOptions(ctx).maxChunkChars;
+    const contents = fragments.map((fragment) =>
+      vectorContentForFragment(fragment, maxChars),
+    );
     onProgress(
       stats,
       `embedding ${describePreparedFiles(files)}`,
@@ -955,6 +958,7 @@ async function embedAndCommitFile(
         file.fragments,
         ctx.embeddingModel,
         embeddingScheduler,
+        indexChunkOptions(ctx).maxChunkChars,
         ctx.signal,
         (progress) =>
           reportModelDownloadProgress(
@@ -1115,6 +1119,7 @@ async function embedFragments(
   fragments: readonly EntityFragment[],
   model: EmbeddingModel,
   embeddingScheduler: EmbeddingScheduler,
+  maxChars?: number,
   signal?: AbortSignal,
   onModelProgress?: (progress: EmbeddingModelProgress) => void,
 ): Promise<EmbeddingResult> {
@@ -1141,6 +1146,7 @@ async function embedFragments(
         model,
         batch.start,
         embeddingScheduler,
+        maxChars,
         signal,
         onModelProgress,
       ),
@@ -1178,10 +1184,13 @@ async function embedFragmentBatch(
   model: EmbeddingModel,
   startIndex: number,
   embeddingScheduler: EmbeddingScheduler,
+  maxChars?: number,
   signal?: AbortSignal,
   onModelProgress?: (progress: EmbeddingModelProgress) => void,
 ): Promise<EmbeddingResult> {
-  const contents = fragments.map(vectorContentForFragment);
+  const contents = fragments.map((fragment) =>
+    vectorContentForFragment(fragment, maxChars),
+  );
 
   try {
     return await embedContentsWithRetry(
@@ -1201,6 +1210,7 @@ async function embedFragmentBatch(
       model,
       startIndex,
       embeddingScheduler,
+      maxChars,
       signal,
       onModelProgress,
     );
@@ -1212,6 +1222,7 @@ async function embedFragmentBatchOneByOne(
   model: EmbeddingModel,
   startIndex: number,
   embeddingScheduler: EmbeddingScheduler,
+  maxChars?: number,
   signal?: AbortSignal,
   onModelProgress?: (progress: EmbeddingModelProgress) => void,
 ): Promise<EmbeddingResult> {
@@ -1221,7 +1232,7 @@ async function embedFragmentBatchOneByOne(
   for (const [index, fragment] of fragments.entries()) {
     try {
       const result = await embedContentsWithRetry(
-        [vectorContentForFragment(fragment)],
+        [vectorContentForFragment(fragment, maxChars)],
         model,
         embeddingScheduler,
         signal,
@@ -1236,7 +1247,14 @@ async function embedFragmentBatchOneByOne(
         "Embedding entity fragment failed after one-by-one fallback",
         {
           code: "ZVEC_GREP.ENGINE.INDEXING.EMBEDDING_FRAGMENT_FAILED",
-          context: `model=${model.info.reference} fragmentId=${fragment.id} fragmentIndex=${startIndex + index}`,
+          context: errorDetails([
+            detail("model", model.info.reference),
+            detail("fragmentId", fragment.id),
+            detail("fragmentIndex", startIndex + index),
+            isEngineError(error) ? detail("causeCode", error.code) : null,
+            error instanceof Error ? detail("cause", error.message) : null,
+            isEngineError(error) ? error.context : null,
+          ]),
           cause: error,
         },
       );
@@ -1247,56 +1265,6 @@ async function embedFragmentBatchOneByOne(
     vectors,
     truncated: truncatedInputIndexes,
   };
-}
-
-function vectorContentForFragment(fragment: EntityFragment): Content {
-  if (fragment.content.kind !== "text") {
-    return fragment.content;
-  }
-
-  const metadata = vectorMetadataText(fragment.metadata);
-  if (metadata.length === 0) {
-    return fragment.content;
-  }
-
-  return {
-    kind: "text",
-    text: `${metadata}\n${fragment.content.text}`,
-  };
-}
-
-function vectorMetadataText(metadata: EntityMetadata | undefined): string {
-  if (!metadata) {
-    return "";
-  }
-
-  if (metadata.kind === "code") {
-    return compactMetadataLines([
-      metadata.symbolName
-        ? `symbol: ${metadata.symbolType} ${metadata.symbolName}`
-        : `symbol: ${metadata.symbolType}`,
-      metadata.scope ? `scope: ${metadata.scope}` : null,
-      metadata.signature ? `signature: ${oneLine(metadata.signature)}` : null,
-      metadata.modifiers.length > 0
-        ? `modifiers: ${metadata.modifiers.join(" ")}`
-        : null,
-      metadata.doc ? `doc: ${oneLine(metadata.doc)}` : null,
-    ]);
-  }
-
-  return compactMetadataLines([
-    metadata.heading ? `heading: ${metadata.heading}` : null,
-    typeof metadata.level === "number"
-      ? `heading_level: ${metadata.level}`
-      : null,
-    metadata.scope ? `scope: ${metadata.scope}` : null,
-  ]);
-}
-
-function compactMetadataLines(lines: readonly (string | null)[]): string {
-  return lines
-    .filter((line): line is string => line !== null && line.trim().length > 0)
-    .join("\n");
 }
 
 async function embedContentsWithRetry(
