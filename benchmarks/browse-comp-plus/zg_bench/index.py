@@ -42,6 +42,7 @@ def build_index(
     artifacts: Path,
     *,
     zg_bin: str = "zg",
+    rebuild: bool = False,
 ) -> Path:
     executable = resolve_executable(zg_bin)
     if executable is None:
@@ -65,7 +66,7 @@ def build_index(
     )
 
     existing = artifacts / "state" / "index.json"
-    if existing.is_file() and index_dir.is_dir():
+    if not rebuild and existing.is_file() and index_dir.is_dir():
         state = read_json(existing)
         expected = _index_fingerprint(config, corpus_state)
         if (
@@ -103,6 +104,8 @@ def build_index(
         "--glob",
         "*.md",
     ]
+    if rebuild:
+        command.append("--rebuild")
     if config.zvec_grep.embedding.startswith("local/"):
         command.extend(["--device", config.zvec_grep.device])
     else:

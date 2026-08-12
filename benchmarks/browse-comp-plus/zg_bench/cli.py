@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .console import Console
 from .config import DEFAULT_ARTIFACTS_DIR, load_config
-from .corpus import materialize, prepared_corpus
+from .corpus import materialize, prepared_corpus, workspace_root
 from .dataset import fetch, prepared_dataset
 from .doctor import format_report, run_doctor
 from .evaluate import export_manual, export_official
@@ -34,7 +34,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     prepare.add_argument("--hf-token")
     prepare.add_argument("--zg-bin", default="zg")
-    prepare.add_argument("--yes", action="store_true", help="confirm first index build")
+    prepare.add_argument(
+        "--yes", action="store_true", help="confirm index build or rebuild"
+    )
 
     run = subparsers.add_parser("run", help="run a paired suite")
     run.add_argument(
@@ -208,29 +210,55 @@ def main(argv: list[str] | None = None) -> int:
                 f"{config.dataset.expected_corpus_documents:,} documents each"
             )
 
+        index_dir = workspace_root(artifacts, "zvec-grep") / ".zvec-grep"
         reuse_index = prepared_index(config, artifacts) is not None
+        rebuild_index = index_dir.is_dir() and not reuse_index
         if not reuse_index and not args.yes:
             if not sys.stdin.isatty():
-                raise SystemExit("error: first index build requires --yes")
+                action = "rebuild" if rebuild_index else "build"
+                raise SystemExit(f"error: index {action} requires --yes")
+            prompt = (
+                "Existing index cannot be reused and will be rebuilt. "
+                "Continue? [y/N] "
+                if rebuild_index
+                else "Build the reusable zvec-grep index now? [y/N] "
+            )
             answer = console.prompt(
-                "Build the reusable zvec-grep index now? [y/N] "
+                prompt
             ).strip().lower()
             if answer not in {"y", "yes"}:
-                raise SystemExit("index build not confirmed")
+                raise SystemExit("index preparation not confirmed")
 
         console.step(3, 3, "Prepare zvec-grep index")
         console.detail("Embedding", config.zvec_grep.embedding)
         console.detail("Concurrency", str(config.zvec_grep.embedding_concurrency))
         console.detail("Logs", artifacts / "logs")
-        console.activity(
-            "Checking existing index" if reuse_index else "Building reusable index"
+        activity = (
+            "Checking existing index"
+            if reuse_index
+            else "Rebuilding existing index"
+            if rebuild_index
+            else "Building reusable index"
         )
+        console.activity(activity)
         try:
-            output = build_index(config, artifacts, zg_bin=args.zg_bin)
+            output = build_index(
+                config,
+                artifacts,
+                zg_bin=args.zg_bin,
+                rebuild=rebuild_index,
+            )
         except RuntimeError as error:
             console.error(str(error))
             return 1
-        console.success("Reused existing index" if reuse_index else "Index is ready")
+        result = (
+            "Reused existing index"
+            if reuse_index
+            else "Index rebuilt"
+            if rebuild_index
+            else "Index is ready"
+        )
+        console.success(result)
         console.detail("State", output)
         console.blank()
         console.success("Preparation complete")
