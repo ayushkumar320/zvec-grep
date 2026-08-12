@@ -23,7 +23,7 @@
   <p>
     <a href="#tour">🎬 <strong>功能演示</strong></a> |
     <a href="#features">💫 <strong>核心特性</strong></a> |
-    <a href="#quickstart">🚀 <strong>快速开始</strong></a> |
+    <a href="#try-it-yourself">🚀 <strong>动手体验</strong></a> |
     <a href="./docs/README.md">📚 <strong>文档</strong></a> |
     <a href="#benchmarks">📊 <strong>性能测试</strong></a> |
     <a href="#community">🤝 <strong>社区</strong></a>
@@ -49,35 +49,41 @@ Agent 提问。
 
 ## 💫 为什么选择 zg？
 
-- **开箱即用，零学习成本**：一套引导式安装即可在 macOS、Linux 和 Windows
-  上接入 Agent；直接用自然语言提问，无需学习搜索语法。
-- **一站式检索层**：语义发现、BM25 相关性检索、精确文本与正则搜索
-  都由 zg 统一提供。
-- **对 Agent 和开发者都友好**：为 Agent 提供紧凑、围绕文件组织的上下文，
-  为开发者提供易读的终端输出，双方都能减少无关噪声。
-- **本地优先、权限明确**：ripgrep、索引与本地模型均留在本机；远程 Embedding
-  需要显式授权。
+- **人与 Agent 开箱即用**：安装一次、索引一次，即可在 macOS、Linux 和
+  Windows 上通过 CLI 或 Agent 复用同一个工作区。
+- **不止关键词搜索**：先按语义发现内容、按相关性排序，再在需要时使用精确文本
+  或正则完成验证。
+- **多格式检索**：搜索源代码、文档和结构化数据，同时保留有用的内容结构与
+  来源位置。
+- **更少搜索，更少上下文**：经过排序并保留来源的结果，可以减少工具调用、
+  Token 消耗与无关噪声，更快找到所需证据。
+- **默认本地运行**：文件、索引与本地模型都留在本机；只有经过你的授权，远程
+  Embedding 服务才能接收数据。
 
-<a id="quickstart"></a>
+<a id="try-it-yourself"></a>
 
-## 🚀 快速开始
+## 🚀 动手体验
 
-需要 Node.js 22 或更新版本，支持 macOS、Linux 和 Windows。
+需要 Node.js 22 或更新版本，以及已经完成配置的
+[OpenCode](https://opencode.ai/)。Agent 示例会显式选择免费模型，不依赖你配置的
+默认模型提供方。
 
-### 1. 安装并连接 Agent
+### 1. 准备示例书架
 
 ```bash
 npm install -g @zvec/zvec-grep
-zg install
+zg install --target opencode --yes
+
+mkdir zg-mystery && cd zg-mystery
+curl -L https://www.gutenberg.org/files/11/11-0.txt -o alice-in-wonderland.txt
+curl -L https://www.gutenberg.org/files/345/345-0.txt -o dracula.txt
+curl -L https://www.gutenberg.org/files/84/84-0.txt -o frankenstein.txt
+curl -L https://www.gutenberg.org/files/834/834-0.txt -o sherlock-holmes.txt
+
+zg index --embedding local/potion-retrieval-32m
 ```
 
-`zg install` 会检测 Codex、Claude Code、Cursor 和 OpenCode，并配置本地 MCP 集成。
-查看 [Agent 集成指南](./docs/01-agents.md)，了解配置变更、权限和卸载方式。
-也可以明确指定目标：
-
-```bash
-zg install --target codex --yes
-```
+这会创建一个包含四本公版小说的小书架，并使用 Potion Retrieval 在本地建立索引。
 
 安装时会立即启动共享 Daemon。默认 MCP 传输方式为 stdio：Agent 会运行
 `zg server --stdio`，电脑重启后该命令会再次安全启动或复用 Daemon。高级用户
@@ -87,51 +93,105 @@ zg install --target codex --yes
 如需让安装后的 MCP 集成额外暴露 managed rg、index 和 status 工具，可使用
 `zg install --mcp-toolset full`；默认值为 `agent`。
 
-### 2. 为工作区建索引
+### 2. 选择检索方式
+
+#### Agent：通过 OpenCode 提问
 
 ```bash
-cd your-workspace
-zg index --embedding local/potion-code-16m-v2
+opencode run --model opencode/deepseek-v4-flash-free \
+  "An unseen creature left a few marks. What did the detective infer? Cite local evidence."
 ```
 
-快速开始使用轻量的 [Potion Code v2](./docs/07-embedding.md)，以便快速完成首次建索引。
-第一次运行会下载模型，索引保存在 `.zvec-grep/` 下；后续更新只需运行
-`zg index`。查看 [检索 Pipeline](./docs/04-pipeline.md#indexing)，进一步控制检索范围、
-增量更新和重建。
-
-### 3. 直接向 Agent 提问
+Prompt 中没有指定任何工具，OpenCode 会自主选择 zg。不同模型改写的
+Query 可能略有不同，一次典型的执行过程如下：
 
 ```text
-每次刷新页面，应用都会忘记深色模式。帮我找出原因。
+⚙ zvec_grep_zvec_grep_search {"root":".../zg-mystery","query":"An unseen creature left a few marks. What did the detective infer?","fts":["marks","unseen creature","inferred","detective"],"fuse":true}
+→ Read sherlock-holmes.txt [offset=5440, limit=120]
+
+Answer:
+侦探是《驼背人》中的福尔摩斯。根据动物留下的脚印，他推断：
+
+- 它不是狗、猫、猴子或其他常见动物：脚印有五个肉垫和长爪，整个脚印
+  接近一把甜点勺大小（sherlock-holmes.txt:5479-5486）。
+- 它身体细长、四肢很短：身长接近两英尺，步幅却只有约三英寸
+  （sherlock-holmes.txt:5497-5502）。
+- 它是食肉动物，因为它爬上窗帘，试图接近金丝雀笼
+  （sherlock-holmes.txt:5509-5510）。
+- 它很可能属于鼬或白鼬一类，但体型异常大
+  （sherlock-holmes.txt:5514-5516）。
+
+福尔摩斯还推断，一名男子和它一起从窗户进入房间，离开时带走了钥匙
+（sherlock-holmes.txt:5464-5470, 5527-5528）。
 ```
 
-已索引工作区既可以包含代码，也可以包含文档、书籍、研究资料、会议纪要、手册、
-知识库导出或其他本地内容。只有当本地资料应作为回答依据时才搜索工作区；无关的
-开放世界知识、当前外部事实和纯网页问题应使用相应的外部来源。
+#### 用户：直接检索
 
-当答案应基于当前已索引工作区时，Agent 使用 zg 完成语义发现与关键词相关性
-检索；穷尽精确匹配仍使用原生 grep 或 rg。[MCP 指南](./docs/03-mcp.md)介绍了
-默认的单一搜索工具，以及保留 managed rg 的可选 full toolset。
-
-也可以直接在终端中使用同一个本地检索层。查看 [CLI 指南](./docs/02-cli.md)，了解
-搜索方式、过滤条件和输出控制。
+不通过 Agent，直接搜索同一个书架：
 
 ```bash
-zg query --human "theme preference persistence on startup" --limit 3
+zg query --human "An unseen creature left a few marks. What did the detective infer?" --limit 3
 ```
+
+zg 会从四本小说中对相关段落进行排序，并将 `sherlock-holmes.txt` 中的证据排在前面。
 
 <a id="benchmarks"></a>
 
 ## 📊 性能测试
 
-> 🚧 **正在完善中。**
+zg 是通用检索工具，目前的性能测试覆盖代码与文本检索。
 
-## 🗺️ Roadmap
+### 代码仓库检索
 
-zg 正在迈向更丰富的多模态格式、更强的混合检索、更开箱即用的体验，以及从
-桌面端到移动端的全平台支持。
+我们使用 [SWE-QA-Bench](https://github.com/peng-weihan/SWE-QA-Bench)，它要求
+Agent 在真实代码库中完成跨文件、多跳推理。
 
-查看完整 [Roadmap](./docs/08-roadmap.md)。
+- **覆盖范围：**20 个检索密集型任务，覆盖论文中的 **What、Where、How、Why**
+  四个一级类别、8 种意图和 11 个代码仓库。
+- **Agent：**使用 **Claude Opus 5** 的 Claude Code。
+- **Embedding：**zg 方案使用 **Qwen3.7 Text Embedding**。
+- **测试方式：**每个任务、每种方案运行 3 次。
+
+| 方案 | 评审得分 /100 ↑ | 输入 Token ↓ | 工具调用 ↓ | 耗时（秒）↓ | 成本 ↓ |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 原生工具 | 80.42 | 558,651 | 23.42 | 127.5 | $0.905 |
+| 原生工具 + zg | 81.92 | 294,262 | 9.70 | 79.7 | $0.558 |
+| 变化 | **+1.50 个百分点** | **−47.3%** | **−58.6%** | **−37.5%** | **−38.3%** |
+
+在 20 个任务 × 3 次运行中，zg 将评审得分提升了 1.50 分，同时将输入 Token
+减少 47.3%、工具调用减少 58.6%、执行时间减少 37.5%、成本减少 38.3%。
+
+### 大规模文本检索
+
+我们使用 [BrowseComp-Plus](https://github.com/texttron/BrowseComp-Plus)，它要求
+Agent 从固定网页语料库中检索多文档证据。测试包含 30 个问题，覆盖 10 个映射主题
+和三个证据广度级别，每种方案运行 3 次。
+
+| 方案 | 准确率 ↑ | 证据召回率 ↑ | 搜索调用 ↓ | 输入 Token ↓ | 耗时（秒）↓ | 成本 ↓ |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Agent + BM25 | TBD | TBD | TBD | TBD | TBD | TBD |
+| Agent + zg | TBD | TBD | TBD | TBD | TBD | TBD |
+| 变化 | TBD | TBD | TBD | TBD | TBD | TBD |
+
+在 30 个问题 × 3 次运行中，zg 对准确率、证据召回率、搜索调用、输入 Token、
+执行时间和成本的影响尚待测试结果补充。
+
+如需复现测试，请按照[性能测试指南](./benchmarks/README.md)准备环境、固定版本、
+任务清单、基线配置、运行命令和结果汇总。所有方案使用相同的 Agent、模型、Prompt、
+工具预算和三次运行协议。
+
+## 📚 文档
+
+| 指南 | 你可以完成什么 |
+| :--- | :--- |
+| [Agent 集成](./docs/01-agents.md) | 将 zg 接入 Codex、Claude Code、Cursor 或 OpenCode，并验证是否正常工作。 |
+| [CLI 指南](./docs/02-cli.md) | 在终端中搜索、索引和管理本地工作区。 |
+| [MCP 指南](./docs/03-mcp.md) | 了解 Agent 可以使用哪些 zg 工具，以及访问权限如何受到保护。 |
+| [检索 Pipeline](./docs/04-pipeline.md) | 选择索引范围、保持内容新鲜，并获得更好的检索结果。 |
+| [架构](./docs/05-architecture.md) | 了解 zg 如何处理查询，以及数据会保留在哪里。 |
+| [服务端与执行模式](./docs/06-server.md) | 在一次性命令和长期运行的本地服务之间选择。 |
+| [Embedding 模型](./docs/07-embedding.md) | 根据速度、检索质量、隐私和本机硬件选择合适的模型。 |
+| [Roadmap](./docs/08-roadmap.md) | 了解接下来的产品方向，并参与影响 zg 的优先级。 |
 
 <a id="community"></a>
 

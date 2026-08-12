@@ -23,7 +23,7 @@
   <p>
     <a href="#tour">🎬 <strong>Tour</strong></a> |
     <a href="#features">💫 <strong>Features</strong></a> |
-    <a href="#quickstart">🚀 <strong>Quickstart</strong></a> |
+    <a href="#try-it-yourself">🚀 <strong>Try it yourself</strong></a> |
     <a href="./docs/README.md">📚 <strong>Docs</strong></a> |
     <a href="#benchmarks">📊 <strong>Benchmarks</strong></a> |
     <a href="#community">🤝 <strong>Community</strong></a>
@@ -49,36 +49,42 @@ or ask your agent naturally.
 
 ## 💫 Why zg?
 
-- **Works out of the box** — one guided install connects zg to your agent on
-  macOS, Linux, or Windows; ask naturally, with no search syntax to learn.
-- **All-in-one retrieval layer** — semantic discovery, BM25-ranked retrieval,
-  exact text, and regex search all stay behind zg.
-- **Agent- and human-friendly** — compact, file-oriented context for agents
-  and readable terminal output for people, with less noise for both.
-- **Local first, permission aware** — ripgrep, indexes, and local models stay
-  on your machine; remote embeddings require explicit authorization.
+- **Ready for humans and agents** — install once, index once, then use the same
+  workspace from the CLI or your agent on macOS, Linux, and Windows.
+- **Search beyond keywords** — discover by meaning, rank by relevance, then
+  verify with exact text or regex when needed.
+- **Multi-format search** — search source code, documents, and structured data
+  while preserving useful structure and source locations.
+- **Less searching, less context** — ranked, source-linked results surface the
+  right evidence with fewer tool calls, fewer tokens, and less noise.
+- **Local by default** — files, indexes, and local models stay on your machine;
+  remote embeddings receive data only with your permission.
 
-<a id="quickstart"></a>
+<a id="try-it-yourself"></a>
 
-## 🚀 Quickstart
+## 🚀 Try it yourself
 
-Requires Node.js 22 or newer on macOS, Linux, or Windows.
+Requires Node.js 22 or newer and a configured
+[OpenCode](https://opencode.ai/) installation. The agent example explicitly
+selects a free model, so it does not depend on your default provider.
 
-### 1. Install and connect your agent
+### 1. Set up a sample bookshelf
 
 ```bash
 npm install -g @zvec/zvec-grep
-zg install
+zg install --target opencode --yes
+
+mkdir zg-mystery && cd zg-mystery
+curl -L https://www.gutenberg.org/files/11/11-0.txt -o alice-in-wonderland.txt
+curl -L https://www.gutenberg.org/files/345/345-0.txt -o dracula.txt
+curl -L https://www.gutenberg.org/files/84/84-0.txt -o frankenstein.txt
+curl -L https://www.gutenberg.org/files/834/834-0.txt -o sherlock-holmes.txt
+
+zg index --embedding local/potion-retrieval-32m
 ```
 
-`zg install` detects Codex, Claude Code, Cursor, and OpenCode and configures the
-local MCP integration. See [Agent integrations](./docs/01-agents.md) for managed
-configuration, permissions, and uninstall instructions. You can also select one
-explicitly:
-
-```bash
-zg install --target codex --yes
-```
+This creates a small bookshelf of four public-domain novels and indexes it
+locally with Potion Retrieval.
 
 Installation starts the shared daemon immediately. The default MCP transport is
 stdio: the agent runs `zg server --stdio`, which safely starts or reuses it
@@ -88,44 +94,50 @@ again after a reboot. Advanced users can keep direct HTTP configuration with
 Use `zg install --mcp-toolset full` when the installed MCP integration should
 also expose managed rg, index, and status tools. The default is `agent`.
 
-### 2. Index your workspace
+### 2. Choose how to search
+
+#### For agents: ask with OpenCode
 
 ```bash
-cd your-workspace
-zg index --embedding local/potion-code-16m-v2
+opencode run --model opencode/deepseek-v4-flash-free \
+  "An unseen creature left a few marks. What did the detective infer? Cite local evidence."
 ```
 
-This quickstart uses the lightweight
-[Potion Code v2](./docs/07-embedding.md) model so you can build the first index
-quickly. The first run downloads it; the index stays in `.zvec-grep/`, and later
-updates only need `zg index`. See the
-[retrieval pipeline](./docs/04-pipeline.md#indexing) to control scope, updates, and
-rebuilds.
-
-### 3. Ask your agent
+OpenCode chooses zg on its own—the prompt does not name a tool. Query rewrites
+may vary by model, but a typical run looks like this:
 
 ```text
-My app forgets dark mode every time I refresh. Find out why.
+⚙ zvec_grep_zvec_grep_search {"root":".../zg-mystery","query":"An unseen creature left a few marks. What did the detective infer?","fts":["marks","unseen creature","inferred","detective"],"fuse":true}
+→ Read sherlock-holmes.txt [offset=5440, limit=120]
+
+Answer:
+The detective is Sherlock Holmes in *The Adventure of the Crooked Man*.
+From the animal's foot-marks, he inferred:
+
+- It was not a dog, cat, monkey, or other familiar creature: its print had
+  five foot-pads, long nails, and was nearly as large as a dessert-spoon
+  (sherlock-holmes.txt:5479-5486).
+- It had a long body and very short legs: nearly two feet long, but with a
+  stride of only about three inches (sherlock-holmes.txt:5497-5502).
+- It was carnivorous because it climbed the curtain toward a canary's cage
+  (sherlock-holmes.txt:5509-5510).
+- It was probably from the weasel or stoat tribe, though unusually large
+  (sherlock-holmes.txt:5514-5516).
+
+Holmes also inferred that a man entered through the window with it and later
+left with the key (sherlock-holmes.txt:5464-5470, 5527-5528).
 ```
 
-The indexed workspace may contain code, documentation, books, research material,
-meeting notes, manuals, knowledge-base exports, or other local content. Workspace
-search applies only when local material is intended as evidence; unrelated
-open-world, current external, and web-only questions use the appropriate external
-source.
+#### For humans: search directly
 
-When the answer should be grounded in the current indexed workspace, the agent
-uses zg for semantic discovery and ranked keyword retrieval, while exact lexical
-lookup stays with native grep or rg. The
-[MCP guide](./docs/03-mcp.md) describes the default search tool and the optional
-full toolset, which retains managed rg.
-
-To search directly from the terminal, use the same local layer. See the
-[CLI guide](./docs/02-cli.md) for routes, filters, and output controls.
+Search the same bookshelf directly, without an agent:
 
 ```bash
-zg query --human "theme preference persistence on startup" --limit 3
+zg query --human "An unseen creature left a few marks. What did the detective infer?" --limit 3
 ```
+
+zg returns the relevant passages from `sherlock-holmes.txt`, ranked ahead of the
+other novels.
 
 <a id="benchmarks"></a>
 
@@ -179,12 +191,18 @@ revisions, task manifests, baseline configuration, exact commands, and result
 aggregation. All profiles use the same agent, model, prompt, tool budget, and
 three-run protocol.
 
-## 🗺️ Roadmap
+## 📚 Documentation
 
-zg is moving toward richer multimodal formats, stronger hybrid retrieval, a
-more out-of-the-box experience, and support from desktop to mobile.
-
-Explore the full [Roadmap](./docs/08-roadmap.md).
+| Guide | What you can do |
+| :--- | :--- |
+| [Agent integrations](./docs/01-agents.md) | Connect zg to Codex, Claude Code, Cursor, or OpenCode and verify that it works. |
+| [CLI guide](./docs/02-cli.md) | Search, index, and manage your local workspaces from the terminal. |
+| [MCP guide](./docs/03-mcp.md) | Understand which zg tools your agent can use and how access is secured. |
+| [Retrieval pipeline](./docs/04-pipeline.md) | Choose what to index, keep it fresh, and get better search results. |
+| [Architecture](./docs/05-architecture.md) | See how zg handles your query and where your data stays. |
+| [Server and execution modes](./docs/06-server.md) | Choose between one-off commands and a long-running local server. |
+| [Embedding models](./docs/07-embedding.md) | Pick the right model for speed, search quality, privacy, and your hardware. |
+| [Roadmap](./docs/08-roadmap.md) | See what is coming next and help shape zg's priorities. |
 
 <a id="community"></a>
 
