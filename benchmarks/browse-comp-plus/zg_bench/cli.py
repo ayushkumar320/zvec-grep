@@ -41,8 +41,8 @@ def build_parser() -> argparse.ArgumentParser:
     run = subparsers.add_parser("run", help="run a paired suite")
     run.add_argument(
         "--suite",
-        default="study-80",
-        help="suite name or .txt path (default: study-80)",
+        default="study",
+        help="suite name or .txt path (default: study)",
     )
     run.add_argument("--model", required=True)
     run.add_argument("--reasoning")

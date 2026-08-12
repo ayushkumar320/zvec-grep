@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import platform
+import random
 import sys
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -52,9 +52,18 @@ def load_suite(name: str, queries: list[dict[str, Any]]) -> list[str]:
     return lines
 
 
-def _arm_order(query_id: str) -> tuple[Profile, Profile]:
-    bit = hashlib.sha256(query_id.encode("utf-8")).digest()[0] & 1
-    return PROFILES if bit == 0 else ("zvec-grep", "baseline")
+def _randomized_profile_orders(
+    query_ids: list[str],
+) -> dict[str, tuple[Profile, Profile]]:
+    rng = random.SystemRandom()
+    orders: list[tuple[Profile, Profile]] = [PROFILES] * (len(query_ids) // 2)
+    orders.extend(
+        [("zvec-grep", "baseline")] * (len(query_ids) // 2)
+    )
+    if len(query_ids) % 2:
+        orders.append(rng.choice((PROFILES, ("zvec-grep", "baseline"))))
+    rng.shuffle(orders)
+    return dict(zip(query_ids, orders, strict=True))
 
 
 def _prompt(query: str) -> str:
@@ -254,6 +263,10 @@ def run_benchmark(
     if metadata_path.is_file():
         metadata = read_json(metadata_path)
         query_ids = [str(value) for value in metadata["query_ids"]]
+        profile_orders = {
+            str(query_id): tuple(order)
+            for query_id, order in metadata["profile_orders"].items()
+        }
         if metadata["model"] != model:
             raise RuntimeError("cannot resume a run with a different model")
         reasoning_effort = str(metadata["reasoning_effort"])
@@ -274,6 +287,7 @@ def run_benchmark(
             for name in ("corpus", "index")
         }
         query_ids = load_suite(suite, queries)
+        profile_orders = _randomized_profile_orders(query_ids)
         reasoning_effort = reasoning_effort or config.run.reasoning_effort
         prepare_profiles(
             config,
@@ -294,6 +308,10 @@ def run_benchmark(
             "model": model,
             "reasoning_effort": reasoning_effort,
             "profiles": list(PROFILES),
+            "profile_orders": {
+                query_id: list(order)
+                for query_id, order in profile_orders.items()
+            },
             "profiles_manifest": str(profiles_manifest_path.resolve()),
             "profiles_fingerprint": profile_manifest["fingerprint"],
             "concurrency": concurrency or config.run.concurrency,
@@ -321,7 +339,7 @@ def run_benchmark(
     workers = concurrency or int(metadata["concurrency"])
     tasks: list[tuple[dict[str, Any], Profile]] = []
     for query_id in query_ids:
-        for profile in _arm_order(query_id):
+        for profile in profile_orders[query_id]:
             if _needs_run(_result_path(run_root, query_id, profile)):
                 tasks.append((by_id[query_id], profile))
     if any(profile == "zvec-grep" for _, profile in tasks):

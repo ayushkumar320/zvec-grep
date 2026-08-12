@@ -41,16 +41,6 @@ def _iso_now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _controlled_path(runtime_root: Path) -> str:
-    shim = runtime_root / "bin"
-    shim.mkdir(parents=True, exist_ok=True)
-    rg = resolve_executable("rg")
-    if rg and not (shim / "rg").exists():
-        (shim / "rg").symlink_to(rg)
-    system = [str(shim), "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
-    return os.pathsep.join(system)
-
-
 def _runtime_profile(template: Path, destination: Path) -> None:
     destination.mkdir(parents=True)
     for name in ("config.toml", "AGENTS.md"):
@@ -124,6 +114,41 @@ def _corpus_access_denied(trace: TraceSummary, stderr: str) -> bool:
         )
     )
     return denial and inaccessible
+
+
+def _classify_attempt(
+    *,
+    exit_code: int,
+    idle_killed: bool,
+    interrupted: bool,
+    trace: TraceSummary,
+    stderr: str,
+) -> tuple[str, bool]:
+    completed = exit_code == 0 and trace.turn_completed and bool(
+        trace.final_response.strip()
+    )
+    corpus_access_denied = _corpus_access_denied(trace, stderr)
+    combined_errors = "\n".join((*trace.errors, stderr)).lower()
+    infrastructure_failure = not interrupted and (
+        corpus_access_denied
+        or (
+            not completed
+            and (
+                idle_killed
+                or exit_code < 0
+                or any(
+                    marker in combined_errors for marker in INFRASTRUCTURE_PATTERN
+                )
+            )
+        )
+    )
+    if interrupted:
+        return "interrupted", False
+    if completed and not corpus_access_denied:
+        return "completed", False
+    if infrastructure_failure:
+        return "infrastructure_failed", True
+    return "failed", False
 
 
 def validate_model(artifacts: Path, model: str) -> None:
@@ -217,8 +242,6 @@ def run_attempt(
             "-c",
             'web_search="disabled"',
             "-c",
-            "agents.enabled=false",
-            "-c",
             "allow_login_shell=false",
             "--sandbox",
             "read-only",
@@ -236,11 +259,14 @@ def run_attempt(
             {
                 "CODEX_HOME": str(runtime_home),
                 "HOME": str(runtime_home),
-                "PATH": _controlled_path(temporary_root),
                 "NO_COLOR": "1",
                 "CODEX_CI": "1",
             }
         )
+        if profile == "zvec-grep":
+            environment["ZVEC_GREP_HOME"] = str(
+                (artifacts / "runtime" / "zvec-home").resolve()
+            )
         command_record = {
             "args": command,
             "cwd": str(workspace),
@@ -249,7 +275,12 @@ def run_attempt(
             "reasoning_effort": reasoning_effort,
             "environment": {
                 "CODEX_HOME": environment["CODEX_HOME"],
-                "PATH": environment["PATH"],
+                "PATH": environment.get("PATH", ""),
+                **(
+                    {"ZVEC_GREP_HOME": environment["ZVEC_GREP_HOME"]}
+                    if profile == "zvec-grep"
+                    else {}
+                ),
             },
         }
         write_json(output_dir / "command.json", command_record)
@@ -314,22 +345,14 @@ def run_attempt(
     wall_seconds = time.monotonic() - started
     trace = parse_trace(events_path, final_path)
     stderr = stderr_path.read_text(encoding="utf-8", errors="replace")
-    combined_errors = "\n".join((*trace.errors, stderr)).lower()
     interrupted = cancellation_requested() and exit_code < 0
-    infrastructure_failure = not interrupted and (
-        idle_killed
-        or exit_code < 0
-        or _corpus_access_denied(trace, stderr)
-        or any(marker in combined_errors for marker in INFRASTRUCTURE_PATTERN)
+    status, infrastructure_failure = _classify_attempt(
+        exit_code=exit_code,
+        idle_killed=idle_killed,
+        interrupted=interrupted,
+        trace=trace,
+        stderr=stderr,
     )
-    if interrupted:
-        status = "interrupted"
-    elif infrastructure_failure:
-        status = "infrastructure_failed"
-    elif exit_code == 0 and trace.turn_completed and trace.final_response.strip():
-        status = "completed"
-    else:
-        status = "failed"
 
     server_trace_path = output_dir / "zvec-server.jsonl"
     if profile == "zvec-grep" and server_log.is_file():

@@ -44,7 +44,6 @@ def _write_clean_config(path: Path) -> None:
                 "allow_login_shell = false",
                 "analytics.enabled = false",
                 "feedback.enabled = false",
-                "agents.enabled = false",
                 'history.persistence = "none"',
                 "",
             )
