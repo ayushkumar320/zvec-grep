@@ -55,6 +55,7 @@ test("install starts the shared server with the selected MCP toolset", async (t)
   const environment = {
     ...process.env,
     HOME: temporaryDirectory,
+    USERPROFILE: temporaryDirectory,
     CODEX_HOME: join(temporaryDirectory, ".codex"),
     ZVEC_GREP_HOME: home,
   };

@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createNetServer } from "node:net";
 import test from "node:test";
@@ -124,7 +125,7 @@ test("server on reports an occupied listen address without timing out", async (t
 
   await assert.rejects(
     startServer({
-      cliPath: new URL("../dist/cli/index.js", import.meta.url).pathname,
+      cliPath: fileURLToPath(new URL("../dist/cli/index.js", import.meta.url)),
       listen: `127.0.0.1:${address.port}`,
       home,
       timeoutMs: 200,
@@ -141,7 +142,7 @@ test("concurrent server starts converge on one daemon", async (t) => {
     await rm(home, { recursive: true, force: true });
   });
   const options = {
-    cliPath: new URL("../dist/cli/index.js", import.meta.url).pathname,
+    cliPath: fileURLToPath(new URL("../dist/cli/index.js", import.meta.url)),
     listen: `127.0.0.1:${port}`,
     home,
   };
