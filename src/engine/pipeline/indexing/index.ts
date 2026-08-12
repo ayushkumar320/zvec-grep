@@ -29,7 +29,6 @@ import { normalizePath } from "../../utils/path.js";
 import { ConcurrentTiming, TimingCollector } from "../../utils/timing.js";
 import {
   extract,
-  type ChunkOptions,
   type Source,
   vectorContentForFragment,
 } from "../../extraction/index.js";
@@ -38,9 +37,7 @@ import {
   scanFilePath,
   scanRootPaths,
 } from "./scanner/index.js";
-
-const APPROXIMATE_CHARS_PER_TOKEN = 2;
-const CHUNK_OVERLAP_RATIO = 0.15;
+import { indexChunkOptions } from "./input-budget.js";
 
 export type IndexContext = {
   workspaceIndex: WorkspaceIndexInfo;
@@ -62,6 +59,7 @@ type DiffResult = {
 type PreparedFile = {
   file: FileInfo;
   fragments: EntityFragment[];
+  maxChars?: number;
 };
 
 type FailedPreparedFile = {
@@ -702,7 +700,6 @@ async function indexFiles(
   );
   const embeddingTiming = new ConcurrentTiming(timings, "index_embedding");
   const runningEmbeddings = new Set<Promise<void>>();
-  const chunkOptions = indexChunkOptions(ctx);
   const reportEmbeddingProgress = (
     currentStats: IndexStats,
     detail: string,
@@ -752,7 +749,7 @@ async function indexFiles(
       throwIfIndexCancelled(ctx);
       onProgress(stats, `reading ${file.relativePath}`);
       const prepared = await timings.time("index_prepare", () =>
-        prepareFile(file, ctx, chunkOptions),
+        prepareFile(file, ctx),
       );
       throwIfIndexCancelled(ctx);
 
@@ -818,18 +815,21 @@ async function indexFiles(
 async function prepareFile(
   file: FileInfo,
   ctx: IndexContext,
-  chunkOptions: ChunkOptions,
 ): Promise<PreparedFile | FailedPreparedFile> {
   try {
     throwIfIndexCancelled(ctx);
     const source = await readSource(file);
+    const chunkOptions = indexChunkOptions(
+      ctx.embeddingModel.info.limits.maxInputTokens,
+      source.kind === "text" ? source.text : undefined,
+    );
     const extracted = await extract(source, chunkOptions);
     throwIfIndexCancelled(ctx);
     const fragments = extracted.filter((fragment) =>
       ctx.embeddingModel.info.inputKinds.includes(fragment.content.kind),
     );
 
-    return { file, fragments };
+    return { file, fragments, maxChars: chunkOptions.maxChunkChars };
   } catch (error) {
     if (indexIsCancelled(ctx)) {
       throw indexCancellationError(ctx);
@@ -841,18 +841,6 @@ async function prepareFile(
   }
 }
 
-function indexChunkOptions(ctx: IndexContext): ChunkOptions {
-  const maxInputTokens = ctx.embeddingModel.info.limits.maxInputTokens;
-  if (maxInputTokens === undefined) {
-    return {};
-  }
-  const maxChunkChars = Math.floor(
-    maxInputTokens * APPROXIMATE_CHARS_PER_TOKEN,
-  );
-  const chunkOverlapChars = Math.floor(maxChunkChars * CHUNK_OVERLAP_RATIO);
-  return { maxChunkChars, chunkOverlapChars };
-}
-
 async function embedAndCommitBatch(
   files: readonly PreparedFile[],
   ctx: IndexContext,
@@ -862,13 +850,12 @@ async function embedAndCommitBatch(
   timings: TimingCollector,
   embeddingTiming: ConcurrentTiming,
 ): Promise<void> {
-  const fragments = files.flatMap((file) => file.fragments);
-
   try {
     throwIfIndexCancelled(ctx);
-    const maxChars = indexChunkOptions(ctx).maxChunkChars;
-    const contents = fragments.map((fragment) =>
-      vectorContentForFragment(fragment, maxChars),
+    const contents = files.flatMap((file) =>
+      file.fragments.map((fragment) =>
+        vectorContentForFragment(fragment, file.maxChars),
+      ),
     );
     onProgress(
       stats,
@@ -958,7 +945,7 @@ async function embedAndCommitFile(
         file.fragments,
         ctx.embeddingModel,
         embeddingScheduler,
-        indexChunkOptions(ctx).maxChunkChars,
+        file.maxChars,
         ctx.signal,
         (progress) =>
           reportModelDownloadProgress(
