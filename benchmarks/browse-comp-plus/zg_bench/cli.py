@@ -28,14 +28,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor = subparsers.add_parser("doctor", help="validate the local environment")
     doctor.add_argument("--codex-bin", default="codex")
-    doctor.add_argument("--zg-bin", default="zg")
     doctor.add_argument("--json", action="store_true")
 
     prepare = subparsers.add_parser(
         "prepare", help="prepare benchmark data and the reusable index"
     )
     prepare.add_argument("--hf-token")
-    prepare.add_argument("--zg-bin", default="zg")
     prepare.add_argument(
         "--yes", action="store_true", help="confirm index build or rebuild"
     )
@@ -47,12 +45,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="suite name or .txt path (default: study)",
     )
     run.add_argument("--codex-bin", default="codex")
-    run.add_argument("--zg-bin", default="zg")
 
     resume = subparsers.add_parser("resume", help="resume an interrupted run")
     resume.add_argument("run_id")
     resume.add_argument("--codex-bin", default="codex")
-    resume.add_argument("--zg-bin", default="zg")
 
     status = subparsers.add_parser("status", help="show paired run progress")
     status.add_argument("run_id", nargs="?")
@@ -270,7 +266,6 @@ def main(argv: list[str] | None = None) -> int:
         report = run_doctor(
             config,
             codex_bin=args.codex_bin,
-            zg_bin=args.zg_bin,
         )
         color = (
             sys.stdout.isatty()
@@ -348,7 +343,6 @@ def main(argv: list[str] | None = None) -> int:
         reuse_index = existing_index is not None and index_is_ready(
             config,
             artifacts,
-            zg_bin=args.zg_bin,
         )
         rebuild_index = index_dir.is_dir() and not reuse_index
         if not reuse_index and not args.yes:
@@ -386,7 +380,6 @@ def main(argv: list[str] | None = None) -> int:
                 output = build_index(
                     config,
                     artifacts,
-                    zg_bin=args.zg_bin,
                     rebuild=rebuild_index,
                 )
             except RuntimeError as error:
@@ -413,7 +406,6 @@ def main(argv: list[str] | None = None) -> int:
                 artifacts,
                 suite=args.suite,
                 codex_bin=args.codex_bin,
-                zg_bin=args.zg_bin,
             )
         except (OSError, RuntimeError, ValueError) as error:
             console.error(str(error))
@@ -437,7 +429,6 @@ def main(argv: list[str] | None = None) -> int:
                 artifacts,
                 args.run_id,
                 codex_bin=args.codex_bin,
-                zg_bin=args.zg_bin,
             )
         except (OSError, RuntimeError, ValueError) as error:
             console.error(str(error))

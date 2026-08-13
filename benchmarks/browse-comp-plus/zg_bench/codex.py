@@ -181,21 +181,17 @@ def run_attempt(
     output_dir: Path,
     profiles_root: Path,
     codex_bin: str = "codex",
-    zg_bin: str = "zg",
     idle_timeout_seconds: int | None = None,
 ) -> AttemptResult:
     codex = resolve_executable(codex_bin)
-    zg = resolve_executable(zg_bin)
     if codex is None:
         raise RuntimeError(f"Codex executable not found: {codex_bin}")
-    if zg is None:
-        raise RuntimeError(f"zvec-grep executable not found: {zg_bin}")
     profile_root = (profiles_root / profile).resolve()
     codex_home = profile_root / "codex-home"
     if not codex_home.is_dir():
         raise RuntimeError("run-local Codex profiles are missing")
     if profile == "zvec-grep":
-        ensure_server(artifacts, zg_bin=str(zg))
+        ensure_server(artifacts)
 
     workspace = workspace_root(artifacts, profile)
     index_dir = workspace_root(artifacts, "zvec-grep") / ".zvec-grep"

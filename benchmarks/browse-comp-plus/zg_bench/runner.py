@@ -117,7 +117,6 @@ def _run_profile(
     reasoning_effort: str,
     profiles_root: Path,
     codex_bin: str,
-    zg_bin: str,
 ) -> AttemptResult:
     query_id = str(query["query_id"])
     selected_path = _result_path(run_root, query_id, profile)
@@ -155,7 +154,6 @@ def _run_profile(
             output_dir=output,
             profiles_root=profiles_root,
             codex_bin=codex_bin,
-            zg_bin=zg_bin,
             idle_timeout_seconds=config.run.idle_timeout_seconds,
         )
         if (
@@ -352,7 +350,6 @@ def run_benchmark(
     suite: str,
     run_id: str | None = None,
     codex_bin: str = "codex",
-    zg_bin: str = "zg",
 ) -> Path:
     model = config.run.model
     reasoning_effort = config.run.reasoning_effort
@@ -363,7 +360,7 @@ def run_benchmark(
     by_id = {str(row["query_id"]): row for row in queries}
     validate_model(artifacts, model)
     codex = resolve_executable(codex_bin)
-    zg = resolve_executable(zg_bin)
+    zg = resolve_executable("zg")
     if codex is None or zg is None:
         raise RuntimeError("Codex and zvec-grep must be available before a run")
     codex_version = run_command([codex, "--version"], timeout=30)
@@ -414,7 +411,7 @@ def run_benchmark(
         recorded_manifest = Path(metadata["profiles_manifest"])
         if recorded_manifest.resolve() != profiles_manifest_path.resolve():
             raise RuntimeError("run profile manifest path does not match its run")
-        profile_manifest = validate_profiles(recorded_manifest, zg_bin=str(zg))
+        profile_manifest = validate_profiles(recorded_manifest)
         if metadata["profiles_fingerprint"] != profile_manifest["fingerprint"]:
             raise RuntimeError("run profile fingerprint does not match its manifest")
         recorded_protocol = metadata["protocol"]
@@ -447,11 +444,10 @@ def run_benchmark(
             config,
             artifacts,
             codex_bin=str(codex),
-            zg_bin=str(zg),
             profiles_root=profiles_root,
             manifest_path=profiles_manifest_path,
         )
-        profile_manifest = validate_profiles(profiles_manifest_path, zg_bin=str(zg))
+        profile_manifest = validate_profiles(profiles_manifest_path)
         corpus_state = read_json(required_states["corpus"])
         index_state = read_json(required_states["index"])
         protocol = _run_protocol(
@@ -490,7 +486,6 @@ def run_benchmark(
                 "python": sys.version.split()[0],
                 "codex_bin": str(codex),
                 "codex_version": codex_version.stdout.strip(),
-                "zg_bin": str(zg),
                 "zg_version": zg_version.stdout.strip(),
             },
             "corpus_fingerprint": corpus_state["fingerprint"],
@@ -513,7 +508,6 @@ def run_benchmark(
         runtime_setup = prepare_search_runtime(
             config,
             artifacts,
-            zg_bin=str(zg),
             restart_server=True,
         )
         metadata["runtime_setups"].append(runtime_setup)
@@ -531,7 +525,6 @@ def run_benchmark(
             reasoning_effort,
             profiles_root,
             str(codex),
-            str(zg),
         )
         _write_pair(run_root, query_id)
         done = completed_pairs(run_root, query_ids)
@@ -575,7 +568,6 @@ def resume_benchmark(
     run_id: str,
     *,
     codex_bin: str = "codex",
-    zg_bin: str = "zg",
 ) -> Path:
     metadata = read_json(find_run(artifacts, run_id) / "run.json")
     return run_benchmark(
@@ -584,5 +576,4 @@ def resume_benchmark(
         suite=str(metadata["suite"]),
         run_id=run_id,
         codex_bin=codex_bin,
-        zg_bin=zg_bin,
     )

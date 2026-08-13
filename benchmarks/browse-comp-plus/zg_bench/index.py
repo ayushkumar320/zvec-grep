@@ -40,12 +40,10 @@ def prepared_index(config: BenchmarkConfig, artifacts: Path) -> Path | None:
 def index_is_ready(
     config: BenchmarkConfig,
     artifacts: Path,
-    *,
-    zg_bin: str = "zg",
 ) -> bool:
     if prepared_index(config, artifacts) is None:
         return False
-    executable = resolve_executable(zg_bin)
+    executable = resolve_executable("zg")
     if executable is None:
         return False
     root = workspace_root(artifacts, "zvec-grep")
@@ -66,12 +64,11 @@ def build_index(
     config: BenchmarkConfig,
     artifacts: Path,
     *,
-    zg_bin: str = "zg",
     rebuild: bool = False,
 ) -> Path:
-    executable = resolve_executable(zg_bin)
+    executable = resolve_executable("zg")
     if executable is None:
-        raise RuntimeError(f"zvec-grep executable not found: {zg_bin}")
+        raise RuntimeError("zvec-grep executable not found: zg")
     version = run_command([executable, "version"], timeout=30)
     actual_version = version.stdout.strip().splitlines()[0] if version.stdout else ""
     if not version.ok or not actual_version:

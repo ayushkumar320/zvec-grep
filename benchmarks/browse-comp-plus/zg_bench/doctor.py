@@ -54,10 +54,10 @@ def _authentication(codex_bin: str) -> Check:
     )
 
 
-def _zvec_version(zg_bin: str) -> Check:
-    executable = resolve_executable(zg_bin)
+def _zvec_version() -> Check:
+    executable = resolve_executable("zg")
     if executable is None:
-        return Check("zvec-grep", False, f"{zg_bin!r} was not found")
+        return Check("zvec-grep", False, "'zg' was not found")
     result = run_command([executable, "version"], timeout=30)
     value = result.stdout.strip()
     return Check(
@@ -71,7 +71,6 @@ def run_doctor(
     config: BenchmarkConfig,
     *,
     codex_bin: str = "codex",
-    zg_bin: str = "zg",
 ) -> dict[str, Any]:
     version = sys.version_info
     system = platform.system()
@@ -86,7 +85,7 @@ def run_doctor(
             system in {"Darwin", "Linux"},
             f"{system} {platform.machine()}; native macOS and Linux are supported",
         ),
-        _zvec_version(zg_bin),
+        _zvec_version(),
         _command("Codex", codex_bin, ["--version"]),
         _authentication(codex_bin),
     ]

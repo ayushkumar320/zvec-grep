@@ -98,17 +98,16 @@ def prepare_profiles(
     artifacts: Path,
     *,
     codex_bin: str = "codex",
-    zg_bin: str = "zg",
     source_codex_home: Path | None = None,
     profiles_root: Path,
     manifest_path: Path,
 ) -> Path:
     codex = resolve_executable(codex_bin)
-    zg = resolve_executable(zg_bin)
+    zg = resolve_executable("zg")
     if codex is None:
         raise RuntimeError(f"Codex executable not found: {codex_bin}")
     if zg is None:
-        raise RuntimeError(f"zvec-grep executable not found: {zg_bin}")
+        raise RuntimeError("zvec-grep executable not found: zg")
 
     source_home = (
         (
@@ -199,7 +198,6 @@ def prepare_profiles(
         "stage": "profiles",
         "generated_at": utc_now(),
         "codex_bin": str(codex),
-        "zg_bin": str(zg),
         "source_codex_home": str(source_home),
         "baseline_home": str(baseline.resolve()),
         "treatment_home": str(treatment.resolve()),
@@ -245,10 +243,10 @@ def zvec_grep_build_identity(executable: Path) -> dict[str, str]:
     }
 
 
-def validate_profiles(manifest_path: Path, *, zg_bin: str = "zg") -> dict[str, Any]:
-    executable = resolve_executable(zg_bin)
+def validate_profiles(manifest_path: Path) -> dict[str, Any]:
+    executable = resolve_executable("zg")
     if executable is None:
-        raise RuntimeError(f"zvec-grep executable not found: {zg_bin}")
+        raise RuntimeError("zvec-grep executable not found: zg")
     manifest = read_json(manifest_path)
     expected_build = manifest.get("zvec_grep_build", {})
     actual_build = zvec_grep_build_identity(executable)
@@ -291,12 +289,10 @@ def _package_root(executable: Path) -> Path | None:
     return None
 
 
-def ensure_server(
-    artifacts: Path, *, zg_bin: str = "zg", restart: bool = False
-) -> None:
-    executable = resolve_executable(zg_bin)
+def ensure_server(artifacts: Path, *, restart: bool = False) -> None:
+    executable = resolve_executable("zg")
     if executable is None:
-        raise RuntimeError(f"zvec-grep executable not found: {zg_bin}")
+        raise RuntimeError("zvec-grep executable not found: zg")
     environment = inherited_environment()
     environment["ZVEC_GREP_HOME"] = str((artifacts / "runtime" / "zvec-home").resolve())
     check = run_command(
@@ -334,19 +330,17 @@ def prepare_search_runtime(
     config: BenchmarkConfig,
     artifacts: Path,
     *,
-    zg_bin: str = "zg",
     restart_server: bool = False,
 ) -> dict[str, object]:
     """Verify the daemon and warm the existing index outside measured agent time."""
-    executable = resolve_executable(zg_bin)
+    executable = resolve_executable("zg")
     if executable is None:
-        raise RuntimeError(f"zvec-grep executable not found: {zg_bin}")
+        raise RuntimeError("zvec-grep executable not found: zg")
     started_at = utc_now()
     started = time.monotonic()
     print("Preparing the zvec-grep daemon and existing index...", flush=True)
     ensure_server(
         artifacts,
-        zg_bin=str(executable),
         restart=restart_server,
     )
     root = workspace_root(artifacts, "zvec-grep")
