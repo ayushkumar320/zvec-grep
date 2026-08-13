@@ -8,7 +8,9 @@ from typing import Any
 from .models import ToolCall, TraceSummary, Usage
 
 
-DOCID_PATTERN = re.compile(r"(?:^|[\\/])([A-Za-z0-9_.-]+)\.md(?::\d+)?")
+DOCID_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_.-])(\d+)\.md(?::\d+(?:-\d+)?)?"
+)
 MAX_SUMMARY_OUTPUT = 8_000
 
 
@@ -20,7 +22,7 @@ def _text(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-def _mcp_result_text(result: Any) -> str:
+def mcp_result_text(result: Any) -> str:
     if not isinstance(result, dict):
         return _text(result)
     content = result.get("content")
@@ -32,6 +34,14 @@ def _mcp_result_text(result: Any) -> str:
         if isinstance(item, dict) and item.get("type") == "text"
     ]
     return "\n".join(values)
+
+
+def extract_docids(*values: Any) -> set[str]:
+    return {
+        match
+        for value in values
+        for match in DOCID_PATTERN.findall(_text(value))
+    }
 
 
 def parse_trace(path: Path, final_path: Path | None = None) -> TraceSummary:
@@ -77,8 +87,7 @@ def parse_trace(path: Path, final_path: Path | None = None) -> TraceSummary:
                 continue
             if item_type == "command_execution":
                 output = str(item.get("aggregated_output", ""))
-                combined = f"{item.get('command', '')}\n{output}"
-                docids.update(DOCID_PATTERN.findall(combined))
+                docids.update(extract_docids(item.get("command"), output))
                 calls.append(
                     ToolCall(
                         kind="command",
@@ -89,8 +98,8 @@ def parse_trace(path: Path, final_path: Path | None = None) -> TraceSummary:
                     )
                 )
             elif item_type == "mcp_tool_call":
-                output = _mcp_result_text(item.get("result"))
-                docids.update(DOCID_PATTERN.findall(output))
+                output = mcp_result_text(item.get("result"))
+                docids.update(extract_docids(output))
                 calls.append(
                     ToolCall(
                         kind="mcp",

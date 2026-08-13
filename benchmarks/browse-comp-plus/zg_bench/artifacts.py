@@ -17,6 +17,23 @@ def new_run_id() -> str:
     return datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
 
 
+def find_run(artifacts: Path, run_id: str) -> Path:
+    runs = artifacts / "runs"
+    if runs.is_dir():
+        for path in runs.iterdir():
+            metadata_path = path / "run.json"
+            if not (
+                path.is_dir()
+                and path.name == run_id
+                and metadata_path.is_file()
+            ):
+                continue
+            metadata = read_json(metadata_path)
+            if isinstance(metadata, dict) and str(metadata.get("run_id")) == run_id:
+                return path
+    raise RuntimeError(f"benchmark run not found: {run_id}")
+
+
 def atomic_write_text(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(

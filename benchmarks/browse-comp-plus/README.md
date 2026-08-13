@@ -75,29 +75,28 @@ zg-bench run --suite full
 
 ## Evaluate and report
 
-Evaluate one run with a blind Codex judge and generate its final report:
-
-```sh
-zg-bench evaluate <run-id>
-```
-
-Evaluate every run with completed pairs that does not yet have complete scores:
+Evaluate the latest run with a blind Codex judge and generate its final report:
 
 ```sh
 zg-bench evaluate
 ```
 
-Regenerate the token, timing, completion, and paired-case report with:
+Specify a run explicitly when needed:
 
 ```sh
-zg-bench report <run-id>
+zg-bench evaluate <run-id>
 ```
 
-Generate a case-level report that selects the latest fully evaluated pair for
-each query and comparable experiment configuration:
+Regenerate the latest run's token, timing, completion, and paired-case report:
 
 ```sh
 zg-bench report
+```
+
+Specify a run explicitly when needed:
+
+```sh
+zg-bench report <run-id>
 ```
 
 Delete all runs and generated reports while preserving the downloaded data,
@@ -111,5 +110,5 @@ zg-bench clean
 
 Generated data is stored under `artifacts/` and is not committed. It contains
 the pinned source snapshots, materialized corpus, reusable index, run-local
-isolated profiles, raw attempts, checkpoints, evaluator inputs, and reports.
-Gold data and manifests remain outside the agent workspace.
+isolated profiles, raw attempts, evaluator inputs, and reports. Gold data and
+manifests remain outside the agent workspace.

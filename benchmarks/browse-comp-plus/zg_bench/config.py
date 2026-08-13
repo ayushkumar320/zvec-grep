@@ -42,7 +42,6 @@ class ZvecGrepConfig:
 class RunConfig:
     model: str
     reasoning_effort: str
-    checkpoint_every: int
     infrastructure_retries: int
     idle_timeout_seconds: int
 
@@ -102,8 +101,6 @@ def _validate(config: BenchmarkConfig) -> None:
         or config.dataset.expected_corpus_documents < 1
     ):
         raise ConfigError("expected dataset counts must be positive")
-    if config.run.checkpoint_every < 1:
-        raise ConfigError("checkpoint_every must be positive")
     if config.run.infrastructure_retries < 0:
         raise ConfigError("infrastructure_retries cannot be negative")
     if not config.run.model.strip():

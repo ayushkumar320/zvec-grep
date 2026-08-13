@@ -43,6 +43,10 @@ class Console:
         label = self._styled(f"{name}:", "2")
         self._line(f"  {label} {value}")
 
+    def identifier(self, name: str, value: str) -> None:
+        label = self._styled(f"{name}:", "2")
+        self._line(f"  {label} {self._styled(value, '1', '36')}")
+
     def metric(
         self,
         name: str,

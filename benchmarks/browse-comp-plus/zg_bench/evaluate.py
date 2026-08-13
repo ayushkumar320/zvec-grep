@@ -8,7 +8,14 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .artifacts import atomic_write_text, fingerprint, read_json, utc_now, write_json
+from .artifacts import (
+    atomic_write_text,
+    find_run,
+    fingerprint,
+    read_json,
+    utc_now,
+    write_json,
+)
 from .console import Console
 from .dataset import load_queries
 from .models import PROFILES
@@ -69,6 +76,10 @@ def export_official(run_root: Path) -> Path:
             result = read_json(
                 run_root / "cases" / query_id / profile / "result.json"
             )
+            trace = parse_trace(
+                Path(result["paths"]["events"]),
+                Path(result["paths"]["response"]),
+            )
             calls = result["trace"].get("tool_calls", [])
             counts: dict[str, int] = {}
             for call in calls:
@@ -80,9 +91,7 @@ def export_official(run_root: Path) -> Path:
                     "query_id": query_id,
                     "tool_call_counts": counts,
                     "status": result["status"],
-                    "retrieved_docids": result["trace"].get(
-                        "observed_docids", []
-                    ),
+                    "retrieved_docids": list(trace.observed_docids),
                     "result": [
                         {
                             "type": "output_text",
@@ -105,30 +114,19 @@ def _completed_judgement(path: Path) -> bool:
 def evaluation_complete(run_root: Path) -> bool:
     query_ids = _eligible_query_ids(run_root)
     summary_path = run_root / "evaluation" / "summary.json"
+    expected_answers = len(PROFILES) * len(query_ids)
+    summary = read_json(summary_path) if summary_path.is_file() else {}
     return (
         bool(query_ids)
-        and summary_path.is_file()
-        and read_json(summary_path).get("status") == "completed"
+        and summary.get("status") == "completed"
+        and summary.get("expected_answers") == expected_answers
+        and summary.get("evaluated_answers") == expected_answers
         and all(
             _completed_judgement(_judge_result_path(run_root, profile, query_id))
             for query_id in query_ids
             for profile in PROFILES
         )
     )
-
-
-def pending_runs(artifacts: Path) -> list[Path]:
-    runs_root = artifacts / "runs"
-    if not runs_root.is_dir():
-        return []
-    pending: list[Path] = []
-    for run_root in sorted(path for path in runs_root.iterdir() if path.is_dir()):
-        metadata_path = run_root / "run.json"
-        if not metadata_path.is_file():
-            continue
-        if _eligible_query_ids(run_root) and not evaluation_complete(run_root):
-            pending.append(run_root)
-    return pending
 
 
 def _judge_items(run_root: Path, input_root: Path) -> list[tuple[str, str, Path]]:
@@ -319,6 +317,11 @@ def evaluate_run(
     query_ids = _eligible_query_ids(run_root)
     if not query_ids:
         raise RuntimeError(f"run has no completed pairs: {metadata['run_id']}")
+    if evaluation_complete(run_root):
+        report = run_root / "report"
+        if (report / "summary.md").is_file():
+            return report
+        return generate_report(run_root)
     codex = resolve_executable(codex_bin)
     if codex is None:
         raise RuntimeError(f"Codex executable not found: {codex_bin}")
@@ -388,9 +391,9 @@ def evaluate_run(
             "generated_at": utc_now(),
             "run_id": metadata["run_id"],
             "status": "completed"
-            if len(completed_results) == 2 * len(query_ids)
+            if len(completed_results) == len(PROFILES) * len(query_ids)
             else "partial",
-            "expected_answers": 2 * len(query_ids),
+            "expected_answers": len(PROFILES) * len(query_ids),
             "evaluated_answers": len(completed_results),
             "attempts": len(attempt_results),
             "model": model,
@@ -414,25 +417,14 @@ def evaluate_run(
 
 def evaluate(
     artifacts: Path,
-    run_id: str | None,
+    run_id: str,
     *,
     codex_bin: str = "codex",
     console: Console,
-) -> list[Path]:
-    if run_id:
-        runs = [artifacts / "runs" / run_id]
-    else:
-        runs = pending_runs(artifacts)
-    if not runs:
-        return []
-    reports: list[Path] = []
-    for run_root in runs:
-        reports.append(
-            evaluate_run(
-                artifacts,
-                run_root,
-                codex_bin=codex_bin,
-                console=console,
-            )
-        )
-    return reports
+) -> Path:
+    return evaluate_run(
+        artifacts,
+        find_run(artifacts, run_id),
+        codex_bin=codex_bin,
+        console=console,
+    )

@@ -7,14 +7,15 @@ import shutil
 import sys
 from pathlib import Path
 
+from .artifacts import find_run
 from .console import Console
 from .config import DEFAULT_ARTIFACTS_DIR, load_config
 from .corpus import materialize, prepared_corpus, workspace_root
 from .dataset import fetch, prepared_dataset
 from .doctor import format_report, run_doctor
-from .evaluate import evaluate
+from .evaluate import evaluate, evaluation_complete
 from .index import build_index, index_is_ready, prepared_index
-from .report import generate_global_report, generate_report
+from .report import generate_report
 from .runner import resume_benchmark, run_benchmark
 
 
@@ -45,7 +46,6 @@ def build_parser() -> argparse.ArgumentParser:
         default="study",
         help="suite name or .txt path (default: study)",
     )
-    run.add_argument("--run-id")
     run.add_argument("--codex-bin", default="codex")
     run.add_argument("--zg-bin", default="zg")
 
@@ -70,7 +70,7 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_parser.add_argument("--codex-bin", default="codex")
 
     report = subparsers.add_parser(
-        "report", help="generate a run or global report"
+        "report", help="generate a run report"
     )
     report.add_argument("run_id", nargs="?")
 
@@ -84,17 +84,39 @@ def build_parser() -> argparse.ArgumentParser:
 def _latest_run(artifacts: Path) -> Path | None:
     runs = artifacts / "runs"
     candidates = (
-        [path for path in runs.iterdir() if path.is_dir()] if runs.is_dir() else []
+        [
+            path
+            for path in runs.iterdir()
+            if path.is_dir() and (path / "run.json").is_file()
+        ]
+        if runs.is_dir()
+        else []
     )
     return (
-        max(candidates, key=lambda path: path.stat().st_mtime) if candidates else None
+        max(
+            candidates,
+            key=lambda path: str(
+                json.loads((path / "run.json").read_text(encoding="utf-8"))[
+                    "created_at"
+                ]
+            ),
+        )
+        if candidates
+        else None
     )
+
+
+def _selected_run(artifacts: Path, run_id: str | None) -> Path:
+    if run_id:
+        return find_run(artifacts, run_id)
+    latest = _latest_run(artifacts)
+    if latest is None:
+        raise RuntimeError("no benchmark runs found")
+    return latest
 
 
 def _status(artifacts: Path, run_id: str | None) -> int:
-    root = artifacts / "runs" / run_id if run_id else _latest_run(artifacts)
-    if root is None or not root.is_dir():
-        raise SystemExit("error: no benchmark runs found")
+    root = _selected_run(artifacts, run_id)
     metadata = json.loads((root / "run.json").read_text(encoding="utf-8"))
     profiles = {"baseline": {}, "zvec-grep": {}}
     persisted_pairs = 0
@@ -122,26 +144,18 @@ def _status(artifacts: Path, run_id: str | None) -> int:
             or "none"
         )
         print(f"{profile}: {rendered}")
-    checkpoints = (
-        sorted((root / "checkpoints").glob("*.md"))
-        if (root / "checkpoints").is_dir()
-        else []
-    )
-    if checkpoints:
-        print(f"Latest checkpoint: {checkpoints[-1]}")
     return 0
 
 
 def _clean(artifacts: Path, *, confirmed: bool) -> int:
     runs = artifacts / "runs"
-    report = artifacts / "report"
     run_count = (
         sum(path.is_dir() for path in runs.iterdir()) if runs.is_dir() else 0
     )
-    if run_count == 0 and not report.exists():
+    if run_count == 0:
         console = Console()
         console.heading("BrowseComp-Plus clean")
-        console.success("No runs or global report to remove")
+        console.success("No runs to remove")
         return 0
 
     console = Console()
@@ -162,8 +176,6 @@ def _clean(artifacts: Path, *, confirmed: bool) -> int:
     try:
         if runs.exists():
             shutil.rmtree(runs)
-        if report.exists():
-            shutil.rmtree(report)
     except OSError as error:
         console.error(f"could not remove benchmark results: {error}")
         return 1
@@ -214,7 +226,9 @@ def _show_report(console: Console, report: Path) -> None:
         console.metric(
             "Quality",
             f"baseline {baseline_quality:.2f}% · "
-            f"zvec-grep {treatment_quality:.2f}%",
+            f"zvec-grep {treatment_quality:.2f}% · "
+            f"{answer['scored_pairs']} / {summary['completed_pairs']} scored"
+            + (" (partial)" if answer["status"] == "partial" else ""),
             change,
             favorable=favorable,
         )
@@ -245,80 +259,6 @@ def _show_report(console: Console, report: Path) -> None:
         change,
         favorable=favorable,
     )
-    console.detail("Report", report / "summary.md")
-
-
-def _show_global_report(console: Console, report: Path) -> None:
-    summary = json.loads((report / "summary.json").read_text(encoding="utf-8"))
-    console.success("Global report generated")
-    configuration_label = (
-        "configuration" if summary["group_count"] == 1 else "configurations"
-    )
-    console.detail(
-        "Scope",
-        f"{summary['selected_cases']:,} selected cases · "
-        f"{summary['group_count']} {configuration_label}",
-    )
-    if summary["pending_count"]:
-        console.detail(
-            "Pending",
-            f"{summary['pending_count']:,} completed cases awaiting evaluation",
-        )
-    for index, group in enumerate(summary["groups"], 1):
-        if summary["group_count"] > 1:
-            console.blank()
-            console.item(
-                index,
-                summary["group_count"],
-                f"Configuration {group['group_id']}",
-            )
-            configuration = group["configuration"]
-            console.detail(
-                "Setup",
-                f"{configuration['model']} · reasoning "
-                f"{configuration['reasoning_effort']} · "
-                f"{configuration['embedding']}",
-            )
-        quality = group["quality"]
-        baseline = group["profiles"]["baseline"]
-        treatment = group["profiles"]["zvec-grep"]
-        baseline_quality = float(quality["baseline_accuracy_percent"])
-        treatment_quality = float(quality["treatment_accuracy_percent"])
-        change, favorable = _quality_change(baseline_quality, treatment_quality)
-        console.metric(
-            "Quality",
-            f"baseline {baseline_quality:.2f}% · "
-            f"zvec-grep {treatment_quality:.2f}%",
-            change,
-            favorable=favorable,
-        )
-        baseline_tokens = (
-            baseline["tokens"]["input_total"]
-            + baseline["tokens"]["output_total"]
-        )
-        treatment_tokens = (
-            treatment["tokens"]["input_total"]
-            + treatment["tokens"]["output_total"]
-        )
-        change, favorable = _resource_change(baseline_tokens, treatment_tokens)
-        console.metric(
-            "Tokens",
-            f"baseline {baseline_tokens:,} · zvec-grep {treatment_tokens:,}",
-            change,
-            favorable=favorable,
-        )
-        baseline_wall = float(baseline["wall_seconds"]["total"])
-        treatment_wall = float(treatment["wall_seconds"]["total"])
-        change, favorable = _resource_change(
-            baseline_wall, treatment_wall, speedup=True
-        )
-        console.metric(
-            "Wall time",
-            f"baseline {baseline_wall:,.1f}s · "
-            f"zvec-grep {treatment_wall:,.1f}s",
-            change,
-            favorable=favorable,
-        )
     console.detail("Report", report / "summary.md")
 
 
@@ -465,39 +405,64 @@ def main(argv: list[str] | None = None) -> int:
         console.success("Preparation complete")
         return 0
     if args.command == "run":
-        root = run_benchmark(
-            config,
-            artifacts,
-            suite=args.suite,
-            run_id=args.run_id,
-            codex_bin=args.codex_bin,
-            zg_bin=args.zg_bin,
-        )
-        print(root)
+        console = Console()
+        console.heading("BrowseComp-Plus run")
+        try:
+            root = run_benchmark(
+                config,
+                artifacts,
+                suite=args.suite,
+                codex_bin=args.codex_bin,
+                zg_bin=args.zg_bin,
+            )
+        except (OSError, RuntimeError, ValueError) as error:
+            console.error(str(error))
+            return 1
+        except KeyboardInterrupt:
+            console.warning(
+                "Run interrupted; use 'zg-bench resume <run-id>' to continue"
+            )
+            return 130
+        console.blank()
+        console.success("Run complete")
+        console.identifier("Run", root.name)
+        console.detail("Artifacts", root)
         return 0
     if args.command == "resume":
-        print(
-            resume_benchmark(
+        console = Console()
+        console.heading("BrowseComp-Plus resume")
+        try:
+            root = resume_benchmark(
                 config,
                 artifacts,
                 args.run_id,
                 codex_bin=args.codex_bin,
                 zg_bin=args.zg_bin,
             )
-        )
+        except (OSError, RuntimeError, ValueError) as error:
+            console.error(str(error))
+            return 1
+        except KeyboardInterrupt:
+            console.warning("Run interrupted; use the same resume command to continue")
+            return 130
+        console.blank()
+        console.success("Run complete")
+        console.identifier("Run", root.name)
+        console.detail("Artifacts", root)
         return 0
     if args.command == "status":
-        return _status(artifacts, args.run_id)
+        try:
+            return _status(artifacts, args.run_id)
+        except (OSError, RuntimeError, ValueError) as error:
+            Console().error(str(error))
+            return 1
     if args.command == "inspect":
-        result = (
-            artifacts
-            / "runs"
-            / args.run_id
-            / "cases"
-            / args.case
-            / args.profile
-            / "result.json"
-        )
+        try:
+            run_root = find_run(artifacts, args.run_id)
+        except (OSError, RuntimeError, ValueError) as error:
+            Console().error(str(error))
+            return 1
+        result = run_root / "cases" / args.case / args.profile / "result.json"
         if not result.is_file():
             raise SystemExit(f"error: trial not found: {result}")
         print(result.read_text(encoding="utf-8"), end="")
@@ -509,42 +474,40 @@ def main(argv: list[str] | None = None) -> int:
         console = Console()
         console.heading("BrowseComp-Plus evaluate")
         try:
-            reports = evaluate(
+            run_root = _selected_run(artifacts, args.run_id)
+            console.identifier("Run", run_root.name)
+            already_complete = evaluation_complete(run_root)
+            report = evaluate(
                 artifacts,
-                args.run_id,
+                run_root.name,
                 codex_bin=args.codex_bin,
                 console=console,
             )
-        except RuntimeError as error:
+        except (OSError, RuntimeError, ValueError) as error:
             console.error(str(error))
             return 1
-        if not reports:
-            console.success("No unevaluated completed runs found")
-            return 0
-        for report in reports:
-            console.blank()
-            _show_report(console, report)
-        complete = all(
+        console.blank()
+        if already_complete:
+            console.success("Evaluation already complete")
+        _show_report(console, report)
+        complete = (
             json.loads(
                 (report.parent / "evaluation" / "summary.json").read_text(
                     encoding="utf-8"
                 )
             )["status"]
             == "completed"
-            for report in reports
         )
         return 0 if complete else 1
     if args.command == "report":
         console = Console()
         console.heading("BrowseComp-Plus report")
         try:
-            if args.run_id:
-                report = generate_report(artifacts / "runs" / args.run_id)
-                _show_report(console, report)
-            else:
-                report = generate_global_report(artifacts)
-                _show_global_report(console, report)
-        except (FileNotFoundError, RuntimeError) as error:
+            run_root = _selected_run(artifacts, args.run_id)
+            console.identifier("Run", run_root.name)
+            report = generate_report(run_root)
+            _show_report(console, report)
+        except (OSError, RuntimeError, ValueError) as error:
             console.error(str(error))
             return 1
         return 0

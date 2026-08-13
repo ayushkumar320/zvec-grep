@@ -31,9 +31,6 @@ INFRASTRUCTURE_PATTERN = (
     "service unavailable",
 )
 
-_ACTIVE_PROCESSES: set[subprocess.Popen[bytes]] = set()
-_ACTIVE_PROCESSES_LOCK = threading.Lock()
-_CANCEL_REQUESTED = threading.Event()
 HEARTBEAT_SECONDS = 30
 
 
@@ -94,23 +91,6 @@ def _terminate_group(process: subprocess.Popen[bytes]) -> None:
             pass
 
 
-def terminate_active_processes() -> None:
-    """Stop Codex process groups so an interrupted run can exit and resume."""
-    _CANCEL_REQUESTED.set()
-    with _ACTIVE_PROCESSES_LOCK:
-        processes = tuple(_ACTIVE_PROCESSES)
-    for process in processes:
-        _terminate_group(process)
-
-
-def cancellation_requested() -> bool:
-    return _CANCEL_REQUESTED.is_set()
-
-
-def reset_cancellation() -> None:
-    _CANCEL_REQUESTED.clear()
-
-
 def _corpus_access_denied(trace: TraceSummary, stderr: str) -> bool:
     denial = (
         "operation_not_permitted" in stderr.lower()
@@ -133,7 +113,6 @@ def _classify_attempt(
     *,
     exit_code: int,
     idle_killed: bool,
-    interrupted: bool,
     trace: TraceSummary,
     stderr: str,
 ) -> tuple[str, bool]:
@@ -142,7 +121,7 @@ def _classify_attempt(
     )
     corpus_access_denied = _corpus_access_denied(trace, stderr)
     combined_errors = "\n".join((*trace.errors, stderr)).lower()
-    infrastructure_failure = not interrupted and (
+    infrastructure_failure = (
         corpus_access_denied
         or (
             not completed
@@ -155,8 +134,6 @@ def _classify_attempt(
             )
         )
     )
-    if interrupted:
-        return "interrupted", False
     if completed and not corpus_access_denied:
         return "completed", False
     if infrastructure_failure:
@@ -317,22 +294,20 @@ def run_attempt(
             stderr=subprocess.PIPE,
             start_new_session=True,
         )
-        with _ACTIVE_PROCESSES_LOCK:
-            _ACTIVE_PROCESSES.add(process)
-        assert process.stdin and process.stdout and process.stderr
-        stdout_thread = threading.Thread(
-            target=_copy_stream,
-            args=(process.stdout, events, activity),
-            daemon=True,
-        )
-        stderr_thread = threading.Thread(
-            target=_copy_stream,
-            args=(process.stderr, errors, activity),
-            daemon=True,
-        )
-        stdout_thread.start()
-        stderr_thread.start()
         try:
+            assert process.stdin and process.stdout and process.stderr
+            stdout_thread = threading.Thread(
+                target=_copy_stream,
+                args=(process.stdout, events, activity),
+                daemon=True,
+            )
+            stderr_thread = threading.Thread(
+                target=_copy_stream,
+                args=(process.stderr, errors, activity),
+                daemon=True,
+            )
+            stdout_thread.start()
+            stderr_thread.start()
             process.stdin.write(prompt.encode("utf-8"))
             process.stdin.close()
             while process.poll() is None:
@@ -360,19 +335,15 @@ def run_attempt(
             _terminate_group(process)
             raise
         finally:
-            with _ACTIVE_PROCESSES_LOCK:
-                _ACTIVE_PROCESSES.discard(process)
             _clear_progress(progress_width)
 
     finished_at = _iso_now()
     wall_seconds = time.monotonic() - started
     trace = parse_trace(events_path, final_path)
     stderr = stderr_path.read_text(encoding="utf-8", errors="replace")
-    interrupted = cancellation_requested() and exit_code < 0
     status, infrastructure_failure = _classify_attempt(
         exit_code=exit_code,
         idle_killed=idle_killed,
-        interrupted=interrupted,
         trace=trace,
         stderr=stderr,
     )
@@ -394,7 +365,6 @@ def run_attempt(
         exit_code=exit_code,
         infrastructure_failure=infrastructure_failure,
         trace=trace,
-        interrupted_by="user" if interrupted else None,
         paths={
             "events": str(events_path.resolve()),
             "stderr": str(stderr_path.resolve()),

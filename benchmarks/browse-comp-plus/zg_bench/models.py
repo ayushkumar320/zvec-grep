@@ -72,7 +72,6 @@ class AttemptResult:
     exit_code: int
     infrastructure_failure: bool
     trace: TraceSummary
-    interrupted_by: str | None = None
     paths: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -86,7 +85,6 @@ class AttemptResult:
             "wall_seconds": self.wall_seconds,
             "exit_code": self.exit_code,
             "infrastructure_failure": self.infrastructure_failure,
-            "interrupted_by": self.interrupted_by,
             "trace": self.trace.to_dict(),
             "paths": self.paths,
         }

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .artifacts import (
+    find_run,
     fingerprint,
     new_run_id,
     read_json,
@@ -16,12 +17,10 @@ from .artifacts import (
     write_json,
 )
 from .codex import (
-    cancellation_requested,
-    reset_cancellation,
     run_attempt,
-    terminate_active_processes,
     validate_model,
 )
+from .console import Console
 from .config import BENCHMARK_ROOT, BenchmarkConfig, PROMPT_PATH, SUITES_DIR
 from .corpus import prepared_corpus
 from .dataset import load_queries, prepared_dataset
@@ -103,7 +102,7 @@ def _needs_run(config: BenchmarkConfig, path: Path) -> bool:
     result = read_json(path)
     if result["status"] in {"completed", "failed"}:
         return False
-    if result["status"] not in {"infrastructure_failed", "interrupted"}:
+    if result["status"] != "infrastructure_failed":
         raise RuntimeError(f"unknown trial status in {path}: {result['status']}")
     return _remaining_attempts(config, path) > 0
 
@@ -142,8 +141,6 @@ def _run_profile(
     first_attempt = len(existing_attempts) + 1
     final: AttemptResult | None = None
     for offset in range(_remaining_attempts(config, selected_path)):
-        if cancellation_requested():
-            raise InterruptedError("benchmark cancellation requested")
         number = first_attempt + offset
         output = attempts_root / f"attempt-{number:03d}"
         final = run_attempt(
@@ -164,7 +161,6 @@ def _run_profile(
         if (
             final.status == "completed"
             or not final.infrastructure_failure
-            or cancellation_requested()
         ):
             break
     assert final is not None
@@ -240,7 +236,6 @@ def _run_protocol(
         "web_search": "disabled",
         "history_persistence": "none",
         "git_ceiling": "workspace-parent",
-        "checkpoint_every": config.run.checkpoint_every,
         "infrastructure_retries": config.run.infrastructure_retries,
         "idle_timeout_seconds": config.run.idle_timeout_seconds,
         "mcp_tool_timeout_seconds": config.zvec_grep.mcp_tool_timeout_seconds,
@@ -292,7 +287,6 @@ def _result_from_dict(raw: dict[str, Any]) -> AttemptResult:
         wall_seconds=float(raw["wall_seconds"]),
         exit_code=int(raw["exit_code"]),
         infrastructure_failure=bool(raw["infrastructure_failure"]),
-        interrupted_by=raw["interrupted_by"],
         trace=TraceSummary(
             thread_id=trace["thread_id"],
             final_response=str(trace["final_response"]),
@@ -392,8 +386,14 @@ def run_benchmark(
         raise RuntimeError(
             "benchmark preparation is incomplete: " + ", ".join(missing_states)
         )
-    run_id = run_id or new_run_id()
-    run_root = artifacts / "runs" / run_id
+    if run_id is None:
+        run_id = new_run_id()
+        run_root = artifacts / "runs" / run_id
+        if run_root.exists():
+            raise RuntimeError(f"benchmark run already exists: {run_id}")
+    else:
+        run_root = find_run(artifacts, run_id)
+    Console().identifier("Run", run_id)
     metadata_path = run_root / "run.json"
     profiles_root = run_root / "profiles"
     profiles_manifest_path = profiles_root / "manifest.json"
@@ -481,7 +481,6 @@ def run_benchmark(
             },
             "profiles_manifest": str(profiles_manifest_path.resolve()),
             "profiles_fingerprint": profile_manifest["fingerprint"],
-            "checkpoint_every": config.run.checkpoint_every,
             "protocol": protocol,
             "protocol_fingerprint": _protocol_fingerprint(protocol),
             "configuration": str(config.path),
@@ -520,60 +519,46 @@ def run_benchmark(
         metadata["runtime_setups"].append(runtime_setup)
         write_json(metadata_path, metadata)
 
-    last_checkpoint = (
-        completed_pairs(run_root, query_ids) // config.run.checkpoint_every
-    )
-    reset_cancellation()
-    try:
-        for query, profile in tasks:
-            query_id = str(query["query_id"])
-            result = _run_profile(
-                config,
-                artifacts,
-                run_root,
-                query,
-                profile,
-                model,
-                reasoning_effort,
-                profiles_root,
-                str(codex),
-                str(zg),
-            )
-            _write_pair(run_root, query_id)
-            done = completed_pairs(run_root, query_ids)
-            print(
-                json.dumps(
-                    {
-                        "run_id": run_id,
-                        "query_id": query_id,
-                        "profile": profile,
-                        "status": result.status,
-                        "pairs": done,
-                        "total_pairs": len(query_ids),
-                        "input_tokens": (
-                            result.trace.usage.input_tokens
-                            if result.trace.usage
-                            else None
-                        ),
-                        "output_tokens": (
-                            result.trace.usage.output_tokens
-                            if result.trace.usage
-                            else None
-                        ),
-                        "wall_seconds": round(result.wall_seconds, 3),
-                    }
-                ),
-                flush=True,
-            )
-            checkpoint = done // config.run.checkpoint_every
-            if checkpoint > last_checkpoint:
-                from .report import write_checkpoint
-
-                write_checkpoint(run_root, through=done)
-                last_checkpoint = checkpoint
-    except KeyboardInterrupt:
-        terminate_active_processes()
-        raise
+    for query, profile in tasks:
+        query_id = str(query["query_id"])
+        result = _run_profile(
+            config,
+            artifacts,
+            run_root,
+            query,
+            profile,
+            model,
+            reasoning_effort,
+            profiles_root,
+            str(codex),
+            str(zg),
+        )
+        _write_pair(run_root, query_id)
+        done = completed_pairs(run_root, query_ids)
+        print(
+            json.dumps(
+                {
+                    "run_id": run_id,
+                    "query_id": query_id,
+                    "profile": profile,
+                    "status": result.status,
+                    "pairs": done,
+                    "total_pairs": len(query_ids),
+                    "input_tokens": (
+                        result.trace.usage.input_tokens
+                        if result.trace.usage
+                        else None
+                    ),
+                    "output_tokens": (
+                        result.trace.usage.output_tokens
+                        if result.trace.usage
+                        else None
+                    ),
+                    "wall_seconds": round(result.wall_seconds, 3),
+                }
+            ),
+            flush=True,
+        )
 
     metadata["finished_at"] = utc_now()
     metadata["completed_pairs"] = completed_pairs(run_root, query_ids)
@@ -592,7 +577,7 @@ def resume_benchmark(
     codex_bin: str = "codex",
     zg_bin: str = "zg",
 ) -> Path:
-    metadata = read_json(artifacts / "runs" / run_id / "run.json")
+    metadata = read_json(find_run(artifacts, run_id) / "run.json")
     return run_benchmark(
         config,
         artifacts,
