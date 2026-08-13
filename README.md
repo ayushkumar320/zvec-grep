@@ -42,9 +42,6 @@ terminal, or let your agent use it for you.
   <img src="./.github/assets/zvec-grep-tour.gif" width="1000" alt="Install the agent integration, index a workspace, and let the agent search it with zvec-grep" />
 </div>
 
-Install the integration once, index the workspace, then search from the terminal
-or ask your agent naturally.
-
 <a id="features"></a>
 
 ## 💫 Why zg?
@@ -64,47 +61,33 @@ or ask your agent naturally.
 
 ## 🚀 Try it yourself
 
-Requires Node.js 22 or newer and a configured
-[OpenCode](https://opencode.ai/) installation. The agent example explicitly
-selects a free model, so it does not depend on your default provider.
-
 ### 1. Set up a sample bookshelf
 
 ```bash
+# Requires Node.js 22 or newer.
 npm install -g @zvec/zvec-grep
-zg install --target opencode --yes
 
 mkdir zg-mystery && cd zg-mystery
-curl -L https://www.gutenberg.org/files/11/11-0.txt -o alice-in-wonderland.txt
-curl -L https://www.gutenberg.org/files/345/345-0.txt -o dracula.txt
-curl -L https://www.gutenberg.org/files/84/84-0.txt -o frankenstein.txt
-curl -L https://www.gutenberg.org/files/834/834-0.txt -o sherlock-holmes.txt
+curl --retry 3 --retry-all-errors --progress-bar -fL \
+  -o alice-in-wonderland.txt https://raw.githubusercontent.com/GITenberg/Alice-s-Adventures-in-Wonderland_11/master/11.txt \
+  -o sherlock-holmes.txt https://raw.githubusercontent.com/GITenberg/The-Memoirs-of-Sherlock-Holmes_834/master/834.txt
 
 zg index --embedding local/potion-retrieval-32m
 ```
-
-This creates a small bookshelf of four public-domain novels and indexes it
-locally with Potion Retrieval.
-
-Installation starts the shared daemon immediately. The default MCP transport is
-stdio: the agent runs `zg server --stdio`, which safely starts or reuses it
-again after a reboot. Advanced users can keep direct HTTP configuration with
-`zg install --mcp-transport http` and `zg server on`.
-
-Use `zg install --mcp-toolset full` when the installed MCP integration should
-also expose managed rg, index, and status tools. The default is `agent`.
 
 ### 2. Choose how to search
 
 #### For agents: ask with OpenCode
 
+With [OpenCode](https://opencode.ai/) configured:
+
 ```bash
+zg install --target opencode --yes
 opencode run --model opencode/deepseek-v4-flash-free \
   "An unseen creature left a few marks. What did the detective infer? Cite local evidence."
 ```
 
-OpenCode chooses zg on its own—the prompt does not name a tool. Query rewrites
-may vary by model, but a typical run looks like this:
+OpenCode chooses zg on its own—the prompt does not name a tool:
 
 ```text
 ⚙ zvec_grep_zvec_grep_search {"root":".../zg-mystery","query":"An unseen creature left a few marks. What did the detective infer?","fts":["marks","unseen creature","inferred","detective"],"fuse":true}
@@ -136,8 +119,8 @@ Search the same bookshelf directly, without an agent:
 zg query --human "An unseen creature left a few marks. What did the detective infer?" --limit 3
 ```
 
-zg returns the relevant passages from `sherlock-holmes.txt`, ranked ahead of the
-other novels.
+zg returns the relevant passages from `sherlock-holmes.txt`, ranked ahead of
+`alice-in-wonderland.txt`.
 
 <a id="benchmarks"></a>
 

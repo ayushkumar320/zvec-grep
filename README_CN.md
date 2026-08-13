@@ -42,9 +42,6 @@
   <img src="./.github/assets/zvec-grep-tour.gif" width="1000" alt="安装 Agent 集成、为工作区建索引并让 Agent 使用 zvec-grep 检索本地内容" />
 </div>
 
-只需安装一次集成并为工作区建索引，之后既可以在终端中搜索，也可以直接向
-Agent 提问。
-
 <a id="features"></a>
 
 ## 💫 为什么选择 zg？
@@ -64,65 +61,54 @@ Agent 提问。
 
 ## 🚀 动手体验
 
-需要 Node.js 22 或更新版本，以及已经完成配置的
-[OpenCode](https://opencode.ai/)。Agent 示例会显式选择免费模型，不依赖你配置的
-默认模型提供方。
-
 ### 1. 准备示例书架
 
 ```bash
+# 需要 Node.js 22 或更新版本。
 npm install -g @zvec/zvec-grep
-zg install --target opencode --yes
 
 mkdir zg-mystery && cd zg-mystery
-curl -L https://www.gutenberg.org/files/11/11-0.txt -o alice-in-wonderland.txt
-curl -L https://www.gutenberg.org/files/345/345-0.txt -o dracula.txt
-curl -L https://www.gutenberg.org/files/84/84-0.txt -o frankenstein.txt
-curl -L https://www.gutenberg.org/files/834/834-0.txt -o sherlock-holmes.txt
+curl --retry 3 --retry-all-errors --progress-bar -fL \
+  -o alice-in-wonderland.txt https://raw.githubusercontent.com/GITenberg/Alice-s-Adventures-in-Wonderland_11/master/11.txt \
+  -o sherlock-holmes.txt https://raw.githubusercontent.com/GITenberg/The-Memoirs-of-Sherlock-Holmes_834/master/834.txt
 
 zg index --embedding local/potion-retrieval-32m
 ```
-
-这会创建一个包含四本公版小说的小书架，并使用 Potion Retrieval 在本地建立索引。
-
-安装时会立即启动共享 Daemon。默认 MCP 传输方式为 stdio：Agent 会运行
-`zg server --stdio`，电脑重启后该命令会再次安全启动或复用 Daemon。高级用户
-可以通过 `zg install --mcp-transport http` 保留 HTTP 直连，并自行使用
-`zg server on` 管理后续启动。
-
-如需让安装后的 MCP 集成额外暴露 managed rg、index 和 status 工具，可使用
-`zg install --mcp-toolset full`；默认值为 `agent`。
 
 ### 2. 选择检索方式
 
 #### Agent：通过 OpenCode 提问
 
+配置好 [OpenCode](https://opencode.ai/) 后：
+
 ```bash
+zg install --target opencode --yes
 opencode run --model opencode/deepseek-v4-flash-free \
   "An unseen creature left a few marks. What did the detective infer? Cite local evidence."
 ```
 
-Prompt 中没有指定任何工具，OpenCode 会自主选择 zg。不同模型改写的
-Query 可能略有不同，一次典型的执行过程如下：
+Prompt 中没有指定任何工具，OpenCode 会自主选择 zg：
 
 ```text
 ⚙ zvec_grep_zvec_grep_search {"root":".../zg-mystery","query":"An unseen creature left a few marks. What did the detective infer?","fts":["marks","unseen creature","inferred","detective"],"fuse":true}
 → Read sherlock-holmes.txt [offset=5440, limit=120]
 
 Answer:
-侦探是《驼背人》中的福尔摩斯。根据动物留下的脚印，他推断：
+The detective is Sherlock Holmes in *The Adventure of the Crooked Man*.
+From the animal's foot-marks, he inferred:
 
-- 它不是狗、猫、猴子或其他常见动物：脚印有五个肉垫和长爪，整个脚印
-  接近一把甜点勺大小（sherlock-holmes.txt:5479-5486）。
-- 它身体细长、四肢很短：身长接近两英尺，步幅却只有约三英寸
-  （sherlock-holmes.txt:5497-5502）。
-- 它是食肉动物，因为它爬上窗帘，试图接近金丝雀笼
-  （sherlock-holmes.txt:5509-5510）。
-- 它很可能属于鼬或白鼬一类，但体型异常大
-  （sherlock-holmes.txt:5514-5516）。
+- It was not a dog, cat, monkey, or other familiar creature: its print had
+  five foot-pads, long nails, and was nearly as large as a dessert-spoon
+  (sherlock-holmes.txt:5479-5486).
+- It had a long body and very short legs: nearly two feet long, but with a
+  stride of only about three inches (sherlock-holmes.txt:5497-5502).
+- It was carnivorous because it climbed the curtain toward a canary's cage
+  (sherlock-holmes.txt:5509-5510).
+- It was probably from the weasel or stoat tribe, though unusually large
+  (sherlock-holmes.txt:5514-5516).
 
-福尔摩斯还推断，一名男子和它一起从窗户进入房间，离开时带走了钥匙
-（sherlock-holmes.txt:5464-5470, 5527-5528）。
+Holmes also inferred that a man entered through the window with it and later
+left with the key (sherlock-holmes.txt:5464-5470, 5527-5528).
 ```
 
 #### 用户：直接检索
@@ -133,7 +119,8 @@ Answer:
 zg query --human "An unseen creature left a few marks. What did the detective infer?" --limit 3
 ```
 
-zg 会从四本小说中对相关段落进行排序，并将 `sherlock-holmes.txt` 中的证据排在前面。
+zg 会将 `sherlock-holmes.txt` 中的相关段落排在
+`alice-in-wonderland.txt` 前面。
 
 <a id="benchmarks"></a>
 

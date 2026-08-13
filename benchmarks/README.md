@@ -8,7 +8,6 @@ execution, and generated artifacts.
 
 - [`browse-comp-plus/`](browse-comp-plus/README.md): knowledge-base retrieval
   and end-to-end answer evaluation on BrowseComp-Plus.
-- [`coir-zg/`](coir-zg/README.md): information-retrieval evaluation on CoIR.
 - [`coding/`](coding/README.md): paired agent evaluations on SWE-bench Verified
   and Terminal-Bench 2.1.
 
