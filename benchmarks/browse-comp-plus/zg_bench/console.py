@@ -35,15 +35,35 @@ class Console:
         label = self._styled(f"[{current}/{total}]", "1", "36")
         self._line(f"{label} {self._styled(value, '1')}")
 
+    def item(self, current: int, total: int, value: str) -> None:
+        label = self._styled(f"[{current}/{total}]", "1", "36")
+        self._line(f"{label} {value}")
+
     def detail(self, name: str, value: str | Path) -> None:
         label = self._styled(f"{name}:", "2")
         self._line(f"  {label} {value}")
+
+    def metric(
+        self,
+        name: str,
+        value: str,
+        comparison: str,
+        *,
+        favorable: bool | None,
+    ) -> None:
+        label = self._styled(f"{name}:", "2")
+        code = "32" if favorable is True else "31" if favorable is False else "2"
+        change = self._styled(comparison, code)
+        self._line(f"  {label} {value} · {change}")
 
     def success(self, value: str) -> None:
         self._line(f"{self._styled('✓', '1', '32')} {value}")
 
     def activity(self, value: str) -> None:
         self._line(f"{self._styled('→', '36')} {value}")
+
+    def warning(self, value: str) -> None:
+        self._line(f"{self._styled('!', '1', '33')} {value}")
 
     def error(self, value: str) -> None:
         lines = value.splitlines() or ["Unknown error"]

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -11,9 +12,9 @@ from .config import DEFAULT_ARTIFACTS_DIR, load_config
 from .corpus import materialize, prepared_corpus, workspace_root
 from .dataset import fetch, prepared_dataset
 from .doctor import format_report, run_doctor
-from .evaluate import export_manual, export_official
-from .index import build_index, prepared_index
-from .report import generate_report
+from .evaluate import evaluate
+from .index import build_index, index_is_ready, prepared_index
+from .report import generate_global_report, generate_report
 from .runner import resume_benchmark, run_benchmark
 
 
@@ -44,8 +45,6 @@ def build_parser() -> argparse.ArgumentParser:
         default="study",
         help="suite name or .txt path (default: study)",
     )
-    run.add_argument("--model", required=True)
-    run.add_argument("--reasoning")
     run.add_argument("--run-id")
     run.add_argument("--codex-bin", default="codex")
     run.add_argument("--zg-bin", default="zg")
@@ -64,16 +63,21 @@ def build_parser() -> argparse.ArgumentParser:
     inspect.add_argument("--profile", choices=("baseline", "zvec-grep"), required=True)
     inspect.add_argument("--events", action="store_true")
 
-    evaluate = subparsers.add_parser(
-        "evaluate", help="export official input or a manual review sheet"
+    evaluate_parser = subparsers.add_parser(
+        "evaluate", help="judge completed runs and generate reports"
     )
-    evaluate.add_argument("run_id")
-    evaluate.add_argument(
-        "--evaluator", choices=("official", "manual"), default="official"
-    )
+    evaluate_parser.add_argument("run_id", nargs="?")
+    evaluate_parser.add_argument("--codex-bin", default="codex")
 
-    report = subparsers.add_parser("report", help="regenerate a run report")
-    report.add_argument("run_id")
+    report = subparsers.add_parser(
+        "report", help="generate a run or global report"
+    )
+    report.add_argument("run_id", nargs="?")
+
+    clean = subparsers.add_parser(
+        "clean", help="delete runs and reports while preserving prepared data"
+    )
+    clean.add_argument("--yes", action="store_true", help="skip confirmation")
     return parser
 
 
@@ -126,6 +130,196 @@ def _status(artifacts: Path, run_id: str | None) -> int:
     if checkpoints:
         print(f"Latest checkpoint: {checkpoints[-1]}")
     return 0
+
+
+def _clean(artifacts: Path, *, confirmed: bool) -> int:
+    runs = artifacts / "runs"
+    report = artifacts / "report"
+    run_count = (
+        sum(path.is_dir() for path in runs.iterdir()) if runs.is_dir() else 0
+    )
+    if run_count == 0 and not report.exists():
+        console = Console()
+        console.heading("BrowseComp-Plus clean")
+        console.success("No runs or global report to remove")
+        return 0
+
+    console = Console()
+    console.heading("BrowseComp-Plus clean")
+    console.detail("Runs", f"{run_count:,}")
+    console.detail("Preserved", "downloaded data, workspaces, index, and runtime")
+    if not confirmed:
+        if not sys.stdin.isatty():
+            console.error("confirmation required; rerun with --yes")
+            return 1
+        answer = console.prompt(
+            "Delete all runs and generated reports? [y/N] "
+        ).strip().lower()
+        if answer not in {"y", "yes"}:
+            console.warning("Nothing removed")
+            return 0
+
+    try:
+        if runs.exists():
+            shutil.rmtree(runs)
+        if report.exists():
+            shutil.rmtree(report)
+    except OSError as error:
+        console.error(f"could not remove benchmark results: {error}")
+        return 1
+    console.success(f"Removed {run_count:,} runs and generated reports")
+    return 0
+
+
+def _quality_change(baseline: float, treatment: float) -> tuple[str, bool | None]:
+    difference = treatment - baseline
+    if abs(difference) < 0.005:
+        return "Δ 0.00 pp", None
+    return f"Δ {difference:+.2f} pp", difference > 0
+
+
+def _resource_change(
+    baseline: float, treatment: float, *, speedup: bool = False
+) -> tuple[str, bool | None]:
+    if baseline == treatment:
+        return "no change", None
+    if baseline == 0:
+        return "increased from zero", False
+    difference = 100 * abs(treatment - baseline) / baseline
+    direction = "less" if treatment < baseline else "more"
+    rendered = f"{difference:.1f}% {direction}"
+    if speedup and treatment > 0:
+        rendered += f" · {baseline / treatment:.2f}× speedup"
+    return rendered, treatment < baseline
+
+
+def _show_report(console: Console, report: Path) -> None:
+    summary = json.loads((report / "summary.json").read_text(encoding="utf-8"))
+    answer = summary["quality"]["answer"]
+    baseline = summary["profiles"]["baseline"]
+    treatment = summary["profiles"]["zvec-grep"]
+    console.success("Report generated")
+    console.detail(
+        "Run",
+        f"{summary['run_id']} · {summary['suite']} · {summary['model']} · "
+        f"reasoning {summary['reasoning_effort']}",
+    )
+    console.detail(
+        "Pairs", f"{summary['completed_pairs']} / {summary['planned_pairs']} completed"
+    )
+    if answer.get("status") in {"scored", "partial"}:
+        baseline_quality = float(answer["baseline_accuracy_percent"])
+        treatment_quality = float(answer["treatment_accuracy_percent"])
+        change, favorable = _quality_change(baseline_quality, treatment_quality)
+        console.metric(
+            "Quality",
+            f"baseline {baseline_quality:.2f}% · "
+            f"zvec-grep {treatment_quality:.2f}%",
+            change,
+            favorable=favorable,
+        )
+    else:
+        console.detail("Quality", "pending evaluation")
+    baseline_tokens = (
+        baseline["tokens"]["input_total"] + baseline["tokens"]["output_total"]
+    )
+    treatment_tokens = (
+        treatment["tokens"]["input_total"] + treatment["tokens"]["output_total"]
+    )
+    change, favorable = _resource_change(baseline_tokens, treatment_tokens)
+    console.metric(
+        "Tokens",
+        f"baseline {baseline_tokens:,} · zvec-grep {treatment_tokens:,}",
+        change,
+        favorable=favorable,
+    )
+    change, favorable = _resource_change(
+        baseline["wall_seconds"]["total"],
+        treatment["wall_seconds"]["total"],
+        speedup=True,
+    )
+    console.metric(
+        "Wall time",
+        f"baseline {baseline['wall_seconds']['total']:,.1f}s · "
+        f"zvec-grep {treatment['wall_seconds']['total']:,.1f}s",
+        change,
+        favorable=favorable,
+    )
+    console.detail("Report", report / "summary.md")
+
+
+def _show_global_report(console: Console, report: Path) -> None:
+    summary = json.loads((report / "summary.json").read_text(encoding="utf-8"))
+    console.success("Global report generated")
+    configuration_label = (
+        "configuration" if summary["group_count"] == 1 else "configurations"
+    )
+    console.detail(
+        "Scope",
+        f"{summary['selected_cases']:,} selected cases · "
+        f"{summary['group_count']} {configuration_label}",
+    )
+    if summary["pending_count"]:
+        console.detail(
+            "Pending",
+            f"{summary['pending_count']:,} completed cases awaiting evaluation",
+        )
+    for index, group in enumerate(summary["groups"], 1):
+        if summary["group_count"] > 1:
+            console.blank()
+            console.item(
+                index,
+                summary["group_count"],
+                f"Configuration {group['group_id']}",
+            )
+            configuration = group["configuration"]
+            console.detail(
+                "Setup",
+                f"{configuration['model']} · reasoning "
+                f"{configuration['reasoning_effort']} · "
+                f"{configuration['embedding']}",
+            )
+        quality = group["quality"]
+        baseline = group["profiles"]["baseline"]
+        treatment = group["profiles"]["zvec-grep"]
+        baseline_quality = float(quality["baseline_accuracy_percent"])
+        treatment_quality = float(quality["treatment_accuracy_percent"])
+        change, favorable = _quality_change(baseline_quality, treatment_quality)
+        console.metric(
+            "Quality",
+            f"baseline {baseline_quality:.2f}% · "
+            f"zvec-grep {treatment_quality:.2f}%",
+            change,
+            favorable=favorable,
+        )
+        baseline_tokens = (
+            baseline["tokens"]["input_total"]
+            + baseline["tokens"]["output_total"]
+        )
+        treatment_tokens = (
+            treatment["tokens"]["input_total"]
+            + treatment["tokens"]["output_total"]
+        )
+        change, favorable = _resource_change(baseline_tokens, treatment_tokens)
+        console.metric(
+            "Tokens",
+            f"baseline {baseline_tokens:,} · zvec-grep {treatment_tokens:,}",
+            change,
+            favorable=favorable,
+        )
+        baseline_wall = float(baseline["wall_seconds"]["total"])
+        treatment_wall = float(treatment["wall_seconds"]["total"])
+        change, favorable = _resource_change(
+            baseline_wall, treatment_wall, speedup=True
+        )
+        console.metric(
+            "Wall time",
+            f"baseline {baseline_wall:,.1f}s · "
+            f"zvec-grep {treatment_wall:,.1f}s",
+            change,
+            favorable=favorable,
+        )
+    console.detail("Report", report / "summary.md")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -210,7 +404,12 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         index_dir = workspace_root(artifacts, "zvec-grep") / ".zvec-grep"
-        reuse_index = prepared_index(config, artifacts) is not None
+        existing_index = prepared_index(config, artifacts)
+        reuse_index = existing_index is not None and index_is_ready(
+            config,
+            artifacts,
+            zg_bin=args.zg_bin,
+        )
         rebuild_index = index_dir.is_dir() and not reuse_index
         if not reuse_index and not args.yes:
             if not sys.stdin.isatty():
@@ -240,16 +439,19 @@ def main(argv: list[str] | None = None) -> int:
             else "Building reusable index"
         )
         console.activity(activity)
-        try:
-            output = build_index(
-                config,
-                artifacts,
-                zg_bin=args.zg_bin,
-                rebuild=rebuild_index,
-            )
-        except RuntimeError as error:
-            console.error(str(error))
-            return 1
+        if reuse_index:
+            output = existing_index
+        else:
+            try:
+                output = build_index(
+                    config,
+                    artifacts,
+                    zg_bin=args.zg_bin,
+                    rebuild=rebuild_index,
+                )
+            except RuntimeError as error:
+                console.error(str(error))
+                return 1
         result = (
             "Reused existing index"
             if reuse_index
@@ -267,8 +469,6 @@ def main(argv: list[str] | None = None) -> int:
             config,
             artifacts,
             suite=args.suite,
-            model=args.model,
-            reasoning_effort=args.reasoning,
             run_id=args.run_id,
             codex_bin=args.codex_bin,
             zg_bin=args.zg_bin,
@@ -306,16 +506,50 @@ def main(argv: list[str] | None = None) -> int:
             print(Path(raw["paths"]["events"]).read_text(encoding="utf-8"), end="")
         return 0
     if args.command == "evaluate":
-        run_root = artifacts / "runs" / args.run_id
-        print(
-            export_official(artifacts, run_root)
-            if args.evaluator == "official"
-            else export_manual(artifacts, run_root)
+        console = Console()
+        console.heading("BrowseComp-Plus evaluate")
+        try:
+            reports = evaluate(
+                artifacts,
+                args.run_id,
+                codex_bin=args.codex_bin,
+                console=console,
+            )
+        except RuntimeError as error:
+            console.error(str(error))
+            return 1
+        if not reports:
+            console.success("No unevaluated completed runs found")
+            return 0
+        for report in reports:
+            console.blank()
+            _show_report(console, report)
+        complete = all(
+            json.loads(
+                (report.parent / "evaluation" / "summary.json").read_text(
+                    encoding="utf-8"
+                )
+            )["status"]
+            == "completed"
+            for report in reports
         )
-        return 0
+        return 0 if complete else 1
     if args.command == "report":
-        print(generate_report(artifacts / "runs" / args.run_id))
+        console = Console()
+        console.heading("BrowseComp-Plus report")
+        try:
+            if args.run_id:
+                report = generate_report(artifacts / "runs" / args.run_id)
+                _show_report(console, report)
+            else:
+                report = generate_global_report(artifacts)
+                _show_global_report(console, report)
+        except (FileNotFoundError, RuntimeError) as error:
+            console.error(str(error))
+            return 1
         return 0
+    if args.command == "clean":
+        return _clean(artifacts, confirmed=args.yes)
     raise AssertionError(f"unhandled command: {args.command}")
 
 

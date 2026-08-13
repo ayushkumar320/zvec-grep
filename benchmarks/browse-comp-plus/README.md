@@ -49,53 +49,62 @@ Subsequent runs reuse completed download, corpus, and index stages.
 Verify the complete paired workflow on one query:
 
 ```sh
-zg-bench run --suite smoke --model <codex-model> --reasoning medium
+zg-bench run --suite smoke
 ```
 
-Use the exact model ID exposed to the authenticated Codex account. The runner
-validates cached model metadata before creating trials.
+The Codex model and reasoning effort are configured in `benchmark.toml`. The
+runner validates the configured model before creating trials.
 
 Run the fixed random 5-query CI subset:
 
 ```sh
-zg-bench run --suite ci --model <codex-model> --reasoning medium
+zg-bench run --suite ci
 ```
 
 Run the first 80 cases in the pinned official dataset order for the study:
 
 ```sh
-zg-bench run --suite study --model <codex-model> --reasoning medium
+zg-bench run --suite study
 ```
 
 Run all 830 cases in the pinned official dataset:
 
 ```sh
-zg-bench run --suite full --model <codex-model> --reasoning medium
+zg-bench run --suite full
 ```
 
 ## Evaluate and report
 
-Export the format accepted by the official evaluator:
+Evaluate one run with a blind Codex judge and generate its final report:
 
 ```sh
-zg-bench evaluate <run-id> --evaluator official
+zg-bench evaluate <run-id>
 ```
 
-Alternatively, create a manual paired-review sheet:
+Evaluate every run with completed pairs that does not yet have complete scores:
 
 ```sh
-zg-bench evaluate <run-id> --evaluator manual
+zg-bench evaluate
 ```
-
-Enter scores from 0 to 1 in the generated sheet, then regenerate the report.
-The report presents retrieval against the official evidence documents and gold
-documents separately, and groups simultaneous tool calls into one interaction
-batch.
 
 Regenerate the token, timing, completion, and paired-case report with:
 
 ```sh
 zg-bench report <run-id>
+```
+
+Generate a case-level report that selects the latest fully evaluated pair for
+each query and comparable experiment configuration:
+
+```sh
+zg-bench report
+```
+
+Delete all runs and generated reports while preserving the downloaded data,
+workspaces, and reusable index:
+
+```sh
+zg-bench clean
 ```
 
 ## Artifacts

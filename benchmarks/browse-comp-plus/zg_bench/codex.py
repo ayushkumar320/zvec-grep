@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import sys
 import threading
 import time
 from datetime import UTC, datetime
@@ -33,10 +34,35 @@ INFRASTRUCTURE_PATTERN = (
 _ACTIVE_PROCESSES: set[subprocess.Popen[bytes]] = set()
 _ACTIVE_PROCESSES_LOCK = threading.Lock()
 _CANCEL_REQUESTED = threading.Event()
+HEARTBEAT_SECONDS = 30
 
 
 def _iso_now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _elapsed(seconds: float) -> str:
+    minutes, seconds = divmod(int(seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    return (
+        f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        if hours
+        else f"{minutes:02d}:{seconds:02d}"
+    )
+
+
+def _progress(message: str, width: int) -> int:
+    if not sys.stderr.isatty():
+        print(message, file=sys.stderr, flush=True)
+        return width
+    width = max(width, len(message))
+    print(f"\r{message:<{width}}", end="", file=sys.stderr, flush=True)
+    return width
+
+
+def _clear_progress(width: int) -> None:
+    if sys.stderr.isatty() and width:
+        print(f"\r{'':<{width}}\r", end="", file=sys.stderr, flush=True)
 
 
 def _copy_stream(
@@ -277,6 +303,10 @@ def run_attempt(
     started = time.monotonic()
     idle_killed = False
     activity = [started]
+    next_heartbeat = started + HEARTBEAT_SECONDS
+    progress_width = _progress(
+        f"→ case {query_id} · {profile} · attempt {attempt}", 0
+    )
     with events_path.open("wb") as events, stderr_path.open("wb") as errors:
         process = subprocess.Popen(
             command,
@@ -306,9 +336,18 @@ def run_attempt(
             process.stdin.write(prompt.encode("utf-8"))
             process.stdin.close()
             while process.poll() is None:
+                now = time.monotonic()
+                if now >= next_heartbeat:
+                    progress_width = _progress(
+                        f"· case {query_id} · {profile} · attempt {attempt} · "
+                        f"elapsed {_elapsed(now - started)} · "
+                        f"last activity {_elapsed(now - activity[0])} ago",
+                        progress_width,
+                    )
+                    next_heartbeat = now + HEARTBEAT_SECONDS
                 if (
                     idle_timeout_seconds
-                    and time.monotonic() - activity[0] > idle_timeout_seconds
+                    and now - activity[0] > idle_timeout_seconds
                 ):
                     idle_killed = True
                     _terminate_group(process)
@@ -323,6 +362,7 @@ def run_attempt(
         finally:
             with _ACTIVE_PROCESSES_LOCK:
                 _ACTIVE_PROCESSES.discard(process)
+            _clear_progress(progress_width)
 
     finished_at = _iso_now()
     wall_seconds = time.monotonic() - started

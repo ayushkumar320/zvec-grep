@@ -356,12 +356,12 @@ def run_benchmark(
     artifacts: Path,
     *,
     suite: str,
-    model: str,
-    reasoning_effort: str | None = None,
     run_id: str | None = None,
     codex_bin: str = "codex",
     zg_bin: str = "zg",
 ) -> Path:
+    model = config.run.model
+    reasoning_effort = config.run.reasoning_effort
     query_path = artifacts / "source" / "browsecomp_plus_decrypted.jsonl"
     if not query_path.is_file():
         raise RuntimeError("dataset is missing; run 'zg-bench prepare' first")
@@ -405,8 +405,11 @@ def run_benchmark(
             for query_id, order in metadata["profile_orders"].items()
         }
         if metadata["model"] != model:
-            raise RuntimeError("cannot resume a run with a different model")
-        reasoning_effort = str(metadata["reasoning_effort"])
+            raise RuntimeError("cannot resume a run after changing [run].model")
+        if metadata["reasoning_effort"] != reasoning_effort:
+            raise RuntimeError(
+                "cannot resume a run after changing [run].reasoning_effort"
+            )
         suite = str(metadata["suite"])
         recorded_manifest = Path(metadata["profiles_manifest"])
         if recorded_manifest.resolve() != profiles_manifest_path.resolve():
@@ -440,7 +443,6 @@ def run_benchmark(
         }
         query_ids = load_suite(suite, queries)
         profile_orders = _randomized_profile_orders(query_ids)
-        reasoning_effort = reasoning_effort or config.run.reasoning_effort
         prepare_profiles(
             config,
             artifacts,
@@ -501,7 +503,6 @@ def run_benchmark(
     missing = [query_id for query_id in query_ids if query_id not in by_id]
     if missing:
         raise RuntimeError(f"run references missing queries: {', '.join(missing)}")
-    reasoning_effort = reasoning_effort or config.run.reasoning_effort
     for query_id in query_ids:
         _write_pair(run_root, query_id)
     tasks: list[tuple[dict[str, Any], Profile]] = []
@@ -596,8 +597,6 @@ def resume_benchmark(
         config,
         artifacts,
         suite=str(metadata["suite"]),
-        model=str(metadata["model"]),
-        reasoning_effort=str(metadata["reasoning_effort"]),
         run_id=run_id,
         codex_bin=codex_bin,
         zg_bin=zg_bin,

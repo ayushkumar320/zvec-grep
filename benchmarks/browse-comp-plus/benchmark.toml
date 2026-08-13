@@ -9,17 +9,15 @@ corpus_split = "train"
 expected_corpus_documents = 100195
 
 [zvec_grep]
-embedding = "local/potion-code-16m-v2"
+embedding = "qwen/qwen3.7-text-embedding"
 embedding_concurrency = 60
 max_filesize = "64M"
 device = "auto"
 mcp_tool_timeout_seconds = 600
 
 [run]
+model = "gpt-5.6-sol"
 reasoning_effort = "medium"
 checkpoint_every = 10
 infrastructure_retries = 2
 idle_timeout_seconds = 1800
-
-[evaluation]
-official_repository = "https://github.com/texttron/BrowseComp-Plus"

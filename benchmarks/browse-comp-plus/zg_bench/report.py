@@ -9,7 +9,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from .artifacts import atomic_write_text, read_json, utc_now, write_json
+from .artifacts import atomic_write_text, fingerprint, read_json, utc_now, write_json
 from .dataset import load_queries
 from .models import PROFILES
 
@@ -95,10 +95,14 @@ def generate_report(run_root: Path) -> Path:
     query_path = run_root.parent.parent / "source" / "browsecomp_plus_decrypted.jsonl"
     queries = {str(query["query_id"]): query for query in load_queries(query_path)}
     eligible_ids = {str(pair["query_id"]) for pair in eligible_pairs}
-    answer_quality = _manual_quality(run_root, eligible_ids)
+    answer_quality = _judge_quality(run_root, eligible_ids)
     retrieval_quality = _retrieval_quality(run_root, eligible_pairs, queries)
     interaction_quality = _tool_interaction_quality(
         run_root, eligible_pairs, queries
+    )
+    evaluation_summary = run_root / "evaluation" / "summary.json"
+    evaluator = (
+        read_json(evaluation_summary) if evaluation_summary.is_file() else None
     )
     summary = {
         "generated_at": utc_now(),
@@ -117,19 +121,31 @@ def generate_report(run_root: Path) -> Path:
             "answer": answer_quality,
             "retrieval": retrieval_quality,
         },
+        "evaluator": evaluator,
         "tool_interaction_batches": interaction_quality,
     }
     report_dir = run_root / "report"
     write_json(report_dir / "summary.json", summary)
     baseline = summary["profiles"]["baseline"]
     treatment = summary["profiles"]["zvec-grep"]
-    quality_line = (
-        f"Baseline {answer_quality['baseline_accuracy_percent']:.2f}% · "
-        f"zvec-grep {answer_quality['treatment_accuracy_percent']:.2f}% · "
-        f"{answer_quality['scored_pairs']} scored pairs"
-        if answer_quality.get("status") == "scored"
-        else "pending evaluation"
-    )
+    quality_line = "pending evaluation"
+    if answer_quality.get("status") in {"scored", "partial"}:
+        pair_label = "pair" if answer_quality["scored_pairs"] == 1 else "pairs"
+        quality_line = (
+            f"Baseline {answer_quality['baseline_accuracy_percent']:.2f}% · "
+            f"zvec-grep {answer_quality['treatment_accuracy_percent']:.2f}% · "
+            f"{answer_quality['scored_pairs']} scored {pair_label}"
+        )
+        if answer_quality["status"] == "partial":
+            quality_line += " (partial)"
+    evaluator_line = ""
+    if evaluator:
+        evaluator_line = (
+            f"\n- Evaluator: Codex `{evaluator['model']}` · "
+            f"{evaluator['input_tokens']} input tokens · "
+            f"{evaluator['output_tokens']} output tokens · "
+            f"{evaluator['wall_seconds']:.1f} wall seconds"
+        )
     baseline_evidence = retrieval_quality["evidence"]["baseline"]
     treatment_evidence = retrieval_quality["evidence"]["zvec-grep"]
     baseline_gold = retrieval_quality["gold"]["baseline"]
@@ -145,7 +161,7 @@ def generate_report(run_root: Path) -> Path:
 - Codex: `{summary["environment"]["codex_version"]}`
 - zvec-grep: `{summary["environment"]["zg_version"]}`
 - Completed pairs: {summary["completed_pairs"]} / {summary["planned_pairs"]}
-- Quality: {quality_line}
+- Quality: {quality_line}{evaluator_line}
 
 | Metric | Baseline | zvec-grep |
 |---|---:|---:|
@@ -155,7 +171,7 @@ def generate_report(run_root: Path) -> Path:
 | Output tokens | {baseline["tokens"]["output_total"]} | {treatment["tokens"]["output_total"]} |
 | Median total tokens | {baseline["tokens"]["median_total"]} | {treatment["tokens"]["median_total"]} |
 | Total wall seconds | {baseline["wall_seconds"]["total"]:.1f} | {treatment["wall_seconds"]["total"]:.1f} |
-| Median wall seconds | {baseline["wall_seconds"]["median"]} | {treatment["wall_seconds"]["median"]} |
+| Median wall seconds | {_display_number(baseline["wall_seconds"]["median"])} | {_display_number(treatment["wall_seconds"]["median"])} |
 | Tool calls | {baseline["tools"]["total"]} | {treatment["tools"]["total"]} |
 | Command calls | {baseline["tools"]["commands"]} | {treatment["tools"]["commands"]} |
 | zvec-search calls | {baseline["tools"]["zvec_search"]} | {treatment["tools"]["zvec_search"]} |
@@ -214,38 +230,431 @@ def generate_report(run_root: Path) -> Path:
     return report_dir
 
 
-def _manual_quality(run_root: Path, eligible_ids: set[str]) -> dict[str, Any]:
-    path = run_root / "evaluation" / "manual-review.csv"
-    if not path.is_file():
-        return {"status": "pending"}
-    scored: list[tuple[float, float]] = []
-    with path.open(encoding="utf-8", newline="") as source:
-        for line_number, row in enumerate(csv.DictReader(source), 2):
-            if str(row.get("query_id", "")) not in eligible_ids:
+def _group_identity(metadata: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    protocol = metadata.get("protocol") or {}
+    environment = metadata.get("environment") or {}
+    index = metadata.get("index_fingerprint") or {}
+    identity = {
+        "model": metadata["model"],
+        "reasoning_effort": metadata["reasoning_effort"],
+        "embedding": index.get("embedding", "unknown"),
+        "corpus_fingerprint": metadata.get("corpus_fingerprint"),
+        "index_fingerprint": index,
+        "codex_version": environment.get("codex_version", "unknown"),
+        "zvec_grep_version": environment.get("zg_version", "unknown"),
+        "configuration_sha256": protocol.get("configuration_sha256"),
+        "execution_source_sha256": protocol.get("execution_source_sha256"),
+        "task_prompt_sha256": protocol.get("task_prompt_sha256"),
+        "profiles_fingerprint": protocol.get("profiles_fingerprint"),
+        "codex_sha256": protocol.get("codex_sha256"),
+        "execution": protocol.get("execution"),
+        "sandbox": protocol.get("sandbox"),
+        "web_search": protocol.get("web_search"),
+        "history_persistence": protocol.get("history_persistence"),
+        "git_ceiling": protocol.get("git_ceiling"),
+        "infrastructure_retries": protocol.get("infrastructure_retries"),
+        "idle_timeout_seconds": protocol.get("idle_timeout_seconds"),
+        "mcp_tool_timeout_seconds": protocol.get("mcp_tool_timeout_seconds"),
+    }
+    serialized = json.dumps(identity, sort_keys=True, separators=(",", ":"))
+    return fingerprint([serialized])[:12], identity
+
+
+def _case_finished_at(
+    run_root: Path, query_id: str, metadata: dict[str, Any]
+) -> str:
+    timestamps = []
+    for profile in PROFILES:
+        path = run_root / "cases" / query_id / profile / "result.json"
+        if path.is_file():
+            finished_at = read_json(path).get("finished_at")
+            if finished_at:
+                timestamps.append(str(finished_at))
+    return max(
+        timestamps
+        or [
+            str(
+                metadata.get("finished_at")
+                or metadata.get("created_at")
+                or metadata["run_id"]
+            )
+        ]
+    )
+
+
+def _case_judgements(run_root: Path, query_id: str) -> dict[str, Any] | None:
+    paths = {
+        profile: run_root
+        / "evaluation"
+        / "results"
+        / profile
+        / f"{query_id}.json"
+        for profile in PROFILES
+    }
+    if not all(path.is_file() for path in paths.values()):
+        return None
+    results = {profile: read_json(path) for profile, path in paths.items()}
+    return (
+        results
+        if all(result.get("status") == "completed" for result in results.values())
+        else None
+    )
+
+
+def _newer(candidate: dict[str, Any], previous: dict[str, Any] | None) -> bool:
+    return previous is None or (
+        str(candidate["finished_at"]), str(candidate["run_id"])
+    ) > (str(previous["finished_at"]), str(previous["run_id"]))
+
+
+def _selected_retrieval(
+    selected: list[dict[str, Any]], queries: dict[str, dict[str, Any]]
+) -> dict[str, dict[str, dict[str, int | float]]]:
+    output: dict[str, dict[str, dict[str, int | float]]] = {}
+    for label, field in (("evidence", "evidence_docs"), ("gold", "gold_docs")):
+        recalls: dict[str, list[float]] = {profile: [] for profile in PROFILES}
+        hits: Counter[str] = Counter()
+        for candidate in selected:
+            query_id = str(candidate["query_id"])
+            expected = _expected_docids(queries[query_id][field])
+            if not expected:
                 continue
-            baseline = str(row.get("baseline_score", "")).strip()
-            treatment = str(row.get("treatment_score", "")).strip()
-            if not baseline or not treatment:
-                continue
-            values = (float(baseline), float(treatment))
-            if any(value < 0 or value > 1 for value in values):
-                raise ValueError(
-                    f"{path}:{line_number}: manual scores must be between 0 and 1"
+            for profile in PROFILES:
+                result = read_json(
+                    candidate["run_root"]
+                    / "cases"
+                    / query_id
+                    / profile
+                    / "result.json"
                 )
-            scored.append(values)
+                observed = _observed_docids(Path(result["paths"]["events"]))
+                matched = expected & observed
+                recalls[profile].append(len(matched) / len(expected))
+                hits[profile] += bool(matched)
+        output[label] = {
+            profile: {
+                "eligible_cases": len(recalls[profile]),
+                "mean_recall_percent": (
+                    100 * statistics.fmean(recalls[profile])
+                    if recalls[profile]
+                    else 0.0
+                ),
+                "hit_rate_percent": (
+                    100 * hits[profile] / len(recalls[profile])
+                    if recalls[profile]
+                    else 0.0
+                ),
+            }
+            for profile in PROFILES
+        }
+    return output
+
+
+def _selected_interactions(
+    selected: list[dict[str, Any]], queries: dict[str, dict[str, Any]]
+) -> dict[str, int]:
+    totals = {profile: 0 for profile in PROFILES}
+    for candidate in selected:
+        query_id = str(candidate["query_id"])
+        evidence = _expected_docids(queries[query_id]["evidence_docs"])
+        gold = _expected_docids(queries[query_id]["gold_docs"])
+        for profile in PROFILES:
+            result = read_json(
+                candidate["run_root"]
+                / "cases"
+                / query_id
+                / profile
+                / "result.json"
+            )
+            totals[profile] += int(
+                _tool_interaction_batches(
+                    Path(result["paths"]["events"]),
+                    evidence=evidence,
+                    gold=gold,
+                )["total"]
+            )
+    return totals
+
+
+def _global_group_summary(
+    group_id: str,
+    group: dict[str, Any],
+    queries: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    selected = sorted(
+        group["latest_scored"].values(),
+        key=lambda candidate: (
+            (0, int(candidate["query_id"]))
+            if str(candidate["query_id"]).isdigit()
+            else (1, str(candidate["query_id"]))
+        ),
+    )
+    pairs = [candidate["pair"] for candidate in selected]
+    baseline_correct = sum(
+        bool(candidate["judgements"]["baseline"]["correct"])
+        for candidate in selected
+    )
+    treatment_correct = sum(
+        bool(candidate["judgements"]["zvec-grep"]["correct"])
+        for candidate in selected
+    )
+    wins = sum(
+        bool(candidate["judgements"]["zvec-grep"]["correct"])
+        > bool(candidate["judgements"]["baseline"]["correct"])
+        for candidate in selected
+    )
+    losses = sum(
+        bool(candidate["judgements"]["zvec-grep"]["correct"])
+        < bool(candidate["judgements"]["baseline"]["correct"])
+        for candidate in selected
+    )
+    profiles = {profile: _aggregate(pairs, profile) for profile in PROFILES}
+    retrieval = _selected_retrieval(selected, queries)
+    interactions = _selected_interactions(selected, queries)
+    for profile in PROFILES:
+        profiles[profile]["tools"]["interaction_batches"] = interactions[profile]
+
+    judge_results = [
+        result
+        for candidate in selected
+        for result in candidate["judgements"].values()
+    ]
+    judge_usage = [result["usage"] for result in judge_results if result.get("usage")]
+    return {
+        "group_id": group_id,
+        "configuration": group["configuration"],
+        "selected_cases": len(selected),
+        "source_runs": len({candidate["run_id"] for candidate in selected}),
+        "quality": {
+            "baseline_correct": baseline_correct,
+            "treatment_correct": treatment_correct,
+            "baseline_accuracy_percent": 100 * baseline_correct / len(selected),
+            "treatment_accuracy_percent": 100 * treatment_correct / len(selected),
+            "treatment_wins": wins,
+            "treatment_losses": losses,
+            "ties": len(selected) - wins - losses,
+        },
+        "profiles": profiles,
+        "retrieval": retrieval,
+        "evaluator": {
+            "input_tokens": sum(row.get("input_tokens", 0) for row in judge_usage),
+            "output_tokens": sum(row.get("output_tokens", 0) for row in judge_usage),
+            "wall_seconds": sum(
+                float(result["wall_seconds"]) for result in judge_results
+            ),
+        },
+        "cases": [
+            {
+                "query_id": str(candidate["query_id"]),
+                "source_run_id": str(candidate["run_id"]),
+                "finished_at": str(candidate["finished_at"]),
+            }
+            for candidate in selected
+        ],
+    }
+
+
+def generate_global_report(artifacts: Path) -> Path:
+    runs_root = artifacts / "runs"
+    run_roots = (
+        sorted(path for path in runs_root.iterdir() if path.is_dir())
+        if runs_root.is_dir()
+        else []
+    )
+    groups: dict[str, dict[str, Any]] = {}
+    for run_root in run_roots:
+        metadata_path = run_root / "run.json"
+        if not metadata_path.is_file():
+            continue
+        metadata = read_json(metadata_path)
+        group_id, identity = _group_identity(metadata)
+        group = groups.setdefault(
+            group_id,
+            {
+                "configuration": identity,
+                "latest_eligible": {},
+                "latest_scored": {},
+            },
+        )
+        for pair in _pairs(run_root):
+            if pair.get("eligible") is not True:
+                continue
+            query_id = str(pair["query_id"])
+            candidate = {
+                "query_id": query_id,
+                "run_id": str(metadata["run_id"]),
+                "run_root": run_root,
+                "finished_at": _case_finished_at(run_root, query_id, metadata),
+                "pair": pair,
+                "judgements": _case_judgements(run_root, query_id),
+            }
+            previous = group["latest_eligible"].get(query_id)
+            if _newer(candidate, previous):
+                group["latest_eligible"][query_id] = candidate
+            if candidate["judgements"] is not None:
+                previous = group["latest_scored"].get(query_id)
+                if _newer(candidate, previous):
+                    group["latest_scored"][query_id] = candidate
+
+    query_path = artifacts / "source" / "browsecomp_plus_decrypted.jsonl"
+    queries = {
+        str(query["query_id"]): query for query in load_queries(query_path)
+    }
+    summaries = [
+        _global_group_summary(group_id, group, queries)
+        for group_id, group in sorted(groups.items())
+        if group["latest_scored"]
+    ]
+    if not summaries:
+        raise RuntimeError(
+            "no fully evaluated paired cases found; run 'zg-bench evaluate' first"
+        )
+    pending_cases = []
+    for group_id, group in groups.items():
+        for query_id, latest in group["latest_eligible"].items():
+            selected = group["latest_scored"].get(query_id)
+            if selected is not None and not _newer(latest, selected):
+                continue
+            pending_cases.append(
+                {
+                    "group_id": group_id,
+                    "query_id": query_id,
+                    "run_id": str(latest["run_id"]),
+                    "finished_at": str(latest["finished_at"]),
+                    "selected_run_id": (
+                        str(selected["run_id"]) if selected is not None else None
+                    ),
+                }
+            )
+    pending_cases.sort(
+        key=lambda case: (case["group_id"], case["query_id"], case["run_id"])
+    )
+    global_summary = {
+        "generated_at": utc_now(),
+        "selection": "latest fully evaluated pair per query and configuration",
+        "groups": summaries,
+        "group_count": len(summaries),
+        "selected_cases": sum(group["selected_cases"] for group in summaries),
+        "pending_cases": pending_cases,
+        "pending_count": len(pending_cases),
+    }
+    output_root = artifacts / "report"
+    write_json(output_root / "summary.json", global_summary)
+
+    lines = [
+        "# BrowseComp-Plus global report",
+        "",
+        "For each query and experiment configuration, this report selects the "
+        "latest pair with completed baseline, zvec-grep, and judge results.",
+        "Newer unscored pairs are listed as pending and do not replace the latest "
+        "fully evaluated pair.",
+        "",
+    ]
+    for group in summaries:
+        configuration = group["configuration"]
+        baseline = group["profiles"]["baseline"]
+        treatment = group["profiles"]["zvec-grep"]
+        quality = group["quality"]
+        retrieval = group["retrieval"]
+        lines.extend(
+            [
+                f"## Configuration `{group['group_id']}`",
+                "",
+                f"- Model: `{configuration['model']}`",
+                f"- Reasoning: `{configuration['reasoning_effort']}`",
+                f"- Embedding: `{configuration['embedding']}`",
+                f"- Codex: `{configuration['codex_version']}`",
+                f"- zvec-grep: `{configuration['zvec_grep_version']}`",
+                f"- Selected cases: {group['selected_cases']}",
+                f"- Source runs: {group['source_runs']}",
+                "",
+                "| Metric | Baseline | zvec-grep |",
+                "|---|---:|---:|",
+                f"| Answer accuracy | {quality['baseline_accuracy_percent']:.2f}% | {quality['treatment_accuracy_percent']:.2f}% |",
+                f"| Correct answers | {quality['baseline_correct']} | {quality['treatment_correct']} |",
+                f"| Input tokens | {baseline['tokens']['input_total']} | {treatment['tokens']['input_total']} |",
+                f"| Cached input tokens | {baseline['tokens']['cached_input_total']} | {treatment['tokens']['cached_input_total']} |",
+                f"| Output tokens | {baseline['tokens']['output_total']} | {treatment['tokens']['output_total']} |",
+                f"| Wall seconds | {baseline['wall_seconds']['total']:.1f} | {treatment['wall_seconds']['total']:.1f} |",
+                f"| Tool calls | {baseline['tools']['total']} | {treatment['tools']['total']} |",
+                f"| Tool interaction batches | {baseline['tools']['interaction_batches']} | {treatment['tools']['interaction_batches']} |",
+                f"| Evidence recall | {retrieval['evidence']['baseline']['mean_recall_percent']:.2f}% | {retrieval['evidence']['zvec-grep']['mean_recall_percent']:.2f}% |",
+                f"| Gold recall | {retrieval['gold']['baseline']['mean_recall_percent']:.2f}% | {retrieval['gold']['zvec-grep']['mean_recall_percent']:.2f}% |",
+                "",
+                "### Selected cases",
+                "",
+                "| Query | Source run | Finished at |",
+                "|---|---|---|",
+            ]
+        )
+        lines.extend(
+            f"| `{case['query_id']}` | `{case['source_run_id']}` | "
+            f"{case['finished_at']} |"
+            for case in group["cases"]
+        )
+        lines.append("")
+    if pending_cases:
+        lines.extend(
+            [
+                "## Completed cases pending evaluation",
+                "",
+                "These cases are not included in the aggregate metrics.",
+                "",
+                "| Configuration | Query | Pending run | Selected run | Finished at |",
+                "|---|---|---|---|---|",
+            ]
+        )
+        for case in pending_cases:
+            selected_run = (
+                f"`{case['selected_run_id']}`"
+                if case["selected_run_id"]
+                else "-"
+            )
+            lines.append(
+                f"| `{case['group_id']}` | `{case['query_id']}` | "
+                f"`{case['run_id']}` | {selected_run} | "
+                f"{case['finished_at']} |"
+            )
+        lines.append("")
+    atomic_write_text(output_root / "summary.md", "\n".join(lines))
+    return output_root
+
+
+def _judge_quality(run_root: Path, eligible_ids: set[str]) -> dict[str, Any]:
+    scored: list[tuple[bool, bool]] = []
+    for query_id in sorted(eligible_ids):
+        paths = {
+            profile: run_root
+            / "evaluation"
+            / "results"
+            / profile
+            / f"{query_id}.json"
+            for profile in PROFILES
+        }
+        if not all(path.is_file() for path in paths.values()):
+            continue
+        results = {profile: read_json(path) for profile, path in paths.items()}
+        if not all(result.get("status") == "completed" for result in results.values()):
+            continue
+        scored.append(
+            (
+                bool(results["baseline"]["correct"]),
+                bool(results["zvec-grep"]["correct"]),
+            )
+        )
     if not scored:
-        return {"status": "pending", "source": str(path)}
+        return {"status": "pending"}
     wins = sum(treatment > baseline for baseline, treatment in scored)
     losses = sum(treatment < baseline for baseline, treatment in scored)
     return {
-        "status": "scored",
-        "source": str(path),
+        "status": "scored" if len(scored) == len(eligible_ids) else "partial",
+        "source": str((run_root / "evaluation" / "results").resolve()),
         "scored_pairs": len(scored),
         "baseline_accuracy_percent": 100
-        * sum(baseline for baseline, _ in scored)
+        * sum(int(baseline) for baseline, _ in scored)
         / len(scored),
         "treatment_accuracy_percent": 100
-        * sum(treatment for _, treatment in scored)
+        * sum(int(treatment) for _, treatment in scored)
         / len(scored),
         "treatment_wins": wins,
         "treatment_losses": losses,

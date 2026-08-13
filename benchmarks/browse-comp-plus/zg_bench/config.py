@@ -40,6 +40,7 @@ class ZvecGrepConfig:
 
 @dataclass(frozen=True)
 class RunConfig:
+    model: str
     reasoning_effort: str
     checkpoint_every: int
     infrastructure_retries: int
@@ -47,16 +48,10 @@ class RunConfig:
 
 
 @dataclass(frozen=True)
-class EvaluationConfig:
-    official_repository: str
-
-
-@dataclass(frozen=True)
 class BenchmarkConfig:
     dataset: DatasetConfig
     zvec_grep: ZvecGrepConfig
     run: RunConfig
-    evaluation: EvaluationConfig
     path: Path
 
 
@@ -87,7 +82,6 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> BenchmarkConfig:
         dataset=_build(DatasetConfig, _table(raw, "dataset"), "dataset"),
         zvec_grep=_build(ZvecGrepConfig, _table(raw, "zvec_grep"), "zvec_grep"),
         run=_build(RunConfig, _table(raw, "run"), "run"),
-        evaluation=_build(EvaluationConfig, _table(raw, "evaluation"), "evaluation"),
         path=path,
     )
     _validate(config)
@@ -112,3 +106,7 @@ def _validate(config: BenchmarkConfig) -> None:
         raise ConfigError("checkpoint_every must be positive")
     if config.run.infrastructure_retries < 0:
         raise ConfigError("infrastructure_retries cannot be negative")
+    if not config.run.model.strip():
+        raise ConfigError("run model cannot be empty")
+    if not config.run.reasoning_effort.strip():
+        raise ConfigError("run reasoning_effort cannot be empty")

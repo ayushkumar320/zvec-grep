@@ -37,6 +37,31 @@ def prepared_index(config: BenchmarkConfig, artifacts: Path) -> Path | None:
     return state_path
 
 
+def index_is_ready(
+    config: BenchmarkConfig,
+    artifacts: Path,
+    *,
+    zg_bin: str = "zg",
+) -> bool:
+    if prepared_index(config, artifacts) is None:
+        return False
+    executable = resolve_executable(zg_bin)
+    if executable is None:
+        return False
+    root = workspace_root(artifacts, "zvec-grep")
+    environment = inherited_environment()
+    environment["ZVEC_GREP_HOME"] = str(
+        (artifacts / "runtime" / "zvec-home").resolve()
+    )
+    status = run_command(
+        [executable, "status", root, "--mode", "direct", "--check-ready"],
+        cwd=root,
+        env=environment,
+        timeout=120,
+    )
+    return status.ok
+
+
 def build_index(
     config: BenchmarkConfig,
     artifacts: Path,

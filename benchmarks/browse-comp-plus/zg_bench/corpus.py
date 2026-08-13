@@ -45,6 +45,33 @@ def _safe_docid(value: Any) -> str:
     return docid
 
 
+def _workspace_snapshot(root: Path) -> dict[str, int | str]:
+    digest = hashlib.sha256()
+    entries = 0
+    total_bytes = 0
+    for path in sorted(root.iterdir(), key=lambda item: item.name):
+        if path.name == ".zvec-grep":
+            continue
+        metadata = path.lstat()
+        kind = (
+            "symlink"
+            if path.is_symlink()
+            else "file"
+            if path.is_file()
+            else "other"
+        )
+        digest.update(
+            f"{path.name}\0{kind}\0{metadata.st_size}\0{metadata.st_mtime_ns}\0".encode()
+        )
+        entries += 1
+        total_bytes += metadata.st_size
+    return {
+        "entries": entries,
+        "total_bytes": total_bytes,
+        "metadata_fingerprint": digest.hexdigest(),
+    }
+
+
 def prepared_corpus(config: BenchmarkConfig, artifacts: Path) -> Path | None:
     state_path = artifacts / "state" / "corpus.json"
     if not state_path.is_file():
@@ -75,6 +102,22 @@ def prepared_corpus(config: BenchmarkConfig, artifacts: Path) -> Path | None:
         or not baseline.is_dir()
         or not treatment.is_dir()
         or not manifest.is_file()
+    ):
+        return None
+    snapshots = state.get("workspace_snapshots")
+    if (
+        not isinstance(snapshots, dict)
+        or any(
+            not isinstance(snapshot, dict)
+            or snapshot.get("entries")
+            != config.dataset.expected_corpus_documents
+            for snapshot in snapshots.values()
+        )
+        or snapshots
+        != {
+            "baseline": _workspace_snapshot(baseline),
+            "zvec-grep": _workspace_snapshot(treatment),
+        }
     ):
         return None
     return state_path
@@ -172,6 +215,23 @@ def materialize(
             "start with an empty artifacts directory"
         )
 
+    unexpected = {
+        profile: [
+            path.name
+            for path in root.iterdir()
+            if path.name != ".zvec-grep"
+            and (not path.is_file() or path.suffix != ".md")
+        ][:5]
+        for profile, root in (("baseline", baseline), ("zvec-grep", treatment))
+    }
+    for profile, names in unexpected.items():
+        if names:
+            raise RuntimeError(
+                f"{profile} workspace contains unexpected entries: "
+                + ", ".join(names)
+                + "; start with an empty artifacts directory"
+            )
+
     temporary_manifest.replace(manifest_path)
     state = {
         "stage": "materialize",
@@ -186,6 +246,10 @@ def materialize(
         "total_bytes": total_bytes,
         "maximum_file_bytes": maximum_bytes,
         "fingerprint": fingerprint(aggregate_parts),
+        "workspace_snapshots": {
+            "baseline": _workspace_snapshot(baseline),
+            "zvec-grep": _workspace_snapshot(treatment),
+        },
         "content_policy": "Parquet text fields are written byte-for-byte as UTF-8",
     }
     output = artifacts / "state" / "corpus.json"
