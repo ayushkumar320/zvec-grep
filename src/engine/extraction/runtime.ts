@@ -1,4 +1,4 @@
-import type { EntityFragment } from "../types.js";
+import type { Content, EntityFragment } from "../types.js";
 import { CodeExtractor } from "./code/extractor.js";
 import { ImageExtractor } from "./image/extractor.js";
 import { MarkdownExtractor } from "./markdown/extractor.js";
@@ -24,6 +24,31 @@ export function extract(
   options: ChunkOptions = {},
 ): Promise<EntityFragment[]> {
   return extractors[routeSource(source)].extract(source, options);
+}
+
+export type IndexingExtractionFragment = {
+  fragment: EntityFragment;
+  embeddingSource?: Content;
+};
+
+export async function extractForIndexing(
+  source: Source,
+  options: ChunkOptions = {},
+): Promise<IndexingExtractionFragment[]> {
+  if (routeSource(source) === "code") {
+    return (await extractors.code.extractForIndexing(source, options)).map(
+      ({ fragment, embeddingText }) => ({
+        fragment,
+        ...(embeddingText === undefined
+          ? {}
+          : { embeddingSource: { kind: "text", text: embeddingText } }),
+      }),
+    );
+  }
+
+  return (await extractors[routeSource(source)].extract(source, options)).map(
+    (fragment) => ({ fragment }),
+  );
 }
 
 function routeSource(source: Source): ExtractorRoute {

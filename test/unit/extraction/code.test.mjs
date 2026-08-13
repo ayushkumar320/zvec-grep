@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { CodeExtractor } from "../../../dist/engine/extraction/code/extractor.js";
+import { extractForIndexing } from "../../../dist/engine/extraction/runtime.js";
+import { vectorContentForFragment } from "../../../dist/engine/extraction/vector-content.js";
 
 function codeSource(format, text, relativePath = `fixture.${format}`) {
   return {
@@ -223,6 +225,53 @@ test("large code entities emit searchable outlines and grouped source windows", 
     serviceWindows[0].range.endOffset > serviceWindows[1].range.startOffset,
     "adjacent windows should preserve the requested overlap",
   );
+});
+
+test("indexing compacts AST gaps without changing stored source windows", async () => {
+  const source = codeSource(
+    "python",
+    [
+      "def spaced() -> str:",
+      "    first_value = prepare()",
+      ...Array.from({ length: 70 }, () => ""),
+      "    second_value = transform(first_value)",
+      "    return second_value",
+    ].join("\n"),
+    "spaced.py",
+  );
+  const maxChunkChars = 120;
+  const prepared = await extractForIndexing(source, {
+    maxChunkChars,
+    chunkOverlapChars: 18,
+  });
+  const major = prepared.find(
+    ({ fragment }) =>
+      fragment.metadata?.symbolName === "spaced" &&
+      fragment.group === fragment.id,
+  );
+  assert.ok(major);
+  assert.match(major.fragment.content.text, /calls: prepare, transform/);
+
+  const compactWindow = prepared.find(
+    ({ fragment, embeddingSource }) =>
+      fragment.group === major.fragment.id &&
+      embeddingSource?.kind === "text" &&
+      embeddingSource.text.includes("first_value = prepare()") &&
+      embeddingSource.text.includes("second_value = transform(first_value)"),
+  );
+  assert.ok(compactWindow);
+  assertSourceBackedFragment(source, compactWindow.fragment);
+  assert.ok(compactWindow.fragment.content.text.length > maxChunkChars);
+  assert.doesNotMatch(compactWindow.embeddingSource.text, /\n\n/u);
+
+  const vectorContent = vectorContentForFragment(
+    compactWindow.fragment,
+    compactWindow.embeddingSource,
+    maxChunkChars,
+  );
+  assert.equal(vectorContent.kind, "text");
+  assert.ok(vectorContent.text.length <= maxChunkChars);
+  assert.match(vectorContent.text, /^symbol: function spaced/m);
 });
 
 test("component script extraction remaps multiple blocks and preserves fallbacks", async () => {

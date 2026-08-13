@@ -29,6 +29,15 @@ export class CodeExtractor {
     source: Source,
     options: ChunkOptions = {},
   ): Promise<EntityFragment[]> {
+    return (await this.extractForIndexing(source, options)).map(
+      (item) => item.fragment,
+    );
+  }
+
+  async extractForIndexing(
+    source: Source,
+    options: ChunkOptions = {},
+  ): Promise<PreparedCodeFragment[]> {
     if (source.kind !== "text" || source.file.kind !== "code") {
       return [];
     }
@@ -55,7 +64,7 @@ export class CodeExtractor {
         const collected: CodeEntity[] = [];
         walkCodeNode(tree.rootNode, adapter, [], collected);
 
-        const output: EntityFragment[] = [];
+        const output: PreparedCodeFragment[] = [];
         let entityIdIndex = 0;
         const appendEntity = (entity: CodeEntity): void => {
           const fragments = codeEntityToSearchFragments(
@@ -72,10 +81,14 @@ export class CodeExtractor {
 
           for (const item of fragments) {
             const id = makeEntityId(source.file.id, entityIdIndex);
+            const { embeddingText, ...fragment } = item;
             output.push({
-              id,
-              ...item,
-              group: item.group === "" ? id : (majorId ?? item.group),
+              fragment: {
+                id,
+                ...fragment,
+                group: fragment.group === "" ? id : (majorId ?? fragment.group),
+              },
+              embeddingText,
             });
             entityIdIndex++;
           }
@@ -99,26 +112,26 @@ export class CodeExtractor {
   private fallback(
     source: TextSource,
     options: Required<ChunkOptions>,
-  ): EntityFragment[] {
+  ): PreparedCodeFragment[] {
     return extractPlainTextFragments(
       source,
       options.maxChunkChars,
       options.chunkOverlapChars,
-    );
+    ).map((fragment) => ({ fragment }));
   }
 
   private async extractScriptBlocks(
     source: TextSource,
     options: Required<ChunkOptions>,
-  ): Promise<EntityFragment[]> {
-    const fragments: EntityFragment[] = [];
+  ): Promise<PreparedCodeFragment[]> {
+    const fragments: PreparedCodeFragment[] = [];
 
     for (const block of findScriptBlocks(source.text)) {
       const blockFile = {
         ...source.file,
         format: block.format,
       };
-      const blockFragments = await this.extract(
+      const blockFragments = await this.extractForIndexing(
         {
           kind: "text",
           file: blockFile,
@@ -188,10 +201,18 @@ type CodeEntity = {
 
 type CodeWindow = {
   text: string;
+  embeddingText?: string;
   range: TextRange;
 };
 
-type CodeFragmentOutput = Omit<EntityFragment, "id">;
+type CodeFragmentOutput = Omit<EntityFragment, "id"> & {
+  embeddingText?: string;
+};
+
+export type PreparedCodeFragment = {
+  fragment: EntityFragment;
+  embeddingText?: string;
+};
 
 type ScriptBlock = {
   text: string;
@@ -313,6 +334,7 @@ function codeEntityWindowToFragment(
       text: window.text,
     },
     metadata: codeEntityMetadata(entity),
+    embeddingText: window.embeddingText,
   };
 }
 
@@ -355,7 +377,7 @@ function* splitLargeNode(
 
   for (let index = 0; index < statements.length; index++) {
     const statement = statements[index];
-    const statementChars = statement.endIndex - statement.startIndex + 1;
+    const statementChars = statement.text.length;
 
     if (statementChars > maxChars) {
       if (index > groupStart) {
@@ -379,7 +401,11 @@ function* splitLargeNode(
       continue;
     }
 
-    if (groupChars + statementChars > maxChars && index > groupStart) {
+    const separatorChars = index > groupStart ? 1 : 0;
+    if (
+      groupChars + separatorChars + statementChars > maxChars &&
+      index > groupStart
+    ) {
       yield sliceStatements(
         source,
         baseStart,
@@ -397,8 +423,7 @@ function* splitLargeNode(
       let candidateChars = statementChars;
 
       for (let previous = index - 1; previous >= candidateStart; previous--) {
-        const addedChars =
-          statements[previous].endIndex - statements[previous].startIndex + 1;
+        const addedChars = statements[previous].text.length + 1;
         if (candidateChars + addedChars > maxChars) {
           candidateStart = previous + 1;
           break;
@@ -411,7 +436,7 @@ function* splitLargeNode(
       continue;
     }
 
-    groupChars += statementChars;
+    groupChars += separatorChars + statementChars;
   }
 
   if (groupStart < statements.length) {
@@ -437,6 +462,10 @@ function sliceStatements(
 
   return {
     text: source.slice(start - baseStart, end - baseStart),
+    embeddingText: statements
+      .slice(startIndex, endIndex + 1)
+      .map((statement) => statement.text)
+      .join("\n"),
     range: {
       kind: "text",
       startLine: statements[startIndex].startPosition.row + 1,
@@ -594,7 +623,10 @@ function computeOverlapStart(
   let index = groupEnd;
 
   while (index >= groupStart && chars < overlapChars) {
-    chars += statements[index].endIndex - statements[index].startIndex + 1;
+    chars += statements[index].text.length;
+    if (index < groupEnd) {
+      chars++;
+    }
     index--;
   }
 
@@ -1023,25 +1055,28 @@ function lineAtOffset(text: string, offset: number): number {
 
 function remapScriptBlockFragments(
   fileId: string,
-  fragments: readonly EntityFragment[],
+  fragments: readonly PreparedCodeFragment[],
   startIndex: number,
   startLine: number,
   startOffset: number,
-): EntityFragment[] {
+): PreparedCodeFragment[] {
   const idMap = new Map<string, string>();
 
-  for (const [index, fragment] of fragments.entries()) {
-    idMap.set(fragment.id, makeEntityId(fileId, startIndex + index));
+  for (const [index, item] of fragments.entries()) {
+    idMap.set(item.fragment.id, makeEntityId(fileId, startIndex + index));
   }
 
-  return fragments.map((fragment) => ({
-    ...fragment,
-    id: idMap.get(fragment.id) ?? fragment.id,
-    group: fragment.group
-      ? (idMap.get(fragment.group) ?? fragment.group)
-      : undefined,
-    fileId,
-    range: remapScriptBlockRange(fragment.range, startLine, startOffset),
+  return fragments.map((item) => ({
+    ...item,
+    fragment: {
+      ...item.fragment,
+      id: idMap.get(item.fragment.id) ?? item.fragment.id,
+      group: item.fragment.group
+        ? (idMap.get(item.fragment.group) ?? item.fragment.group)
+        : undefined,
+      fileId,
+      range: remapScriptBlockRange(item.fragment.range, startLine, startOffset),
+    },
   }));
 }
 

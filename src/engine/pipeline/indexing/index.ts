@@ -28,7 +28,7 @@ import { sha256Bytes } from "../../utils/hash.js";
 import { normalizePath } from "../../utils/path.js";
 import { ConcurrentTiming, TimingCollector } from "../../utils/timing.js";
 import {
-  extract,
+  extractForIndexing,
   type Source,
   vectorContentForFragment,
 } from "../../extraction/index.js";
@@ -56,10 +56,14 @@ type DiffResult = {
   unchanged: FileInfo[];
 };
 
+type PreparedFragment = {
+  fragment: EntityFragment;
+  embeddingContent: Content;
+};
+
 type PreparedFile = {
   file: FileInfo;
-  fragments: EntityFragment[];
-  maxChars?: number;
+  fragments: PreparedFragment[];
 };
 
 type FailedPreparedFile = {
@@ -824,13 +828,22 @@ async function prepareFile(
       ctx.embeddingModel.info.limits.maxInputTokens,
       source.kind === "text" ? source.text : undefined,
     );
-    const extracted = await extract(source, chunkOptions);
+    const extracted = await extractForIndexing(source, chunkOptions);
     throwIfIndexCancelled(ctx);
-    const fragments = extracted.filter((fragment) =>
-      ctx.embeddingModel.info.inputKinds.includes(fragment.content.kind),
-    );
+    const fragments = extracted
+      .filter(({ fragment }) =>
+        ctx.embeddingModel.info.inputKinds.includes(fragment.content.kind),
+      )
+      .map(({ fragment, embeddingSource }): PreparedFragment => ({
+        fragment,
+        embeddingContent: vectorContentForFragment(
+          fragment,
+          embeddingSource,
+          chunkOptions.maxChunkChars,
+        ),
+      }));
 
-    return { file, fragments, maxChars: chunkOptions.maxChunkChars };
+    return { file, fragments };
   } catch (error) {
     if (indexIsCancelled(ctx)) {
       throw indexCancellationError(ctx);
@@ -854,9 +867,7 @@ async function embedAndCommitBatch(
   try {
     throwIfIndexCancelled(ctx);
     const contents = files.flatMap((file) =>
-      file.fragments.map((fragment) =>
-        vectorContentForFragment(fragment, file.maxChars),
-      ),
+      file.fragments.map((fragment) => fragment.embeddingContent),
     );
     onProgress(
       stats,
@@ -946,7 +957,6 @@ async function embedAndCommitFile(
         file.fragments,
         ctx.embeddingModel,
         embeddingScheduler,
-        file.maxChars,
         ctx.signal,
         (progress) =>
           reportModelDownloadProgress(
@@ -998,7 +1008,7 @@ function commitFile(
     }
     ctx.storage.replaceFile(
       file.file,
-      file.fragments.map((fragment, index) => ({
+      file.fragments.map(({ fragment }, index) => ({
         fragment,
         vector: vectors[index],
       })),
@@ -1007,7 +1017,9 @@ function commitFile(
       },
     );
     stats.filesIndexed++;
-    stats.entitiesCreated += countPublicEntities(file.fragments);
+    stats.entitiesCreated += countPublicEntities(
+      file.fragments.map(({ fragment }) => fragment),
+    );
     return true;
   } catch (error) {
     if (indexIsCancelled(ctx)) {
@@ -1104,14 +1116,13 @@ async function readSource(file: FileInfo): Promise<Source> {
 }
 
 async function embedFragments(
-  fragments: readonly EntityFragment[],
+  fragments: readonly PreparedFragment[],
   model: EmbeddingModel,
   embeddingScheduler: EmbeddingScheduler,
-  maxChars?: number,
   signal?: AbortSignal,
   onModelProgress?: (progress: EmbeddingModelProgress) => void,
 ): Promise<EmbeddingResult> {
-  const batches: { start: number; fragments: EntityFragment[] }[] = [];
+  const batches: { start: number; fragments: PreparedFragment[] }[] = [];
 
   for (
     let start = 0;
@@ -1134,7 +1145,6 @@ async function embedFragments(
         model,
         batch.start,
         embeddingScheduler,
-        maxChars,
         signal,
         onModelProgress,
       ),
@@ -1168,17 +1178,14 @@ async function embedFragments(
 }
 
 async function embedFragmentBatch(
-  fragments: readonly EntityFragment[],
+  fragments: readonly PreparedFragment[],
   model: EmbeddingModel,
   startIndex: number,
   embeddingScheduler: EmbeddingScheduler,
-  maxChars?: number,
   signal?: AbortSignal,
   onModelProgress?: (progress: EmbeddingModelProgress) => void,
 ): Promise<EmbeddingResult> {
-  const contents = fragments.map((fragment) =>
-    vectorContentForFragment(fragment, maxChars),
-  );
+  const contents = fragments.map((fragment) => fragment.embeddingContent);
 
   try {
     return await embedContentsWithRetry(
@@ -1198,7 +1205,6 @@ async function embedFragmentBatch(
       model,
       startIndex,
       embeddingScheduler,
-      maxChars,
       signal,
       onModelProgress,
     );
@@ -1206,11 +1212,10 @@ async function embedFragmentBatch(
 }
 
 async function embedFragmentBatchOneByOne(
-  fragments: readonly EntityFragment[],
+  fragments: readonly PreparedFragment[],
   model: EmbeddingModel,
   startIndex: number,
   embeddingScheduler: EmbeddingScheduler,
-  maxChars?: number,
   signal?: AbortSignal,
   onModelProgress?: (progress: EmbeddingModelProgress) => void,
 ): Promise<EmbeddingResult> {
@@ -1220,7 +1225,7 @@ async function embedFragmentBatchOneByOne(
   for (const [index, fragment] of fragments.entries()) {
     try {
       const result = await embedContentsWithRetry(
-        [vectorContentForFragment(fragment, maxChars)],
+        [fragment.embeddingContent],
         model,
         embeddingScheduler,
         signal,
@@ -1237,7 +1242,7 @@ async function embedFragmentBatchOneByOne(
           code: "ZVEC_GREP.ENGINE.INDEXING.EMBEDDING_FRAGMENT_FAILED",
           context: errorDetails([
             detail("model", model.info.reference),
-            detail("fragmentId", fragment.id),
+            detail("fragmentId", fragment.fragment.id),
             detail("fragmentIndex", startIndex + index),
             isEngineError(error) ? detail("causeCode", error.code) : null,
             error instanceof Error ? detail("cause", error.message) : null,

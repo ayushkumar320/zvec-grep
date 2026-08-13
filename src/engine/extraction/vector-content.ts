@@ -1,4 +1,3 @@
-import { EngineError } from "../errors.js";
 import type { Content, EntityFragment, EntityMetadata } from "../types.js";
 import type { ChunkOptions } from "./types.js";
 
@@ -6,10 +5,11 @@ const MAX_METADATA_BUDGET_RATIO = 0.25;
 
 export function vectorContentForFragment(
   fragment: EntityFragment,
+  embeddingContent: Content = fragment.content,
   maxChars?: number,
 ): Content {
-  if (fragment.content.kind !== "text") {
-    return fragment.content;
+  if (embeddingContent.kind !== "text") {
+    return embeddingContent;
   }
 
   const metadata = vectorMetadataText(
@@ -17,39 +17,13 @@ export function vectorContentForFragment(
     metadataBudget(maxChars),
   );
   if (metadata.length === 0) {
-    return checkedVectorContent(fragment, fragment.content, maxChars);
+    return embeddingContent;
   }
 
-  return checkedVectorContent(
-    fragment,
-    {
-      kind: "text",
-      text: `${metadata}\n${fragment.content.text}`,
-    },
-    maxChars,
-  );
-}
-
-function checkedVectorContent(
-  fragment: EntityFragment,
-  content: Content,
-  maxChars: number | undefined,
-): Content {
-  if (
-    content.kind === "text" &&
-    maxChars !== undefined &&
-    content.text.length > maxChars
-  ) {
-    throw new EngineError(
-      "Embedding content exceeds the estimated input budget",
-      {
-        code: "ZVEC_GREP.ENGINE.EXTRACTORS.EMBEDDING_CONTENT_TOO_LARGE",
-        context: `fragmentId=${fragment.id} contentChars=${content.text.length} maxChars=${maxChars}`,
-      },
-    );
-  }
-
-  return content;
+  return {
+    kind: "text",
+    text: `${metadata}\n${embeddingContent.text}`,
+  };
 }
 
 export function chunkOptionsForMetadata(
