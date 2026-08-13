@@ -12,7 +12,11 @@ import { Server } from "@modelcontextprotocol/server";
 import type { ServerContext } from "@modelcontextprotocol/server";
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import { resolveClientToken } from "../daemon/config.js";
-import { serverStatus, startServer } from "../daemon/server-controller.js";
+import {
+  serverStatus,
+  startServer,
+  type DaemonControlStatus,
+} from "../daemon/server-controller.js";
 import type { McpToolset } from "./toolset.js";
 import { LONG_RUNNING_MCP_TIMEOUT_MS } from "./progress-heartbeat.js";
 
@@ -130,11 +134,7 @@ export async function runStdioBootstrapBridge(options: {
     monitorRunning = true;
     void serverStatus(options.home)
       .then(async (current) => {
-        if (
-          current.ready &&
-          current.pid === status.pid &&
-          current.serverUrl === status.serverUrl
-        ) {
+        if (!shouldStopStdioBridge(status, current)) {
           return;
         }
         daemonFailure = new Error(
@@ -156,6 +156,17 @@ export async function runStdioBootstrapBridge(options: {
     await Promise.allSettled([upstream.close(), downstream.close()]);
   }
   if (daemonFailure) throw daemonFailure;
+}
+
+export function shouldStopStdioBridge(
+  connected: DaemonControlStatus,
+  current: DaemonControlStatus,
+): boolean {
+  return (
+    !current.running ||
+    current.pid !== connected.pid ||
+    current.serverUrl !== connected.serverUrl
+  );
 }
 
 async function forwardRequest(
