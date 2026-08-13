@@ -172,7 +172,7 @@ def generate_report(run_root: Path) -> Path:
 - Quality: {quality_line}{evaluator_line}
 
 | Metric | Baseline | zvec-grep |
-|---|---:|---:|
+| --- | ---: | ---: |
 | Completed | {baseline["completed"]} | {treatment["completed"]} |
 | Input tokens | {baseline["tokens"]["input_total"]} | {treatment["tokens"]["input_total"]} |
 | Cached input tokens | {baseline["tokens"]["cached_input_total"]} | {treatment["tokens"]["cached_input_total"]} |
@@ -183,7 +183,7 @@ def generate_report(run_root: Path) -> Path:
 | Tool calls | {baseline["tools"]["total"]} | {treatment["tools"]["total"]} |
 | Command calls | {baseline["tools"]["commands"]} | {treatment["tools"]["commands"]} |
 | zvec-search calls | {baseline["tools"]["zvec_search"]} | {treatment["tools"]["zvec_search"]} |
-| Observed document IDs | {baseline["tools"]["observed_docids"]} | {treatment["tools"]["observed_docids"]} |
+| Document ID mentions | {baseline["tools"]["observed_docids"]} | {treatment["tools"]["observed_docids"]} |
 | Evidence recall | {baseline_evidence["mean_recall_percent"]:.2f}% | {treatment_evidence["mean_recall_percent"]:.2f}% |
 | Evidence hit rate | {baseline_evidence["hit_rate_percent"]:.2f}% | {treatment_evidence["hit_rate_percent"]:.2f}% |
 | Gold recall | {baseline_gold["mean_recall_percent"]:.2f}% | {treatment_gold["mean_recall_percent"]:.2f}% |

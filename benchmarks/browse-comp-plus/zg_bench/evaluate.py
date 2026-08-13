@@ -375,14 +375,8 @@ def evaluate_run(
     completed_results = [
         result for result in results if result["status"] == "completed"
     ]
-    attempt_results = [
-        read_json(path)
-        for path in sorted(
-            (evaluation_root / "attempts").glob("*/*/attempt-*/result.json")
-        )
-    ]
     usage_rows = [
-        result["usage"] for result in attempt_results if result["usage"]
+        result["usage"] for result in completed_results if result["usage"]
     ]
     version = run_command([codex, "--version"], timeout=30)
     write_json(
@@ -395,7 +389,7 @@ def evaluate_run(
             else "partial",
             "expected_answers": len(PROFILES) * len(query_ids),
             "evaluated_answers": len(completed_results),
-            "attempts": len(attempt_results),
+            "attempts": len(completed_results),
             "model": model,
             "reasoning_effort": reasoning_effort,
             "codex_version": version.stdout.strip() or version.stderr.strip(),
@@ -408,7 +402,7 @@ def evaluate_run(
             ),
             "output_tokens": sum(row.get("output_tokens", 0) for row in usage_rows),
             "wall_seconds": sum(
-                float(result["wall_seconds"]) for result in attempt_results
+                float(result["wall_seconds"]) for result in completed_results
             ),
         },
     )
