@@ -54,7 +54,7 @@ flowchart LR
     RN --> A
 ```
 
-矩阵维度是 case，不是 profile。每个 case 的 baseline 和 zvec-grep 在同一台 GitHub-hosted Ubuntu runner 上各执行 3 个独立 Harbor trial（`--n-attempts 3`，`--n-concurrent 1`），随后对 6 个答案分别执行 Judge，并生成该 case 自己的 Job Summary 与报告 artifact。单任务表中的 baseline/zvec-grep 原始指标是各自 3 次 trial 的算术平均，第三个 delta/reduction 直接由表中展示的这两个 profile mean 计算。两侧 trial 仍按实际启动时间恢复第 1/2/3 轮，同轮 comparison 仅作为诊断证据，不参与单任务或 Aggregate 主指标。所有成功的单任务报告最后由一个不调用模型的 job 合并。这样既保留重复实验的波动证据，也不会把失败 trial 当成 0 分或静默剔除。
+矩阵维度是 case，不是 profile。每个 case 的 baseline 和 zvec-grep 在同一台 GitHub-hosted Ubuntu runner 上各执行 3 个独立 Harbor trial（`--n-attempts 3`，`--n-concurrent 1`），随后对 6 个答案分别执行 Judge，并生成该 case 自己的 Job Summary 与报告 artifact。单任务表中的 baseline/zvec-grep 原始指标是各自 3 次 trial 的算术平均，第三个 change 直接由表中展示的这两个 profile mean 计算。Judge 使用 `zvec-grep - baseline`，所以质量提升为正数；input_token、toolcall 和 time 使用相对 baseline 的百分比变化，所以资源节省为负数。两侧 trial 仍按实际启动时间恢复第 1/2/3 轮，同轮 comparison 仅作为诊断证据，不参与单任务或 Aggregate 主指标。所有成功的单任务报告最后由一个不调用模型的 job 合并。这样既保留重复实验的波动证据，也不会把失败 trial 当成 0 分或静默剔除。
 
 All-Full 的 20 个 case 以 `max-parallel: 5` 分批占用 runner；自动精选的 5 个 case 可在一个 wave 内完成。每个 matrix task 在 Harbor 启动前从 Actions cache 恢复自己的 zvec index seed 到 `$RUNNER_TEMP/swe-qa-index-seed`，并通过 `ZG_BENCH_INDEX_SEED_DIR` 交给 benchmark/Harbor。cache miss 时，第 1 个 zvec-grep trial 冷建 seed，后两个 trial 从 seed 独立初始化；cache hit 时直接使用此前成功 workflow 保存的同任务 seed。seed 只表示可复用的初始索引快照，不共享 Agent 会话或可写运行状态，因此 3 个 trial 仍分别拥有独立的模型调用、trajectory、指标和 Judge 结果。host seed 不会 bind mount 到受评容器；Harbor 的可信 setup 代码只在模型 Agent 启动前通过 `upload_dir`/`download_dir` 传输快照，所以 Agent 无法回写 seed 或污染后续 trial。
 
@@ -83,7 +83,7 @@ Job Summary 对每个 case 和 Aggregate 展示：
 3. `toolcall`：Agent trajectory 的工具调用数；
 4. `time`：Agent execution wall time，索引 setup 仍保留在原始证据中。
 
-input_token、toolcall 和 time 同时给出 baseline/zvec-grep 的 3-trial 均值及降低比例。单任务第三个值由展示的 baseline 与 zvec-grep profile means 直接计算；跨任务 Aggregate 再对各 case 的 comparison 等权平均，而不是先加总所有任务的数据再反推比例。逐 trial comparison 只用于诊断。Judge 原始结构化结果、pair JSON、Harbor result、日志与 ATIF trajectory 均作为 artifact 保存。
+input_token、toolcall 和 time 同时给出 baseline/zvec-grep 的 3-trial 均值及百分比变化，`-` 表示 zvec-grep 用量更少、`+` 表示用量回退。单任务第三个值由展示的 baseline 与 zvec-grep profile means 直接计算；跨任务 Aggregate 再对各 case 的 comparison 等权平均，而不是先加总所有任务的数据再反推比例。逐 trial comparison 只用于诊断。Judge 原始结构化结果、pair JSON、Harbor result、日志与 ATIF trajectory 均作为 artifact 保存。
 
 ## 当前门禁语义
 

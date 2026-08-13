@@ -15,6 +15,7 @@ from zg_bench.swe_qa.collect import collect_pair
 from zg_bench.swe_qa.judge import (
     MAX_JUDGE_CONCURRENCY,
     _aggregate,
+    _metric_cell,
     aggregate_reports,
     judge_pairs,
 )
@@ -46,6 +47,19 @@ EXPECTED_TASK_IDS = (
     "sympy:26",
     "conan:27",
 )
+
+
+_summary_environment = patch.dict("os.environ", {"GITHUB_STEP_SUMMARY": ""})
+
+
+def setUpModule() -> None:
+    # Direct report-library calls must not append fixture tables to the real
+    # Validate job summary. Tests that exercise summary output set a temp path.
+    _summary_environment.start()
+
+
+def tearDownModule() -> None:
+    _summary_environment.stop()
 
 
 def _write_json(path: Path, value: dict[str, Any]) -> None:
@@ -512,6 +526,21 @@ class CollectTests(unittest.TestCase):
 
 
 class JudgeTests(unittest.TestCase):
+    def test_efficiency_change_displays_savings_as_negative(self) -> None:
+        self.assertEqual(
+            _metric_cell(100, 50, 50),
+            "100.00 / 50.00 / -50.00%",
+        )
+        self.assertEqual(
+            _metric_cell(100, 125, -25),
+            "100.00 / 125.00 / +25.00%",
+        )
+        self.assertEqual(
+            _metric_cell(100, 100, 0),
+            "100.00 / 100.00 / +0.00%",
+        )
+        self.assertEqual(_metric_cell(0, 1, None), "0.00 / 1.00 / N/A")
+
     def _write_pair_and_reference(self, root: Path) -> tuple[Path, Path]:
         pairs_root = root / "pairs"
         baseline_metrics = [
@@ -714,7 +743,7 @@ class JudgeTests(unittest.TestCase):
             self.assertIn("Aggregate", markdown)
             self.assertIn("input_token", markdown)
             self.assertIn("60.00 / 80.00 / +20.00", markdown)
-            self.assertIn("366.67 / 320.00 / +12.73%", markdown)
+            self.assertIn("366.67 / 320.00 / -12.73%", markdown)
             self.assertIn("equal-weight arithmetic mean", markdown)
             self.assertIn("not a ratio of totals", markdown)
             self.assertNotIn("cost", markdown.lower())
@@ -1172,7 +1201,7 @@ class AggregateReportTests(unittest.TestCase):
                 grand_totals_ratio,
             )
             markdown = (root / "combined" / "report.md").read_text()
-            self.assertIn("1,366.67 / 820.00 / +31.36%", markdown)
+            self.assertIn("1,366.67 / 820.00 / -31.36%", markdown)
 
     def test_na_task_is_excluded_from_only_that_aggregate_metric(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1273,6 +1302,7 @@ class AggregateReportTests(unittest.TestCase):
                 50.0,
             )
             markdown = (root / "combined" / "report.md").read_text()
+            self.assertIn("/ -50.00%", markdown)
             for task_id in tasks:
                 self.assertIn(f"| {task_id} |", markdown)
             self.assertIn("| **Aggregate** |", markdown)

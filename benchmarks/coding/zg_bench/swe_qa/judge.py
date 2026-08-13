@@ -638,7 +638,10 @@ def _fmt_number(value: int | float, *, decimals: int = 2) -> str:
 def _fmt_delta(value: float | int | None, *, suffix: str = "") -> str:
     if value is None:
         return "N/A"
-    return f"{float(value):+.2f}{suffix}"
+    numeric = float(value)
+    if round(numeric, 2) == 0:
+        numeric = 0.0
+    return f"{numeric:+.2f}{suffix}"
 
 
 def _metric_cell(
@@ -652,7 +655,11 @@ def _metric_cell(
         return "N/A"
     left = _fmt_number(baseline, decimals=decimals)
     right = _fmt_number(zvec, decimals=decimals)
-    return f"{left} / {right} / {_fmt_delta(reduction, suffix='%')}"
+    # The stored comparison remains a reduction: positive means zvec-grep used
+    # less. In the table, present every third value as zvec-grep minus baseline,
+    # so efficiency wins are negative while Judge improvements stay positive.
+    change = None if reduction is None else -reduction
+    return f"{left} / {right} / {_fmt_delta(change, suffix='%')}"
 
 
 def _render_report(report: dict[str, Any]) -> str:
@@ -663,11 +670,11 @@ def _render_report(report: dict[str, Any]) -> str:
         "",
         "This run is **report-only**. Numeric scores and deltas are not code-review or merge gates. The hard gate only requires every expected pair and every judge call to succeed.",
         "",
-        "All cells use `baseline / zvec-grep / delta-or-reduction`. Positive reduction means zvec-grep used less.",
+        "All cells use `baseline / zvec-grep / change`. Judge change is `zvec-grep - baseline`, so a gain is positive. Efficiency change is the percentage change from baseline, so lower token, tool-call, or time usage is negative.",
         "",
         "Each task's baseline and zvec-grep values are arithmetic means across that profile's trials. Its third value is calculated directly from those two displayed profile means.",
         "",
-        "In the Aggregate row, baseline and zvec-grep efficiency values are sums of the per-task profile means (Judge is the equal-weight task mean), while the third value is the equal-weight arithmetic mean of task comparisons, not a ratio of totals. A task whose baseline denominator is zero has an N/A reduction and is excluded only from that Aggregate metric.",
+        "In the Aggregate row, baseline and zvec-grep efficiency values are sums of the per-task profile means (Judge is the equal-weight task mean), while the third value is the equal-weight arithmetic mean of task changes, not a ratio of totals. A task whose baseline denominator is zero has an N/A percentage change and is excluded only from that Aggregate metric.",
         "",
         "| Case | Judge self-judge | input_token | toolcall | time (s) |",
         "|---|---:|---:|---:|---:|",
