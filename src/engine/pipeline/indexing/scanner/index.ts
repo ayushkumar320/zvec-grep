@@ -165,7 +165,14 @@ export type ScanResult = {
 
 export type ScanOptions = {
   signal?: AbortSignal;
+  knownFiles?: readonly FileInfo[];
 };
+
+function knownFilesByPath(files: readonly FileInfo[] | undefined) {
+  return new Map(
+    (files ?? []).map((file) => [normalizePath(file.absolutePath), file]),
+  );
+}
 
 export async function scanRootPaths(
   workspaceIndexId: string,
@@ -175,6 +182,7 @@ export async function scanRootPaths(
   const validatedRootPaths = validateRootPaths(rootPaths);
   const files: FileInfo[] = [];
   const diagnostics = createScanDiagnostics();
+  const knownFiles = knownFilesByPath(options.knownFiles);
 
   for (const rootPath of validatedRootPaths) {
     throwIfAborted(options.signal);
@@ -184,6 +192,7 @@ export async function scanRootPaths(
       files,
       diagnostics,
       options.signal,
+      knownFiles,
     );
   }
 
@@ -198,6 +207,7 @@ export async function scanFilePath(
 ): Promise<ScanResult> {
   const files: FileInfo[] = [];
   const diagnostics = createScanDiagnostics();
+  const knownFiles = knownFilesByPath(options.knownFiles);
   for (const rootPath of matchingRootPaths(rootPaths, absolutePath)) {
     throwIfAborted(options.signal);
     const root = normalizeRootPath(rootPath);
@@ -238,6 +248,7 @@ export async function scanFilePath(
       root,
       absolutePath,
       diagnostics,
+      knownFiles,
     );
     if (file) {
       files.push(file);
@@ -254,6 +265,7 @@ export async function scanDirectoryPath(
 ): Promise<ScanResult> {
   const files: FileInfo[] = [];
   const diagnostics = createScanDiagnostics();
+  const knownFiles = knownFilesByPath(options.knownFiles);
   for (const rootPath of matchingRootPaths(rootPaths, absolutePath)) {
     throwIfAborted(options.signal);
     const root = normalizeRootPath(rootPath);
@@ -310,6 +322,7 @@ export async function scanDirectoryPath(
       new Set([rootRealPath, directoryRealPath]),
       depth,
       options.signal,
+      knownFiles,
     );
   }
   return { files: dedupeFiles(files), diagnostics };
@@ -429,6 +442,7 @@ async function scanRootPath(
   files: FileInfo[],
   diagnostics: FileScanDiagnostics,
   signal?: AbortSignal,
+  knownFiles: ReadonlyMap<string, FileInfo> = new Map(),
 ): Promise<void> {
   throwIfAborted(signal);
   const root = normalizeRootPath(rootPath);
@@ -450,6 +464,7 @@ async function scanRootPath(
           root,
           root.absolutePath,
           diagnostics,
+          knownFiles,
         )
       : null;
     if (file) {
@@ -483,6 +498,7 @@ async function scanRootPath(
     new Set([rootRealPath]),
     0,
     signal,
+    knownFiles,
   );
 }
 
@@ -497,6 +513,7 @@ async function walk(
   visitedDirectories: Set<string>,
   depth: number,
   signal?: AbortSignal,
+  knownFiles: ReadonlyMap<string, FileInfo> = new Map(),
 ): Promise<void> {
   throwIfAborted(signal);
   let entries;
@@ -574,6 +591,7 @@ async function walk(
         visitedDirectories,
         depth + 1,
         signal,
+        knownFiles,
       );
       continue;
     }
@@ -615,6 +633,7 @@ async function walk(
       rootPath,
       absolutePath,
       diagnostics,
+      knownFiles,
     );
     throwIfAborted(signal);
     if (file) {
@@ -999,6 +1018,7 @@ async function readFileInfo(
   rootPath: RootPath,
   absolutePath: string,
   diagnostics: FileScanDiagnostics,
+  knownFiles: ReadonlyMap<string, FileInfo> = new Map(),
 ): Promise<FileInfo | null> {
   const info = await stat(absolutePath).catch(() => null);
 
@@ -1045,6 +1065,25 @@ async function readFileInfo(
     return null;
   }
 
+  const lastModifiedTime = Math.trunc(info.mtimeMs);
+  const known = knownFiles.get(normalizePath(absolutePath));
+  if (
+    known?.contentHash &&
+    known.sizeBytes === info.size &&
+    known.lastModifiedTime === lastModifiedTime
+  ) {
+    return {
+      id: makeFileId(workspaceIndexId, absolutePath),
+      absolutePath,
+      relativePath,
+      rootPath: rootPath.absolutePath,
+      sizeBytes: info.size,
+      lastModifiedTime,
+      kind: detected.kind,
+      format: detected.format,
+    };
+  }
+
   if (detected.kind !== "image" && (await isLikelyBinaryFile(absolutePath))) {
     recordSkippedFile(diagnostics, {
       absolutePath,
@@ -1061,7 +1100,7 @@ async function readFileInfo(
     relativePath,
     rootPath: rootPath.absolutePath,
     sizeBytes: info.size,
-    lastModifiedTime: info.mtimeMs,
+    lastModifiedTime,
     kind: detected.kind,
     format: detected.format,
   };

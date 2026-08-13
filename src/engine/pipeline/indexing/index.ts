@@ -165,6 +165,7 @@ export async function getWorkspaceIndexStatus(
     const scan = await scanRootPaths(
       workspaceIndex.id,
       workspaceIndex.rootPaths,
+      { knownFiles: storedFiles },
     );
     const diff = await computeDiffFromFiles(scan.files, storedFiles);
     const pendingFiles = storedFiles.filter(

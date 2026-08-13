@@ -211,6 +211,43 @@ test("scanner applies ignore files, hidden and generated directories, size, bina
   );
 });
 
+test("scanner reuses unchanged indexed file metadata without binary sniffing", async (t) => {
+  const root = await createTemporaryDirectory(t, "zvec-scanner-known-files-");
+  const path = join(root, "binary.md");
+  await writeFile(path, Buffer.from([0, 1, 2, 0, 3]));
+
+  const initial = await scanRootPaths("workspace-index", [root]);
+  assert.equal(initial.files.length, 0);
+  assert.equal(initial.diagnostics.skippedByReason.binary, 1);
+
+  const info = await stat(path);
+  const knownFile = {
+    id: "known-file",
+    absolutePath: path,
+    relativePath: "binary.md",
+    rootPath: root,
+    sizeBytes: info.size,
+    lastModifiedTime: Math.trunc(info.mtimeMs),
+    contentHash: "existing-content-hash",
+    kind: "text",
+    format: "markdown",
+  };
+  const unchanged = await scanRootPaths("workspace-index", [root], {
+    knownFiles: [knownFile],
+  });
+  assert.equal(unchanged.files.length, 1);
+  assert.equal(unchanged.files[0].lastModifiedTime, knownFile.lastModifiedTime);
+  assert.equal(unchanged.diagnostics.skippedByReason.binary, 0);
+
+  const stale = await scanRootPaths("workspace-index", [root], {
+    knownFiles: [
+      { ...knownFile, lastModifiedTime: knownFile.lastModifiedTime - 1 },
+    ],
+  });
+  assert.equal(stale.files.length, 0);
+  assert.equal(stale.diagnostics.skippedByReason.binary, 1);
+});
+
 test("scanner applies type-aware default file-size limits and records diagnostics", async (t) => {
   const root = await createTemporaryDirectory(t, "zvec-scanner-size-policy-");
   const oversized = "x".repeat(1024 * 1024 + 1);
