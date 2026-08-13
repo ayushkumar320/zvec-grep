@@ -18,6 +18,8 @@ import {
 } from "../mcp/toolset.js";
 
 const LIFTOFF_ONLY_FLAG = "--liftoff-only";
+const SHUTDOWN_REQUEST_TIMEOUT_MS = 2_000;
+const TERMINATION_GRACE_MS = 2_000;
 
 export type DaemonInstanceRecord = {
   pid: number;
@@ -229,21 +231,122 @@ export async function stopServer(
   timeoutMs = 30_000,
   tokenFile?: string,
 ): Promise<DaemonControlStatus> {
-  const status = await serverStatus(home);
-  if (!status.running) return status;
+  const record = await readInstanceRecord(home);
+  if (
+    !record ||
+    record.hostname !== hostname() ||
+    !processIsAlive(record.pid)
+  ) {
+    return { running: false, ready: false };
+  }
+  if (record.pid === process.pid) {
+    throw new Error("Refusing to stop the current process as a daemon.");
+  }
   const token = await resolveClientToken({ home, tokenFile });
-  const response = await fetch(new URL("/control/shutdown", status.serverUrl), {
-    method: "POST",
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-    signal: AbortSignal.timeout(2_000),
-  });
-  if (!response.ok)
-    throw new Error(
-      `Server shutdown request failed with HTTP ${response.status}`,
+  let shutdownAccepted = false;
+  try {
+    const response = await fetch(
+      new URL("/control/shutdown", record.serverUrl),
+      {
+        method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        signal: AbortSignal.timeout(
+          Math.min(SHUTDOWN_REQUEST_TIMEOUT_MS, Math.max(timeoutMs, 100)),
+        ),
+      },
     );
-  return status.pid === undefined
-    ? waitForStatus(home, false, timeoutMs)
-    : waitForProcessExit(status.pid, timeoutMs);
+    if (!response.ok) {
+      throw new ShutdownResponseError(response.status);
+    }
+    shutdownAccepted = true;
+  } catch (error) {
+    if (error instanceof ShutdownResponseError) throw error;
+  }
+
+  if (
+    shutdownAccepted &&
+    (await waitForProcessExit(record.pid, Math.max(timeoutMs, 0)))
+  ) {
+    await removeStoppedInstanceRecord(home, record);
+    return { running: false, ready: false };
+  }
+  return forceStopRecordedProcess(home, record, shutdownAccepted, timeoutMs);
+}
+
+class ShutdownResponseError extends Error {
+  constructor(status: number) {
+    super(`Server shutdown request failed with HTTP ${status}`);
+  }
+}
+
+async function forceStopRecordedProcess(
+  home: string | undefined,
+  record: DaemonInstanceRecord,
+  allowMissingRecord: boolean,
+  timeoutMs: number,
+): Promise<DaemonControlStatus> {
+  if (!processIsAlive(record.pid)) {
+    await removeStoppedInstanceRecord(home, record);
+    return { running: false, ready: false };
+  }
+  await assertSameInstanceBeforeSignal(home, record, allowMissingRecord);
+  signalProcess(record.pid, "SIGTERM");
+  const graceMs = Math.min(TERMINATION_GRACE_MS, Math.max(timeoutMs, 100));
+  if (await waitForProcessExit(record.pid, graceMs)) {
+    await removeStoppedInstanceRecord(home, record);
+    return { running: false, ready: false };
+  }
+
+  await assertSameInstanceBeforeSignal(home, record, true);
+  signalProcess(record.pid, "SIGKILL");
+  if (!(await waitForProcessExit(record.pid, graceMs))) {
+    throw new Error(
+      `Timed out waiting for zvec-grep server process ${record.pid} to stop after SIGKILL.`,
+    );
+  }
+  await removeStoppedInstanceRecord(home, record);
+  return { running: false, ready: false };
+}
+
+async function assertSameInstanceBeforeSignal(
+  home: string | undefined,
+  expected: DaemonInstanceRecord,
+  allowMissing: boolean,
+): Promise<void> {
+  const current = await readInstanceRecord(home);
+  if (!current && allowMissing) return;
+  if (
+    !current ||
+    current.hostname !== expected.hostname ||
+    current.pid !== expected.pid ||
+    current.instanceToken !== expected.instanceToken
+  ) {
+    throw new Error(
+      "zvec-grep server instance changed while stopping; refusing to signal the recorded process.",
+    );
+  }
+}
+
+function signalProcess(pid: number, signal: NodeJS.Signals): void {
+  try {
+    process.kill(pid, signal);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+  }
+}
+
+async function removeStoppedInstanceRecord(
+  home: string | undefined,
+  stopped: DaemonInstanceRecord,
+): Promise<void> {
+  const path = join(daemonHome(home), "instance.lock");
+  const current = await readRecordPath(path);
+  if (
+    current?.pid === stopped.pid &&
+    current.instanceToken === stopped.instanceToken
+  ) {
+    await unlink(path).catch(() => undefined);
+  }
 }
 
 async function assertListenAddressAvailable(
@@ -273,15 +376,13 @@ async function assertListenAddressAvailable(
 async function waitForProcessExit(
   pid: number,
   timeoutMs: number,
-): Promise<DaemonControlStatus> {
+): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (!processIsAlive(pid)) return { running: false, ready: false };
+    if (!processIsAlive(pid)) return true;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  throw new Error(
-    `Timed out waiting for zvec-grep server process ${pid} to stop.`,
-  );
+  return !processIsAlive(pid);
 }
 
 async function waitForStatus(

@@ -53,7 +53,7 @@ async function availablePort() {
   return port;
 }
 
-test("server off waits for the recorded process after its lock disappears", async (t) => {
+test("server off force stops after graceful shutdown stalls", async (t) => {
   const home = await mkdtemp(join(tmpdir(), "zvec-grep-controller-stop-"));
   const daemon = join(home, "daemon");
   await mkdir(daemon);
@@ -66,6 +66,7 @@ test("server off waits for the recorded process after its lock disappears", asyn
     child.once("spawn", resolve);
     child.once("error", reject);
   });
+  const childClosed = new Promise((resolve) => child.once("close", resolve));
   const server = createHttpServer(async (request, response) => {
     if (request.url === "/healthz") {
       response.writeHead(200).end('{"status":"ok"}');
@@ -103,10 +104,68 @@ test("server off waits for the recorded process after its lock disappears", asyn
     })}\n`,
   );
 
-  await assert.rejects(
-    stopServer(home, 100),
-    new RegExp(`Timed out.*process ${child.pid}.*stop`, "i"),
+  assert.deepEqual(await stopServer(home, 100), {
+    running: false,
+    ready: false,
+  });
+  await childClosed;
+});
+
+test("server off force stops an unresponsive recorded process", async (t) => {
+  const home = await mkdtemp(
+    join(tmpdir(), "zvec-grep-controller-force-stop-"),
   );
+  const daemon = join(home, "daemon");
+  await mkdir(daemon);
+  const child = spawn(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      'process.on("SIGTERM", () => {}); setInterval(() => {}, 1_000)',
+    ],
+    { stdio: "ignore", windowsHide: true },
+  );
+  await new Promise((resolve, reject) => {
+    child.once("spawn", resolve);
+    child.once("error", reject);
+  });
+  const childClosed = new Promise((resolve) => child.once("close", resolve));
+  const server = createHttpServer(() => {
+    // Leave every request unanswered to model a blocked daemon event loop.
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  t.after(async () => {
+    if (child.exitCode === null) child.kill("SIGKILL");
+    server.closeAllConnections?.();
+    server.close();
+    await rm(home, { recursive: true, force: true });
+  });
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  await writeFile(
+    join(daemon, "instance.lock"),
+    `${JSON.stringify({
+      pid: child.pid,
+      hostname: hostname(),
+      instanceToken: "unresponsive-instance",
+      startedAt: Date.now(),
+      updatedAt: Date.now(),
+      serverUrl: `http://127.0.0.1:${address.port}/mcp`,
+      ready: true,
+      mcpToolset: "agent",
+    })}\n`,
+  );
+
+  assert.deepEqual(await stopServer(home, 200), {
+    running: false,
+    ready: false,
+  });
+  await childClosed;
+  assert.equal(child.exitCode === null && child.signalCode === null, false);
 });
 
 test("server on reports an occupied listen address without timing out", async (t) => {
