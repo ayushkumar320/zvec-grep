@@ -17,7 +17,6 @@ mcp_tool_timeout_seconds = 600
 
 [run]
 reasoning_effort = "medium"
-concurrency = 1
 checkpoint_every = 10
 infrastructure_retries = 2
 idle_timeout_seconds = 1800

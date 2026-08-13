@@ -279,6 +279,7 @@ def load_queries(path: Path) -> list[dict[str, Any]]:
                     "query_id": str(row["query_id"]),
                     "query": str(row["query"]),
                     "answer": str(row.get("answer", "")),
+                    "evidence_docs": _docids(row.get("evidence_docs")),
                     "gold_docs": _docids(row.get("gold_docs")),
                 }
             )

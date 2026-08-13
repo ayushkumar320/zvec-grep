@@ -46,7 +46,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument("--model", required=True)
     run.add_argument("--reasoning")
-    run.add_argument("--concurrency", type=int)
     run.add_argument("--run-id")
     run.add_argument("--codex-bin", default="codex")
     run.add_argument("--zg-bin", default="zg")
@@ -270,7 +269,6 @@ def main(argv: list[str] | None = None) -> int:
             suite=args.suite,
             model=args.model,
             reasoning_effort=args.reasoning,
-            concurrency=args.concurrency,
             run_id=args.run_id,
             codex_bin=args.codex_bin,
             zg_bin=args.zg_bin,

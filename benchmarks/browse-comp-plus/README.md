@@ -88,8 +88,9 @@ zg-bench evaluate <run-id> --evaluator manual
 ```
 
 Enter scores from 0 to 1 in the generated sheet, then regenerate the report.
-Retrieval recall is calculated directly from the dataset's official evidence
-document IDs.
+The report presents retrieval against the official evidence documents and gold
+documents separately, and groups simultaneous tool calls into one interaction
+batch.
 
 Regenerate the token, timing, completion, and paired-case report with:
 

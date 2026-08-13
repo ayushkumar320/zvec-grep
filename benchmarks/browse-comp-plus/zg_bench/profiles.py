@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import time
 from pathlib import Path
@@ -13,7 +14,7 @@ from .artifacts import (
     utc_now,
     write_json,
 )
-from .config import BenchmarkConfig
+from .config import BENCHMARK_ROOT, BenchmarkConfig
 from .corpus import workspace_root
 from .process import inherited_environment, resolve_executable, run_command
 
@@ -34,17 +35,28 @@ def _link_if_present(source: Path, target: Path) -> None:
     target.symlink_to(source, target_is_directory=source.is_dir())
 
 
-def _write_clean_config(path: Path) -> None:
+def _write_clean_config(path: Path, *, trusted_project: Path) -> None:
     atomic_write_text(
         path,
         "\n".join(
             (
                 'web_search = "disabled"',
-                'sandbox_mode = "read-only"',
+                'sandbox_mode = "workspace-write"',
                 "allow_login_shell = false",
                 "analytics.enabled = false",
                 "feedback.enabled = false",
                 'history.persistence = "none"',
+                "",
+                "[sandbox_workspace_write]",
+                "network_access = true",
+                "",
+                "[features.network_proxy]",
+                "enabled = true",
+                "allow_local_binding = true",
+                'domains = { "127.0.0.1" = "allow" }',
+                "",
+                f"[projects.{json.dumps(str(trusted_project))}]",
+                'trust_level = "trusted"',
                 "",
             )
         ),
@@ -109,12 +121,15 @@ def prepare_profiles(
     root = profiles_root
     baseline = root / "baseline" / "codex-home"
     treatment = root / "zvec-grep" / "codex-home"
+    trusted_project = BENCHMARK_ROOT.parents[1].resolve()
     for home in (baseline, treatment):
         home.mkdir(parents=True, exist_ok=True)
-        _write_clean_config(home / "config.toml")
+        _write_clean_config(
+            home / "config.toml",
+            trusted_project=trusted_project,
+        )
         (home / "AGENTS.md").unlink(missing_ok=True)
         _link_if_present(source_home / "auth.json", home / "auth.json")
-
     environment = inherited_environment()
     environment.update(
         {
@@ -130,6 +145,8 @@ def prepare_profiles(
             "install",
             "--target",
             "codex",
+            "--mcp-transport",
+            "http",
             "--mcp-tool-timeout",
             str(config.zvec_grep.mcp_tool_timeout_seconds),
             "--yes",
@@ -195,7 +212,9 @@ def prepare_profiles(
         "zvec-grep": {
             "zvec_mcp": True,
             "zvec_guidance": True,
-            "install_command": "zg install --target codex --yes",
+            "install_command": (
+                "zg install --target codex --mcp-transport http --yes"
+            ),
         },
         "install_stdout": install.stdout,
         "install_stderr": install.stderr,

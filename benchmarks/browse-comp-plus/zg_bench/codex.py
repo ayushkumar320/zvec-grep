@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import os
 import signal
-import shutil
 import subprocess
-import tempfile
 import threading
 import time
 from datetime import UTC, datetime
@@ -39,17 +37,6 @@ _CANCEL_REQUESTED = threading.Event()
 
 def _iso_now() -> str:
     return datetime.now(UTC).isoformat()
-
-
-def _runtime_profile(template: Path, destination: Path) -> None:
-    destination.mkdir(parents=True)
-    for name in ("config.toml", "AGENTS.md"):
-        source = template / name
-        if source.is_file():
-            shutil.copy2(source, destination / name)
-    authentication = template / "auth.json"
-    if authentication.exists():
-        (destination / "auth.json").symlink_to(authentication.resolve())
 
 
 def _copy_stream(
@@ -200,7 +187,7 @@ def run_attempt(
         raise RuntimeError(f"Codex executable not found: {codex_bin}")
     if zg is None:
         raise RuntimeError(f"zvec-grep executable not found: {zg_bin}")
-    profile_root = profiles_root / profile
+    profile_root = (profiles_root / profile).resolve()
     codex_home = profile_root / "codex-home"
     if not codex_home.is_dir():
         raise RuntimeError("run-local Codex profiles are missing")
@@ -212,6 +199,7 @@ def run_attempt(
     if profile == "zvec-grep" and not index_dir.is_dir():
         raise RuntimeError("zvec-grep index is missing; run 'zg-bench prepare'")
 
+    output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     events_path = output_dir / "events.jsonl"
     stderr_path = output_dir / "stderr.log"
@@ -224,122 +212,117 @@ def run_attempt(
         else 0
     )
 
-    with tempfile.TemporaryDirectory(prefix="zg-bench-") as temporary_name:
-        temporary_root = Path(temporary_name)
-        runtime_home = temporary_root / "codex-home"
-        runtime_final_path = temporary_root / "response.md"
-        _runtime_profile(codex_home, runtime_home)
-
-        command = [
-            str(codex),
-            "exec",
-            "--json",
-            "--ephemeral",
-            "--model",
-            model,
-            "-c",
-            f'model_reasoning_effort="{reasoning_effort}"',
-            "-c",
-            'web_search="disabled"',
-            "-c",
-            "allow_login_shell=false",
-            "--sandbox",
-            "read-only",
+    command = [
+        str(codex),
+        "exec",
+        "--json",
+        "--ephemeral",
+        "--model",
+        model,
+        "-c",
+        f'model_reasoning_effort="{reasoning_effort}"',
+        "-c",
+        'web_search="disabled"',
+        "-c",
+        "allow_login_shell=false",
+        "--sandbox",
+        "workspace-write",
+    ]
+    command.extend(
+        [
             "--ignore-rules",
             "--skip-git-repo-check",
             "-C",
             str(workspace),
             "-o",
-            str(runtime_final_path),
+            str(final_path),
             "-",
         ]
-        environment = dict(os.environ)
-        environment.pop("ZVEC_GREP_HOME", None)
-        environment.update(
-            {
-                "CODEX_HOME": str(runtime_home),
-                "HOME": str(runtime_home),
-                "NO_COLOR": "1",
-                "CODEX_CI": "1",
-            }
-        )
-        if profile == "zvec-grep":
-            environment["ZVEC_GREP_HOME"] = str(
-                (artifacts / "runtime" / "zvec-home").resolve()
-            )
-        command_record = {
-            "args": command,
-            "cwd": str(workspace),
-            "profile": profile,
-            "model": model,
-            "reasoning_effort": reasoning_effort,
-            "environment": {
-                "CODEX_HOME": environment["CODEX_HOME"],
-                "PATH": environment.get("PATH", ""),
-                **(
-                    {"ZVEC_GREP_HOME": environment["ZVEC_GREP_HOME"]}
-                    if profile == "zvec-grep"
-                    else {}
-                ),
-            },
+    )
+    environment = dict(os.environ)
+    environment.pop("ZVEC_GREP_HOME", None)
+    environment.update(
+        {
+            "CODEX_HOME": str(codex_home),
+            "HOME": str(codex_home),
+            "GIT_CEILING_DIRECTORIES": str(workspace.parent),
+            "NO_COLOR": "1",
+            "CODEX_CI": "1",
         }
-        write_json(output_dir / "command.json", command_record)
+    )
+    if profile == "zvec-grep":
+        environment["ZVEC_GREP_HOME"] = str(
+            (artifacts / "runtime" / "zvec-home").resolve()
+        )
+    command_record = {
+        "args": command,
+        "cwd": str(workspace),
+        "profile": profile,
+        "model": model,
+        "reasoning_effort": reasoning_effort,
+        "environment": {
+            "CODEX_HOME": environment["CODEX_HOME"],
+            "GIT_CEILING_DIRECTORIES": environment["GIT_CEILING_DIRECTORIES"],
+            "PATH": environment.get("PATH", ""),
+            **(
+                {"ZVEC_GREP_HOME": environment["ZVEC_GREP_HOME"]}
+                if profile == "zvec-grep"
+                else {}
+            ),
+        },
+    }
+    write_json(output_dir / "command.json", command_record)
 
-        started_at = _iso_now()
-        started = time.monotonic()
-        idle_killed = False
-        activity = [started]
-        with events_path.open("wb") as events, stderr_path.open("wb") as errors:
-            process = subprocess.Popen(
-                command,
-                cwd=workspace,
-                env=environment,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                start_new_session=True,
-            )
+    started_at = _iso_now()
+    started = time.monotonic()
+    idle_killed = False
+    activity = [started]
+    with events_path.open("wb") as events, stderr_path.open("wb") as errors:
+        process = subprocess.Popen(
+            command,
+            cwd=workspace,
+            env=environment,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        with _ACTIVE_PROCESSES_LOCK:
+            _ACTIVE_PROCESSES.add(process)
+        assert process.stdin and process.stdout and process.stderr
+        stdout_thread = threading.Thread(
+            target=_copy_stream,
+            args=(process.stdout, events, activity),
+            daemon=True,
+        )
+        stderr_thread = threading.Thread(
+            target=_copy_stream,
+            args=(process.stderr, errors, activity),
+            daemon=True,
+        )
+        stdout_thread.start()
+        stderr_thread.start()
+        try:
+            process.stdin.write(prompt.encode("utf-8"))
+            process.stdin.close()
+            while process.poll() is None:
+                if (
+                    idle_timeout_seconds
+                    and time.monotonic() - activity[0] > idle_timeout_seconds
+                ):
+                    idle_killed = True
+                    _terminate_group(process)
+                    break
+                time.sleep(1)
+            exit_code = process.wait()
+            stdout_thread.join(timeout=5)
+            stderr_thread.join(timeout=5)
+        except BaseException:
+            _terminate_group(process)
+            raise
+        finally:
             with _ACTIVE_PROCESSES_LOCK:
-                _ACTIVE_PROCESSES.add(process)
-            assert process.stdin and process.stdout and process.stderr
-            stdout_thread = threading.Thread(
-                target=_copy_stream,
-                args=(process.stdout, events, activity),
-                daemon=True,
-            )
-            stderr_thread = threading.Thread(
-                target=_copy_stream,
-                args=(process.stderr, errors, activity),
-                daemon=True,
-            )
-            stdout_thread.start()
-            stderr_thread.start()
-            try:
-                process.stdin.write(prompt.encode("utf-8"))
-                process.stdin.close()
-                while process.poll() is None:
-                    if (
-                        idle_timeout_seconds
-                        and time.monotonic() - activity[0] > idle_timeout_seconds
-                    ):
-                        idle_killed = True
-                        _terminate_group(process)
-                        break
-                    time.sleep(1)
-                exit_code = process.wait()
-                stdout_thread.join(timeout=5)
-                stderr_thread.join(timeout=5)
-            except BaseException:
-                _terminate_group(process)
-                raise
-            finally:
-                with _ACTIVE_PROCESSES_LOCK:
-                    _ACTIVE_PROCESSES.discard(process)
-        if runtime_final_path.is_file():
-            atomic_write_text(
-                final_path,
-                runtime_final_path.read_text(encoding="utf-8", errors="replace"),
-            )
+                _ACTIVE_PROCESSES.discard(process)
 
     finished_at = _iso_now()
     wall_seconds = time.monotonic() - started
