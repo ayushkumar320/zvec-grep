@@ -490,6 +490,7 @@ def run_benchmark(
             },
             "corpus_fingerprint": corpus_state["fingerprint"],
             "index_fingerprint": index_state["fingerprint"],
+            "index_build_wall_seconds": float(index_state["build_wall_seconds"]),
             "runtime_setups": [],
         }
         write_json(metadata_path, metadata)

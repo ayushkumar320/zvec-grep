@@ -7,7 +7,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from .artifacts import find_run
+from .artifacts import find_run, read_json
 from .console import Console
 from .config import DEFAULT_ARTIFACTS_DIR, load_config
 from .corpus import materialize, prepared_corpus, workspace_root
@@ -394,6 +394,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         console.success(result)
         console.detail("State", output)
+        index_state = read_json(output)
+        console.detail(
+            "Index build wall time",
+            f"{float(index_state['build_wall_seconds']):,.1f}s",
+        )
         console.blank()
         console.success("Preparation complete")
         return 0

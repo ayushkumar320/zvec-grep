@@ -118,6 +118,7 @@ def generate_report(run_root: Path) -> Path:
         "model": metadata["model"],
         "reasoning_effort": metadata["reasoning_effort"],
         "environment": metadata["environment"],
+        "index_build_wall_seconds": metadata["index_build_wall_seconds"],
         "planned_pairs": len(metadata["query_ids"]),
         "persisted_pairs": len(pairs),
         "completed_pairs": sum(bool(pair["eligible"]) for pair in pairs),
@@ -168,6 +169,7 @@ def generate_report(run_root: Path) -> Path:
 - Reasoning: `{summary["reasoning_effort"]}`
 - Codex: `{summary["environment"]["codex_version"]}`
 - zvec-grep: `{summary["environment"]["zg_version"]}`
+- Index build wall time: {summary["index_build_wall_seconds"]:,.1f} seconds (one-time preparation; excluded from measured run wall time)
 - Completed pairs: {summary["completed_pairs"]} / {summary["planned_pairs"]}
 - Quality: {quality_line}{evaluator_line}
 
