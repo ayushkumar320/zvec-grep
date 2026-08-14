@@ -47,6 +47,33 @@ We track two outcomes and one diagnostic:
 
 Index construction time is recorded separately from agent execution.
 
+## SWE-QA GitHub Actions benchmark
+
+The [`SWE-QA Bench`](../../.github/workflows/swe-qa-bench.yml) workflow compares
+OpenCode with and without zvec-grep on a pinned subset of
+[`peng-weihan/SWE-QA-Bench`](https://github.com/peng-weihan/SWE-QA-Bench).
+Pull requests from the same repository and pushes to `main` run a curated
+five-task set. Fork and Dependabot pull requests run validation only, without
+model credentials. Manual `workflow_dispatch` runs offer either the one-task
+`smoke` scope or the 20-task `all-full` scope. The exact task lists and pinned
+repository commits live in
+[`zg_bench/swe_qa/data/selection.json`](zg_bench/swe_qa/data/selection.json).
+
+Each task runs three baseline trials and three zvec-grep trials, then judges all
+six answers independently. Job Summary cells use
+`baseline / zvec-grep / change`. Judge change is `zvec-grep - baseline`, so a
+quality improvement is positive. For `input_token`, `toolcall`, and agent wall
+time, change is `(zvec-grep - baseline) / baseline`; lower usage is therefore
+negative. Index setup time is retained separately and is not included in agent
+wall time. A zero baseline denominator produces `N/A` for that comparison.
+
+In the Aggregate row, Judge values are equal-weight task means. Efficiency
+values are sums of the per-task profile means, while the displayed change is
+the equal-weight mean of the task-level changes rather than a ratio of those
+sums. An `N/A` task is excluded only from the affected Aggregate metric. The
+workflow is report-only: numeric results do not gate review or merging, but all
+expected profile runs and Judge calls must complete successfully.
+
 ## Setup instructions
 
 ### Platform support
