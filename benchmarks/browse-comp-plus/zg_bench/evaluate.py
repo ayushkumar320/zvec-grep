@@ -17,6 +17,7 @@ from .artifacts import (
     write_json,
 )
 from .console import Console
+from .corpus import workspace_root
 from .dataset import load_queries
 from .models import PROFILES, TraceSummary
 from .process import inherited_environment, resolve_executable, run_command
@@ -70,7 +71,8 @@ contribute useful evidence or narrow the investigation. Focused shell commands
 that read or verify retrieved documents are allowed; do not mark usage incorrect
 merely because shell commands were also used. Mark usage incorrect if zvec-grep
 was not used, all of its calls failed or were irrelevant, the wrong workspace
-was searched, or broad shell discovery replaced zvec-grep retrieval.
+was searched, or broad shell discovery replaced zvec-grep retrieval. Treat the
+expected_workspace value in INPUT_DATA as the canonical workspace path.
 
 Judge tool usage, not whether the final answer matches the reference answer.
 Return only the JSON object required by the output schema.
@@ -432,13 +434,12 @@ def _run_usage_audit(
     case_result = read_json(case_result_path)
     trace = case_result["trace"]
     tool_calls = trace.get("tool_calls", [])
+    expected_workspace = str(workspace_root(run_root.parent.parent, "zvec-grep"))
     prompt = USAGE_AUDIT_PROMPT.format(
         input_data=json.dumps(
             {
                 "question": question,
-                "expected_workspace": str(
-                    (run_root.parent.parent / "workspaces" / "zvec-grep").resolve()
-                ),
+                "expected_workspace": expected_workspace,
                 "final_response": trace.get("final_response", ""),
                 "tool_calls": tool_calls,
             },
