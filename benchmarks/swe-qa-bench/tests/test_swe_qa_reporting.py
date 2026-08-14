@@ -24,7 +24,7 @@ from zg_bench.swe_qa.validation import validate_assets
 SWE_QA_BENCH_DIR = Path(__file__).resolve().parents[1]
 SELECTION_PATH = SWE_QA_BENCH_DIR / "zg_bench" / "swe_qa" / "data" / "selection.json"
 REFERENCES_PATH = SWE_QA_BENCH_DIR / "zg_bench" / "swe_qa" / "data" / "references.json"
-DATASET_PATH = SWE_QA_BENCH_DIR / "datasets" / "swe-qa-bench"
+DATASET_PATH = SWE_QA_BENCH_DIR / "datasets"
 EXPECTED_TASK_IDS = (
     "reflex:6",
     "sqlfluff:2",

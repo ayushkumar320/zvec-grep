@@ -23,7 +23,7 @@ The benchmark inputs are locked in this directory:
   task slugs, repository commits, asset hashes, and CI scope membership.
 - [`references.json`](zg_bench/swe_qa/data/references.json) contains the
   isolated references used by the independent judge; agents cannot access it.
-- [`datasets/swe-qa-bench/`](datasets/swe-qa-bench/) contains the
+- [`datasets/`](datasets/) contains the
   pinned Harbor task environments, prompts, and verifiers.
 - [`swe-qa-bench.yaml`](suites/swe-qa-bench.yaml) exposes the
   local dataset to the benchmark runner.
