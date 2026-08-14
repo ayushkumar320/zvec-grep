@@ -22,6 +22,12 @@ def _display_number(value: int | float | None, *, digits: int = 2) -> str:
     return "-" if value is None else f"{value:.{digits}f}"
 
 
+def _markdown_cell(value: Any) -> str:
+    if value is None:
+        return "-"
+    return str(value).replace("|", "\\|").replace("\n", " ")
+
+
 def _aggregate(
     rows: list[dict[str, Any]], profile: str, run_root: Path
 ) -> dict[str, Any]:
@@ -103,6 +109,9 @@ def generate_report(run_root: Path) -> Path:
     queries = {str(query["query_id"]): query for query in load_queries(query_path)}
     eligible_ids = {str(pair["query_id"]) for pair in eligible_pairs}
     answer_quality = _judge_quality(run_root, eligible_ids)
+    usage_quality = _zvec_grep_usage_quality(
+        run_root, eligible_ids, str(metadata["suite"])
+    )
     retrieval_quality = _retrieval_quality(run_root, eligible_pairs, queries)
     interaction_quality = _tool_interaction_quality(
         run_root, eligible_pairs, queries
@@ -111,6 +120,27 @@ def generate_report(run_root: Path) -> Path:
     evaluator = (
         read_json(evaluation_summary) if evaluation_summary.is_file() else None
     )
+    runtime_setups = metadata["runtime_setups"]
+    runtime_preparation = {
+        "sessions": len(runtime_setups),
+        "total_wall_seconds": sum(
+            float(setup["total_wall_seconds"]) for setup in runtime_setups
+        ),
+        "server_start_wall_seconds": sum(
+            float(setup["server_start_wall_seconds"]) for setup in runtime_setups
+        ),
+        "profile_preparation_wall_seconds": sum(
+            float(setup["profile_preparation_wall_seconds"])
+            for setup in runtime_setups
+        ),
+        "profile_install_wall_seconds": sum(
+            float(setup["profile_install_wall_seconds"])
+            for setup in runtime_setups
+        ),
+        "warmup_wall_seconds": sum(
+            float(setup["warmup_wall_seconds"]) for setup in runtime_setups
+        ),
+    }
     summary = {
         "generated_at": utc_now(),
         "run_id": metadata["run_id"],
@@ -119,6 +149,7 @@ def generate_report(run_root: Path) -> Path:
         "reasoning_effort": metadata["reasoning_effort"],
         "environment": metadata["environment"],
         "index_build_wall_seconds": metadata["index_build_wall_seconds"],
+        "runtime_preparation": runtime_preparation,
         "planned_pairs": len(metadata["query_ids"]),
         "persisted_pairs": len(pairs),
         "completed_pairs": sum(bool(pair["eligible"]) for pair in pairs),
@@ -129,6 +160,7 @@ def generate_report(run_root: Path) -> Path:
         "quality": {
             "answer": answer_quality,
             "retrieval": retrieval_quality,
+            "zvec_grep_usage": usage_quality,
         },
         "evaluator": evaluator,
         "tool_interaction_batches": interaction_quality,
@@ -147,31 +179,138 @@ def generate_report(run_root: Path) -> Path:
         )
         if answer_quality["status"] == "partial":
             quality_line += " (partial)"
-    evaluator_line = ""
+    evaluator_section = ""
     if evaluator:
-        evaluator_line = (
-            f"\n- Evaluator: Codex `{evaluator['model']}` · "
-            f"{evaluator['input_tokens']} input tokens · "
-            f"{evaluator['output_tokens']} output tokens · "
-            f"{evaluator['wall_seconds']:.1f} wall seconds"
+        evaluator_cost = evaluator["cost"]
+        evaluator_rows = "\n".join(
+            "| {label} | {completed_calls} | {usage_records} | {input_tokens} | "
+            "{cached_input_tokens} | {output_tokens} | "
+            "{reasoning_output_tokens} | {wall_seconds:.1f} |".format(
+                label=label,
+                usage_records=(
+                    f"{evaluator_cost[key]['usage_available']} / "
+                    f"{evaluator_cost[key]['completed_calls']}"
+                ),
+                **evaluator_cost[key],
+            )
+            for label, key in (
+                ("Answer judgements", "answer_judgements"),
+                ("zvec-grep usage audits", "zvec_grep_usage_audits"),
+                ("Total evaluator cost", "total"),
+            )
         )
+        evaluator_section = f"""
+
+## Evaluator cost
+
+- Model: `{evaluator["model"]}`
+- Reasoning: `{evaluator["reasoning_effort"]}`
+- Scope: evaluator-only cost; excluded from baseline and zvec-grep run metrics
+
+| Workload | Completed calls | Usage records | Input tokens | Cached input tokens | Output tokens | Reasoning output tokens | Wall seconds |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+{evaluator_rows}
+"""
+    usage_audit_line = ""
+    usage_audit_section = ""
+    if usage_quality["status"] in {"scored", "partial"}:
+        usage_audit_line = (
+            f"\n- zvec-grep usage audit: {usage_quality['correct_cases']} / "
+            f"{usage_quality['evaluated_cases']} correct"
+        )
+        rows = "\n".join(
+            "| {query_id} | {used} | {correct} | {calls} | {reasoning} |".format(
+                query_id=row["query_id"],
+                used="Yes" if row["used_zvec_grep"] else "No",
+                correct="Yes" if row["correct_usage"] else "No",
+                calls=row["observed_zvec_grep_search_calls"],
+                reasoning=str(row["reasoning"])
+                .replace("|", "\\|")
+                .replace("\n", " "),
+            )
+            for row in usage_quality["cases"]
+        )
+        usage_audit_section = f"""
+
+## zvec-grep usage audit
+
+| Case | Used zvec-grep | Correct usage | Search calls | Reasoning |
+| --- | --- | --- | ---: | --- |
+{rows}
+"""
     baseline_evidence = retrieval_quality["evidence"]["baseline"]
     treatment_evidence = retrieval_quality["evidence"]["zvec-grep"]
     baseline_gold = retrieval_quality["gold"]["baseline"]
     treatment_gold = retrieval_quality["gold"]["zvec-grep"]
     baseline_interactions = interaction_quality["baseline"]
     treatment_interactions = interaction_quality["zvec-grep"]
+    runtime_preparation = summary["runtime_preparation"]
+    environment = summary["environment"]
+    available_cpu_count = environment["available_cpu_count"]
+    logical_cpu_count = environment["logical_cpu_count"]
+    cpu_counts = (
+        f"{available_cpu_count if available_cpu_count is not None else '-'} "
+        "available / "
+        f"{logical_cpu_count if logical_cpu_count is not None else '-'} logical"
+    )
+    environment_rows = "\n".join(
+        f"| {label} | {_markdown_cell(value)} |"
+        for label, value in (
+            ("Operating system", environment["operating_system"]),
+            ("Kernel / platform", environment["platform"]),
+            ("Architecture", environment["machine"]),
+            ("CPU", environment["cpu_model"]),
+            ("CPU count", cpu_counts),
+            ("Python", environment["python"]),
+            ("Codex", environment["codex_version"]),
+            ("Codex executable", environment["codex_bin"]),
+            ("Codex sandbox", environment["codex_sandbox"]),
+            ("Web search", environment["web_search"]),
+            ("History persistence", environment["history_persistence"]),
+            ("zvec-grep", environment["zg_version"]),
+            ("Embedding", environment["embedding"]),
+            (
+                "Index embedding concurrency",
+                environment["embedding_concurrency"],
+            ),
+            ("Configured embedding device", environment["embedding_device"]),
+            ("Maximum indexed file size", environment["max_filesize"]),
+            ("MCP transport", environment["mcp_transport"]),
+            (
+                "MCP tool timeout",
+                f"{environment['mcp_tool_timeout_seconds']} seconds",
+            ),
+            ("zvec-grep server", environment["zg_server_url"]),
+        )
+    )
     markdown = f"""# BrowseComp-Plus paired report
 
 - Run: `{summary["run_id"]}`
 - Suite: `{summary["suite"]}`
 - Model: `{summary["model"]}`
 - Reasoning: `{summary["reasoning_effort"]}`
-- Codex: `{summary["environment"]["codex_version"]}`
-- zvec-grep: `{summary["environment"]["zg_version"]}`
 - Index build wall time: {summary["index_build_wall_seconds"]:,.1f} seconds (one-time preparation; excluded from measured run wall time)
+- Runtime preparation wall time: {runtime_preparation["total_wall_seconds"]:,.1f} seconds across {runtime_preparation["sessions"]} session(s) (excluded from measured run wall time)
 - Completed pairs: {summary["completed_pairs"]} / {summary["planned_pairs"]}
-- Quality: {quality_line}{evaluator_line}
+- Quality: {quality_line}{usage_audit_line}
+
+## Environment
+
+| Setting | Value |
+| --- | --- |
+{environment_rows}
+
+## Runtime preparation
+
+| Phase | Wall seconds |
+| --- | ---: |
+| End-to-end preparation | {runtime_preparation["total_wall_seconds"]:.1f} |
+| Server startup | {runtime_preparation["server_start_wall_seconds"]:.1f} |
+| Profile preparation | {runtime_preparation["profile_preparation_wall_seconds"]:.1f} |
+| `zg install` (included in profile preparation) | {runtime_preparation["profile_install_wall_seconds"]:.1f} |
+| Runtime verification and index warmup | {runtime_preparation["warmup_wall_seconds"]:.1f} |
+
+## Paired results
 
 | Metric | Baseline | zvec-grep |
 | --- | ---: | ---: |
@@ -196,7 +335,7 @@ def generate_report(run_root: Path) -> Path:
 | Mean batch to first evidence (hits only) | {_display_number(baseline_interactions["first_evidence_mean"])} | {_display_number(treatment_interactions["first_evidence_mean"])} |
 | Gold found cases | {baseline_interactions["first_gold_hits"]} | {treatment_interactions["first_gold_hits"]} |
 | Mean batch to first gold (hits only) | {_display_number(baseline_interactions["first_gold_mean"])} | {_display_number(treatment_interactions["first_gold_mean"])} |
-"""
+{evaluator_section}{usage_audit_section}"""
     atomic_write_text(report_dir / "summary.md", markdown)
 
     output = io.StringIO()
@@ -214,6 +353,7 @@ def generate_report(run_root: Path) -> Path:
             "treatment_wall_seconds",
             "baseline_tool_calls",
             "treatment_tool_calls",
+            "zvec_grep_usage_correct",
         ]
     )
     for pair in pairs:
@@ -222,6 +362,16 @@ def generate_report(run_root: Path) -> Path:
         treatment_row = pair["zvec-grep"]
         baseline_usage = baseline_row.get("usage")
         treatment_usage = treatment_row.get("usage")
+        usage_audit_path = (
+            run_root
+            / "evaluation"
+            / "usage-audit"
+            / "results"
+            / f"{query_id}.json"
+        )
+        usage_audit = (
+            read_json(usage_audit_path) if usage_audit_path.is_file() else {}
+        )
         correctness: dict[str, bool | str] = {}
         for profile in PROFILES:
             path = (
@@ -254,6 +404,9 @@ def generate_report(run_root: Path) -> Path:
                 treatment_row["wall_seconds"],
                 baseline_row.get("tool_calls", 0),
                 treatment_row.get("tool_calls", 0),
+                usage_audit.get("correct_usage", "")
+                if usage_audit.get("status") == "completed"
+                else "",
             ]
         )
     atomic_write_text(report_dir / "cases.csv", output.getvalue())
@@ -299,6 +452,47 @@ def _judge_quality(run_root: Path, eligible_ids: set[str]) -> dict[str, Any]:
         "treatment_wins": wins,
         "treatment_losses": losses,
         "ties": len(scored) - wins - losses,
+    }
+
+
+def _zvec_grep_usage_quality(
+    run_root: Path, eligible_ids: set[str], suite: str
+) -> dict[str, Any]:
+    if suite != "smoke":
+        return {"status": "not_applicable"}
+    cases: list[dict[str, Any]] = []
+    for query_id in sorted(eligible_ids):
+        path = (
+            run_root
+            / "evaluation"
+            / "usage-audit"
+            / "results"
+            / f"{query_id}.json"
+        )
+        if not path.is_file():
+            continue
+        result = read_json(path)
+        if result.get("status") != "completed":
+            continue
+        cases.append(
+            {
+                "query_id": query_id,
+                "used_zvec_grep": bool(result["used_zvec_grep"]),
+                "correct_usage": bool(result["correct_usage"]),
+                "observed_zvec_grep_search_calls": int(
+                    result["observed_zvec_grep_search_calls"]
+                ),
+                "reasoning": str(result["reasoning"]),
+            }
+        )
+    if not cases:
+        return {"status": "pending", "expected_cases": len(eligible_ids)}
+    return {
+        "status": "scored" if len(cases) == len(eligible_ids) else "partial",
+        "expected_cases": len(eligible_ids),
+        "evaluated_cases": len(cases),
+        "correct_cases": sum(case["correct_usage"] for case in cases),
+        "cases": cases,
     }
 
 

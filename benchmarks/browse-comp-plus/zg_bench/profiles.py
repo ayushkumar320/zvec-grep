@@ -25,6 +25,25 @@ AGENTS_START = "<!-- ZVEC_GREP_START -->"
 AGENTS_END = "<!-- ZVEC_GREP_END -->"
 
 
+def server_url(config: BenchmarkConfig) -> str:
+    return f"http://127.0.0.1:{config.zvec_grep.server_port}/mcp"
+
+
+def server_environment(
+    config: BenchmarkConfig, artifacts: Path
+) -> dict[str, str]:
+    environment = inherited_environment()
+    environment.update(
+        {
+            "ZVEC_GREP_HOME": str(
+                (artifacts / "runtime" / "zvec-home").resolve()
+            ),
+            "ZVEC_GREP_SERVER_URL": server_url(config),
+        }
+    )
+    return environment
+
+
 def _link_if_present(source: Path, target: Path) -> None:
     if not source.exists():
         return
@@ -102,6 +121,7 @@ def prepare_profiles(
     profiles_root: Path,
     manifest_path: Path,
 ) -> Path:
+    started = time.monotonic()
     codex = resolve_executable(codex_bin)
     zg = resolve_executable("zg")
     if codex is None:
@@ -129,15 +149,15 @@ def prepare_profiles(
         )
         (home / "AGENTS.md").unlink(missing_ok=True)
         _link_if_present(source_home / "auth.json", home / "auth.json")
-    environment = inherited_environment()
+    environment = server_environment(config, artifacts)
     environment.update(
         {
             "CODEX_HOME": str(treatment),
             "HOME": str(treatment),
-            "ZVEC_GREP_HOME": str((artifacts / "runtime" / "zvec-home").resolve()),
             "NO_COLOR": "1",
         }
     )
+    install_started = time.monotonic()
     install = run_command(
         [
             zg,
@@ -154,6 +174,7 @@ def prepare_profiles(
         env=environment,
         timeout=180,
     )
+    install_wall_seconds = time.monotonic() - install_started
     if not install.ok:
         raise RuntimeError(install.stderr.strip() or install.stdout.strip())
 
@@ -202,6 +223,7 @@ def prepare_profiles(
         "baseline_home": str(baseline.resolve()),
         "treatment_home": str(treatment.resolve()),
         "zvec_grep_home": environment["ZVEC_GREP_HOME"],
+        "zvec_grep_server_url": environment["ZVEC_GREP_SERVER_URL"],
         "zvec_grep_build": build,
         "authentication": authentication,
         "files": files,
@@ -216,6 +238,8 @@ def prepare_profiles(
         },
         "install_stdout": install.stdout,
         "install_stderr": install.stderr,
+        "install_wall_seconds": install_wall_seconds,
+        "preparation_wall_seconds": time.monotonic() - started,
     }
     write_json(manifest_path, manifest)
     return manifest_path
@@ -289,12 +313,13 @@ def _package_root(executable: Path) -> Path | None:
     return None
 
 
-def ensure_server(artifacts: Path, *, restart: bool = False) -> None:
+def ensure_server(
+    config: BenchmarkConfig, artifacts: Path, *, restart: bool = False
+) -> None:
     executable = resolve_executable("zg")
     if executable is None:
         raise RuntimeError("zvec-grep executable not found: zg")
-    environment = inherited_environment()
-    environment["ZVEC_GREP_HOME"] = str((artifacts / "runtime" / "zvec-home").resolve())
+    environment = server_environment(config, artifacts)
     check = run_command(
         [executable, "server", "status", "--check-ready"],
         env=environment,
@@ -311,7 +336,15 @@ def ensure_server(artifacts: Path, *, restart: bool = False) -> None:
         if not stop.ok:
             raise RuntimeError(stop.stderr.strip() or stop.stdout.strip())
     start = run_command(
-        [executable, "server", "on", "--mcp-toolset", "agent"],
+        [
+            executable,
+            "server",
+            "on",
+            "--listen",
+            f"127.0.0.1:{config.zvec_grep.server_port}",
+            "--mcp-toolset",
+            "agent",
+        ],
         env=environment,
         timeout=60,
     )
@@ -326,6 +359,19 @@ def ensure_server(artifacts: Path, *, restart: bool = False) -> None:
         raise RuntimeError(check.stderr.strip() or check.stdout.strip())
 
 
+def stop_server(config: BenchmarkConfig, artifacts: Path) -> None:
+    executable = resolve_executable("zg")
+    if executable is None:
+        raise RuntimeError("zvec-grep executable not found: zg")
+    result = run_command(
+        [executable, "server", "off"],
+        env=server_environment(config, artifacts),
+        timeout=60,
+    )
+    if not result.ok:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip())
+
+
 def prepare_search_runtime(
     config: BenchmarkConfig,
     artifacts: Path,
@@ -336,16 +382,14 @@ def prepare_search_runtime(
     executable = resolve_executable("zg")
     if executable is None:
         raise RuntimeError("zvec-grep executable not found: zg")
-    started_at = utc_now()
     started = time.monotonic()
-    print("Preparing the zvec-grep daemon and existing index...", flush=True)
     ensure_server(
+        config,
         artifacts,
         restart=restart_server,
     )
     root = workspace_root(artifacts, "zvec-grep")
-    environment = inherited_environment()
-    environment["ZVEC_GREP_HOME"] = str((artifacts / "runtime" / "zvec-home").resolve())
+    environment = server_environment(config, artifacts)
     warmup = run_command(
         [
             executable,
@@ -366,18 +410,12 @@ def prepare_search_runtime(
     )
     if not warmup.ok:
         raise RuntimeError(warmup.stderr.strip() or warmup.stdout.strip())
-    wall_seconds = time.monotonic() - started
+    warmup_wall_seconds = time.monotonic() - started
     result: dict[str, object] = {
-        "started_at": started_at,
-        "finished_at": utc_now(),
-        "wall_seconds": wall_seconds,
+        "warmup_wall_seconds": warmup_wall_seconds,
         "root": str(root),
+        "server_url": environment["ZVEC_GREP_SERVER_URL"],
         "warmup_stdout": warmup.stdout,
         "warmup_stderr": warmup.stderr,
     }
-    write_json(artifacts / "state" / "runtime.json", result)
-    print(
-        f"zvec-grep runtime ready in {wall_seconds:.1f} seconds",
-        flush=True,
-    )
     return result

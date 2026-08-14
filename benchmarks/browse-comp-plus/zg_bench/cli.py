@@ -16,7 +16,7 @@ from .doctor import format_report, run_doctor
 from .evaluate import evaluate, evaluation_complete
 from .index import build_index, index_is_ready, prepared_index
 from .report import generate_report
-from .runner import resume_benchmark, run_benchmark
+from .runner import RunTerminated, resume_benchmark, run_benchmark
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -230,6 +230,13 @@ def _show_report(console: Console, report: Path) -> None:
         )
     else:
         console.detail("Quality", "pending evaluation")
+    usage_quality = summary["quality"]["zvec_grep_usage"]
+    if usage_quality.get("status") in {"scored", "partial"}:
+        console.detail(
+            "zvec-grep usage",
+            f"{usage_quality['correct_cases']} / "
+            f"{usage_quality['evaluated_cases']} correct",
+        )
     baseline_tokens = (
         baseline["tokens"]["input_total"] + baseline["tokens"]["output_total"]
     )
@@ -415,6 +422,11 @@ def main(argv: list[str] | None = None) -> int:
         except (OSError, RuntimeError, ValueError) as error:
             console.error(str(error))
             return 1
+        except RunTerminated as error:
+            console.warning(
+                "Run terminated; use 'zg-bench resume <run-id>' to continue"
+            )
+            return 128 + error.signum
         except KeyboardInterrupt:
             console.warning(
                 "Run interrupted; use 'zg-bench resume <run-id>' to continue"
@@ -438,6 +450,9 @@ def main(argv: list[str] | None = None) -> int:
         except (OSError, RuntimeError, ValueError) as error:
             console.error(str(error))
             return 1
+        except RunTerminated as error:
+            console.warning("Run terminated; use the same resume command to continue")
+            return 128 + error.signum
         except KeyboardInterrupt:
             console.warning("Run interrupted; use the same resume command to continue")
             return 130

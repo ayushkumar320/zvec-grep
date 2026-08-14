@@ -16,7 +16,7 @@ from .config import BenchmarkConfig
 from .corpus import workspace_root
 from .models import AttemptResult, Profile, TraceSummary
 from .process import resolve_executable
-from .profiles import ensure_server
+from .profiles import ensure_server, server_environment
 from .trace import parse_trace
 
 
@@ -191,7 +191,7 @@ def run_attempt(
     if not codex_home.is_dir():
         raise RuntimeError("run-local Codex profiles are missing")
     if profile == "zvec-grep":
-        ensure_server(artifacts)
+        ensure_server(config, artifacts)
 
     workspace = workspace_root(artifacts, profile)
     index_dir = workspace_root(artifacts, "zvec-grep") / ".zvec-grep"
@@ -240,6 +240,7 @@ def run_attempt(
     )
     environment = dict(os.environ)
     environment.pop("ZVEC_GREP_HOME", None)
+    environment.pop("ZVEC_GREP_SERVER_URL", None)
     environment.update(
         {
             "CODEX_HOME": str(codex_home),
@@ -250,9 +251,11 @@ def run_attempt(
         }
     )
     if profile == "zvec-grep":
-        environment["ZVEC_GREP_HOME"] = str(
-            (artifacts / "runtime" / "zvec-home").resolve()
-        )
+        runtime_environment = server_environment(config, artifacts)
+        environment["ZVEC_GREP_HOME"] = runtime_environment["ZVEC_GREP_HOME"]
+        environment["ZVEC_GREP_SERVER_URL"] = runtime_environment[
+            "ZVEC_GREP_SERVER_URL"
+        ]
     command_record = {
         "args": command,
         "cwd": str(workspace),
@@ -264,7 +267,12 @@ def run_attempt(
             "GIT_CEILING_DIRECTORIES": environment["GIT_CEILING_DIRECTORIES"],
             "PATH": environment.get("PATH", ""),
             **(
-                {"ZVEC_GREP_HOME": environment["ZVEC_GREP_HOME"]}
+                {
+                    "ZVEC_GREP_HOME": environment["ZVEC_GREP_HOME"],
+                    "ZVEC_GREP_SERVER_URL": environment[
+                        "ZVEC_GREP_SERVER_URL"
+                    ],
+                }
                 if profile == "zvec-grep"
                 else {}
             ),

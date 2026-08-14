@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 import platform
 import random
+import signal
 import sys
+import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +31,117 @@ from .dataset import load_queries, prepared_dataset
 from .index import prepared_index
 from .models import PROFILES, AttemptResult, Profile
 from .process import resolve_executable, run_command
-from .profiles import prepare_profiles, prepare_search_runtime, validate_profiles
+from .profiles import (
+    ensure_server,
+    prepare_profiles,
+    prepare_search_runtime,
+    server_url,
+    stop_server,
+    validate_profiles,
+)
+
+
+class RunTerminated(BaseException):
+    def __init__(self, signum: int) -> None:
+        self.signum = signum
+        super().__init__(f"run terminated by signal {signum}")
+
+
+@contextmanager
+def _cleanup_on_termination() -> Any:
+    previous_handlers: dict[int, Any] = {}
+
+    def terminate(signum: int, _frame: Any) -> None:
+        raise RunTerminated(signum)
+
+    for signum in (signal.SIGTERM, signal.SIGHUP):
+        previous_handlers[signum] = signal.signal(signum, terminate)
+    try:
+        yield
+    finally:
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)
+
+
+def _operating_system_name() -> str:
+    system = platform.system()
+    if system == "Linux":
+        try:
+            name = platform.freedesktop_os_release().get("PRETTY_NAME", "")
+        except OSError:
+            name = ""
+        if name:
+            return name
+    if system == "Darwin":
+        version = platform.mac_ver()[0]
+        return f"macOS {version}" if version else "macOS"
+    return f"{system} {platform.release()}".strip()
+
+
+def _cpu_model() -> str:
+    if platform.system() == "Linux":
+        cpuinfo = Path("/proc/cpuinfo")
+        if cpuinfo.is_file():
+            try:
+                lines = cpuinfo.read_text(encoding="utf-8").splitlines()
+            except OSError:
+                lines = []
+            for line in lines:
+                key, separator, value = line.partition(":")
+                if separator and key.strip() in {"model name", "Hardware"}:
+                    if value.strip():
+                        return value.strip()
+    if platform.system() == "Darwin":
+        result = run_command(
+            ["sysctl", "-n", "machdep.cpu.brand_string"], timeout=5
+        )
+        if result.ok and result.stdout.strip():
+            return result.stdout.strip()
+    return platform.processor().strip() or platform.machine()
+
+
+def _available_cpu_count() -> int | None:
+    affinity = getattr(os, "sched_getaffinity", None)
+    if affinity is not None:
+        try:
+            return len(affinity(0))
+        except OSError:
+            pass
+    return os.cpu_count()
+
+
+def _environment_metadata(
+    config: BenchmarkConfig,
+    *,
+    codex: Path,
+    codex_version: str,
+    zg_version: str,
+) -> dict[str, Any]:
+    return {
+        "operating_system": _operating_system_name(),
+        "os_release": platform.release(),
+        "os_version": platform.version(),
+        "platform": platform.platform(),
+        "machine": platform.machine(),
+        "cpu_model": _cpu_model(),
+        "logical_cpu_count": os.cpu_count(),
+        "available_cpu_count": _available_cpu_count(),
+        "python": sys.version.split()[0],
+        "codex_bin": str(codex),
+        "codex_version": codex_version,
+        "zg_version": zg_version,
+        "embedding": config.zvec_grep.embedding,
+        "embedding_concurrency": config.zvec_grep.embedding_concurrency,
+        "embedding_device": config.zvec_grep.device,
+        "max_filesize": config.zvec_grep.max_filesize,
+        "mcp_transport": "http",
+        "mcp_tool_timeout_seconds": config.zvec_grep.mcp_tool_timeout_seconds,
+        "server_port": config.zvec_grep.server_port,
+        "zg_server_url": server_url(config),
+        "codex_sandbox": "workspace-write",
+        "web_search": "disabled",
+        "history_persistence": "none",
+    }
 
 
 def load_suite(name: str, queries: list[dict[str, Any]]) -> list[str]:
@@ -41,6 +155,8 @@ def load_suite(name: str, queries: list[dict[str, Any]]) -> list[str]:
         for line in path.read_text(encoding="utf-8").splitlines()
         if line.strip() and not line.lstrip().startswith("#")
     ]
+    if not lines:
+        raise ValueError(f"suite contains no query IDs: {path}")
     all_ids = [str(row["query_id"]) for row in queries]
     if lines == ["@all"]:
         return all_ids
@@ -237,6 +353,7 @@ def _run_protocol(
         "infrastructure_retries": config.run.infrastructure_retries,
         "idle_timeout_seconds": config.run.idle_timeout_seconds,
         "mcp_tool_timeout_seconds": config.zvec_grep.mcp_tool_timeout_seconds,
+        "server_port": config.zvec_grep.server_port,
         "configuration_sha256": sha256_file(config.path),
     }
 
@@ -394,7 +511,8 @@ def run_benchmark(
     metadata_path = run_root / "run.json"
     profiles_root = run_root / "profiles"
     profiles_manifest_path = profiles_root / "manifest.json"
-    if metadata_path.is_file():
+    new_run = not metadata_path.is_file()
+    if not new_run:
         metadata = read_json(metadata_path)
         query_ids = [str(value) for value in metadata["query_ids"]]
         profile_orders = {
@@ -440,60 +558,8 @@ def run_benchmark(
         }
         query_ids = load_suite(suite, queries)
         profile_orders = _randomized_profile_orders(query_ids)
-        prepare_profiles(
-            config,
-            artifacts,
-            codex_bin=str(codex),
-            profiles_root=profiles_root,
-            manifest_path=profiles_manifest_path,
-        )
-        profile_manifest = validate_profiles(profiles_manifest_path)
         corpus_state = read_json(required_states["corpus"])
         index_state = read_json(required_states["index"])
-        protocol = _run_protocol(
-            config,
-            artifacts,
-            suite=suite,
-            query_ids=query_ids,
-            queries=by_id,
-            profile_orders=profile_orders,
-            model=model,
-            reasoning_effort=reasoning_effort,
-            codex=codex,
-            codex_version=codex_version.stdout.strip(),
-            profiles_fingerprint=profile_manifest["fingerprint"],
-        )
-        metadata = {
-            "run_id": run_id,
-            "created_at": utc_now(),
-            "suite": suite,
-            "query_ids": query_ids,
-            "model": model,
-            "reasoning_effort": reasoning_effort,
-            "profiles": list(PROFILES),
-            "profile_orders": {
-                query_id: list(order)
-                for query_id, order in profile_orders.items()
-            },
-            "profiles_manifest": str(profiles_manifest_path.resolve()),
-            "profiles_fingerprint": profile_manifest["fingerprint"],
-            "protocol": protocol,
-            "protocol_fingerprint": _protocol_fingerprint(protocol),
-            "configuration": str(config.path),
-            "environment": {
-                "platform": platform.platform(),
-                "machine": platform.machine(),
-                "python": sys.version.split()[0],
-                "codex_bin": str(codex),
-                "codex_version": codex_version.stdout.strip(),
-                "zg_version": zg_version.stdout.strip(),
-            },
-            "corpus_fingerprint": corpus_state["fingerprint"],
-            "index_fingerprint": index_state["fingerprint"],
-            "index_build_wall_seconds": float(index_state["build_wall_seconds"]),
-            "runtime_setups": [],
-        }
-        write_json(metadata_path, metadata)
 
     missing = [query_id for query_id in query_ids if query_id not in by_id]
     if missing:
@@ -505,61 +571,184 @@ def run_benchmark(
         for profile in profile_orders[query_id]:
             if _needs_run(config, _result_path(run_root, query_id, profile)):
                 tasks.append((by_id[query_id], profile))
-    if any(profile == "zvec-grep" for _, profile in tasks):
-        runtime_setup = prepare_search_runtime(
-            config,
-            artifacts,
-            restart_server=True,
-        )
-        metadata["runtime_setups"].append(runtime_setup)
-        write_json(metadata_path, metadata)
+    server_required = new_run or any(
+        profile == "zvec-grep" for _, profile in tasks
+    )
+    benchmark_error: BaseException | None = None
+    with _cleanup_on_termination():
+        preparation_started_at = utc_now()
+        preparation_started = time.monotonic()
+        server_start_wall_seconds = 0.0
+        profile_preparation_wall_seconds = 0.0
+        profile_install_wall_seconds = 0.0
+        try:
+            if server_required:
+                print(
+                    "Preparing the zvec-grep daemon, profiles, and existing index...",
+                    flush=True,
+                )
+                server_started = time.monotonic()
+                ensure_server(config, artifacts, restart=True)
+                server_start_wall_seconds = time.monotonic() - server_started
 
-    for query, profile in tasks:
-        query_id = str(query["query_id"])
-        result = _run_profile(
-            config,
-            artifacts,
-            run_root,
-            query,
-            profile,
-            model,
-            reasoning_effort,
-            profiles_root,
-            str(codex),
-        )
-        _write_pair(run_root, query_id)
-        done = completed_pairs(run_root, query_ids)
-        print(
-            json.dumps(
-                {
+            if new_run:
+                prepare_profiles(
+                    config,
+                    artifacts,
+                    codex_bin=str(codex),
+                    profiles_root=profiles_root,
+                    manifest_path=profiles_manifest_path,
+                )
+                profile_manifest = validate_profiles(profiles_manifest_path)
+                profile_preparation_wall_seconds = float(
+                    profile_manifest["preparation_wall_seconds"]
+                )
+                profile_install_wall_seconds = float(
+                    profile_manifest["install_wall_seconds"]
+                )
+                protocol = _run_protocol(
+                    config,
+                    artifacts,
+                    suite=suite,
+                    query_ids=query_ids,
+                    queries=by_id,
+                    profile_orders=profile_orders,
+                    model=model,
+                    reasoning_effort=reasoning_effort,
+                    codex=codex,
+                    codex_version=codex_version.stdout.strip(),
+                    profiles_fingerprint=profile_manifest["fingerprint"],
+                )
+                metadata = {
                     "run_id": run_id,
-                    "query_id": query_id,
-                    "profile": profile,
-                    "status": result.status,
-                    "pairs": done,
-                    "total_pairs": len(query_ids),
-                    "input_tokens": (
-                        result.trace.usage.input_tokens
-                        if result.trace.usage
-                        else None
+                    "created_at": utc_now(),
+                    "suite": suite,
+                    "query_ids": query_ids,
+                    "model": model,
+                    "reasoning_effort": reasoning_effort,
+                    "profiles": list(PROFILES),
+                    "profile_orders": {
+                        query_id: list(order)
+                        for query_id, order in profile_orders.items()
+                    },
+                    "profiles_manifest": str(profiles_manifest_path.resolve()),
+                    "profiles_fingerprint": profile_manifest["fingerprint"],
+                    "protocol": protocol,
+                    "protocol_fingerprint": _protocol_fingerprint(protocol),
+                    "configuration": str(config.path),
+                    "environment": _environment_metadata(
+                        config,
+                        codex=codex,
+                        codex_version=codex_version.stdout.strip(),
+                        zg_version=zg_version.stdout.strip(),
                     ),
-                    "output_tokens": (
-                        result.trace.usage.output_tokens
-                        if result.trace.usage
-                        else None
+                    "corpus_fingerprint": corpus_state["fingerprint"],
+                    "index_fingerprint": index_state["fingerprint"],
+                    "index_build_wall_seconds": float(
+                        index_state["build_wall_seconds"]
                     ),
-                    "wall_seconds": round(result.wall_seconds, 3),
+                    "runtime_setups": [],
                 }
-            ),
-            flush=True,
-        )
+                write_json(metadata_path, metadata)
 
-    metadata["finished_at"] = utc_now()
-    metadata["completed_pairs"] = completed_pairs(run_root, query_ids)
-    write_json(metadata_path, metadata)
-    from .report import generate_report
+            if server_required:
+                runtime_setup = prepare_search_runtime(
+                    config,
+                    artifacts,
+                    restart_server=False,
+                )
+                total_preparation_wall_seconds = (
+                    time.monotonic() - preparation_started
+                )
+                runtime_setup.update(
+                    {
+                        "started_at": preparation_started_at,
+                        "finished_at": utc_now(),
+                        "total_wall_seconds": total_preparation_wall_seconds,
+                        "server_start_wall_seconds": server_start_wall_seconds,
+                        "profile_preparation_wall_seconds": (
+                            profile_preparation_wall_seconds
+                        ),
+                        "profile_install_wall_seconds": (
+                            profile_install_wall_seconds
+                        ),
+                    }
+                )
+                metadata["runtime_setups"].append(runtime_setup)
+                write_json(metadata_path, metadata)
+                write_json(artifacts / "state" / "runtime.json", runtime_setup)
+                print(
+                    "zvec-grep runtime ready in "
+                    f"{total_preparation_wall_seconds:.1f} seconds",
+                    flush=True,
+                )
 
-    generate_report(run_root)
+            for query, profile in tasks:
+                query_id = str(query["query_id"])
+                result = _run_profile(
+                    config,
+                    artifacts,
+                    run_root,
+                    query,
+                    profile,
+                    model,
+                    reasoning_effort,
+                    profiles_root,
+                    str(codex),
+                )
+                _write_pair(run_root, query_id)
+                done = completed_pairs(run_root, query_ids)
+                print(
+                    json.dumps(
+                        {
+                            "run_id": run_id,
+                            "query_id": query_id,
+                            "profile": profile,
+                            "status": result.status,
+                            "pairs": done,
+                            "total_pairs": len(query_ids),
+                            "input_tokens": (
+                                result.trace.usage.input_tokens
+                                if result.trace.usage
+                                else None
+                            ),
+                            "output_tokens": (
+                                result.trace.usage.output_tokens
+                                if result.trace.usage
+                                else None
+                            ),
+                            "wall_seconds": round(result.wall_seconds, 3),
+                        }
+                    ),
+                    flush=True,
+                )
+
+            metadata["finished_at"] = utc_now()
+            metadata["completed_pairs"] = completed_pairs(run_root, query_ids)
+            write_json(metadata_path, metadata)
+            from .report import generate_report
+
+            generate_report(run_root)
+        except BaseException as error:
+            benchmark_error = error
+            raise
+        finally:
+            if server_required:
+                try:
+                    stop_server(config, artifacts)
+                except RuntimeError as error:
+                    if benchmark_error is None:
+                        raise
+                    print(
+                        f"Warning: zvec-grep server cleanup failed: {error}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                else:
+                    print(
+                        f"zvec-grep server stopped at {server_url(config)}",
+                        flush=True,
+                    )
     return run_root
 
 

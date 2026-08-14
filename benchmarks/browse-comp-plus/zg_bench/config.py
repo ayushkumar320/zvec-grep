@@ -36,6 +36,7 @@ class ZvecGrepConfig:
     max_filesize: str
     device: str
     mcp_tool_timeout_seconds: int
+    server_port: int
 
 
 @dataclass(frozen=True)
@@ -96,6 +97,8 @@ def _validate(config: BenchmarkConfig) -> None:
             raise ConfigError("dataset revisions must be pinned 40-character SHAs")
     if config.zvec_grep.embedding_concurrency < 1:
         raise ConfigError("embedding_concurrency must be positive")
+    if not 1 <= config.zvec_grep.server_port <= 65_535:
+        raise ConfigError("server_port must be between 1 and 65535")
     if (
         config.dataset.expected_queries < 1
         or config.dataset.expected_corpus_documents < 1

@@ -81,6 +81,10 @@ Evaluate the latest run with a blind Codex judge and generate its final report:
 zg-bench evaluate
 ```
 
+For the `smoke` suite only, evaluation also audits the zvec-grep profile's tool
+trace and reports whether zvec-grep was used correctly. This audit is separate
+from the blind answer-correctness judgement.
+
 Specify a run explicitly when needed:
 
 ```sh
