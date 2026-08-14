@@ -9,10 +9,10 @@ from typing import Any
 from zg_bench.swe_qa import SweQaError
 from zg_bench.swe_qa.validation import validate_assets
 
-CODING_DIR = Path(__file__).resolve().parents[1]
-SELECTION_PATH = CODING_DIR / "zg_bench" / "swe_qa" / "data" / "selection.json"
-REFERENCES_PATH = CODING_DIR / "zg_bench" / "swe_qa" / "data" / "references.json"
-DATASET_PATH = CODING_DIR / "datasets" / "swe-qa-bench-manual"
+SWE_QA_BENCH_DIR = Path(__file__).resolve().parents[1]
+SELECTION_PATH = SWE_QA_BENCH_DIR / "zg_bench" / "swe_qa" / "data" / "selection.json"
+REFERENCES_PATH = SWE_QA_BENCH_DIR / "zg_bench" / "swe_qa" / "data" / "references.json"
+DATASET_PATH = SWE_QA_BENCH_DIR / "datasets" / "swe-qa-bench"
 EXPECTED_AUTO_TASK_IDS = (
     "reflex:6",
     "pylint:9",

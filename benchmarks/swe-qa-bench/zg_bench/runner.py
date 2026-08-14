@@ -372,7 +372,7 @@ def validate_zvec_grep_package_compatibility(
             f"{normalized} does not support Workspace Remote Embedding "
             "authorization; use @zvec/zvec-grep@0.1.6-alpha.3 or newer, "
             "or pass --zvec-grep-package ../.. "
-            "from the benchmarks/coding directory"
+            "from the benchmarks/swe-qa-bench directory"
         )
 
 

@@ -1562,7 +1562,7 @@ wheels = [
 ]
 
 [[package]]
-name = "zvec-grep-coding-benchmarks"
+name = "zvec-grep-swe-qa-benchmark"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

@@ -3,7 +3,7 @@
   "benchmark": "peng-weihan/SWE-QA-Bench",
   "benchmark_revision": "c13deac7a0d99b0ca2e593e004c4739475785b08",
   "index_base": 0,
-  "dataset_path": "benchmarks/coding/datasets/swe-qa-bench-manual",
+  "dataset_path": "benchmarks/swe-qa-bench/datasets/swe-qa-bench",
   "gate": {
     "required_tasks": 20,
     "smoke_task": "reflex:6",

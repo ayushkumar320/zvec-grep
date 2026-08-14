@@ -25,7 +25,7 @@ __pycache__/
 
 # Benchmark artifacts
 /benchmarks/browse-comp-plus/artifacts/
-/benchmarks/coding/runs/
+/benchmarks/swe-qa-bench/runs/
 /benchmarks/coir-zg/work/
 
 # Environment files

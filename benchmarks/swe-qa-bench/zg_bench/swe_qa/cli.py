@@ -1,4 +1,4 @@
-"""Command line interface for the manual SWE-QA-Bench CI pipeline."""
+"""Command line interface for the SWE-QA-Bench CI pipeline."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m zg_bench.swe_qa",
         description=(
-            "Validate, collect, judge, and aggregate the manual SWE-QA-Bench subset."
+            "Validate, collect, judge, and aggregate the locked SWE-QA-Bench subset."
         ),
     )
     commands = parser.add_subparsers(dest="command", required=True)

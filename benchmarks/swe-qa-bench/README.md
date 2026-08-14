@@ -1,4 +1,4 @@
-# SWE-QA coding benchmark
+# SWE-QA benchmark
 
 This benchmark measures how `zvec-grep` affects an agent's ability to answer
 repository-level software-engineering questions. The canonical comparison uses
@@ -23,9 +23,9 @@ The benchmark inputs are locked in this directory:
   task slugs, repository commits, asset hashes, and CI scope membership.
 - [`references.json`](zg_bench/swe_qa/data/references.json) contains the
   isolated references used by the independent judge; agents cannot access it.
-- [`datasets/swe-qa-bench-manual/`](datasets/swe-qa-bench-manual/) contains the
+- [`datasets/swe-qa-bench/`](datasets/swe-qa-bench/) contains the
   pinned Harbor task environments, prompts, and verifiers.
-- [`swe-qa-bench-manual.yaml`](suites/swe-qa-bench-manual.yaml) exposes the
+- [`swe-qa-bench.yaml`](suites/swe-qa-bench.yaml) exposes the
   local dataset to the benchmark runner.
 
 The workflow validates the locked selection, repository commits, hashes, and
@@ -99,7 +99,7 @@ credential used by the workflow:
 docker compose version
 npm ci
 
-cd benchmarks/coding
+cd benchmarks/swe-qa-bench
 uv sync --frozen
 source .venv/bin/activate
 export GLM_API_KEY="your-api-key"
@@ -123,14 +123,14 @@ The local package path requires the repository-root `npm ci` shown above.
 Inspect the locked task selections with:
 
 ```sh
-zg-bench list tasks swe-qa-bench-manual --tier smoke
-zg-bench list tasks swe-qa-bench-manual --tier ci
+zg-bench list tasks swe-qa-bench --tier smoke
+zg-bench list tasks swe-qa-bench --tier ci
 ```
 
 Start with a dry run of the one-task, three-trial-per-profile configuration:
 
 ```sh
-zg-bench run swe-qa-bench-manual \
+zg-bench run swe-qa-bench \
   --tier smoke \
   --task reflex-6 \
   --agent opencode \

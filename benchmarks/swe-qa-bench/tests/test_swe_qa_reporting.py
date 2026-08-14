@@ -21,10 +21,10 @@ from zg_bench.swe_qa.judge import (
 )
 from zg_bench.swe_qa.validation import validate_assets
 
-CODING_DIR = Path(__file__).resolve().parents[1]
-SELECTION_PATH = CODING_DIR / "zg_bench" / "swe_qa" / "data" / "selection.json"
-REFERENCES_PATH = CODING_DIR / "zg_bench" / "swe_qa" / "data" / "references.json"
-DATASET_PATH = CODING_DIR / "datasets" / "swe-qa-bench-manual"
+SWE_QA_BENCH_DIR = Path(__file__).resolve().parents[1]
+SELECTION_PATH = SWE_QA_BENCH_DIR / "zg_bench" / "swe_qa" / "data" / "selection.json"
+REFERENCES_PATH = SWE_QA_BENCH_DIR / "zg_bench" / "swe_qa" / "data" / "references.json"
+DATASET_PATH = SWE_QA_BENCH_DIR / "datasets" / "swe-qa-bench"
 EXPECTED_TASK_IDS = (
     "reflex:6",
     "sqlfluff:2",
@@ -272,7 +272,7 @@ def _write_harbor_job(
     profile: str,
     trials: list[dict[str, Any]],
 ) -> None:
-    job_dir = root / f"manual-reflex-6-{profile}"
+    job_dir = root / f"fixture-reflex-6-{profile}"
     _write_json(
         job_dir / "result.json",
         {

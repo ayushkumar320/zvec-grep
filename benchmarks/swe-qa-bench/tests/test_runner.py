@@ -468,7 +468,7 @@ class SuiteTierTests(unittest.TestCase):
 
     def test_local_swe_qa_suite_uses_harbor_path(self) -> None:
         suite_path = (
-            Path(__file__).resolve().parents[1] / "suites" / "swe-qa-bench-manual.yaml"
+            Path(__file__).resolve().parents[1] / "suites" / "swe-qa-bench.yaml"
         )
         suite = runner.load_suite(suite_path, tier="ci")
 

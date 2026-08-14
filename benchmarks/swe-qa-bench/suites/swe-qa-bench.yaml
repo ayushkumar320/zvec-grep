@@ -1,5 +1,5 @@
-name: swe-qa-bench-manual
-path: ../datasets/swe-qa-bench-manual
+name: swe-qa-bench
+path: ../datasets/swe-qa-bench
 tiers:
   smoke:
     tasks:

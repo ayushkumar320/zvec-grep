@@ -48,13 +48,13 @@ jobs:
       - name: Install locked benchmark environment
         run: |
           python -m pip install --disable-pip-version-check uv==0.9.17
-          uv sync --project benchmarks/coding --frozen
+          uv sync --project benchmarks/swe-qa-bench --frozen
       - name: Validate tasks, hashes, commits, and reference isolation
         run: >-
-          uv run --project benchmarks/coding python -m zg_bench.swe_qa validate
-          --selection benchmarks/coding/zg_bench/swe_qa/data/selection.json
-          --references benchmarks/coding/zg_bench/swe_qa/data/references.json
-          --dataset benchmarks/coding/datasets/swe-qa-bench-manual
+          uv run --project benchmarks/swe-qa-bench python -m zg_bench.swe_qa validate
+          --selection benchmarks/swe-qa-bench/zg_bench/swe_qa/data/selection.json
+          --references benchmarks/swe-qa-bench/zg_bench/swe_qa/data/references.json
+          --dataset benchmarks/swe-qa-bench/datasets/swe-qa-bench
       - name: Build this run's task matrix from the locked selection
         id: task-matrix
         env:
@@ -67,7 +67,7 @@ jobs:
 
           selection = json.loads(
               Path(
-                  "benchmarks/coding/zg_bench/swe_qa/data/selection.json"
+                  "benchmarks/swe-qa-bench/zg_bench/swe_qa/data/selection.json"
               ).read_text(encoding="utf-8")
           )
           tasks = selection["tasks"]
@@ -102,12 +102,12 @@ jobs:
           PY
       - name: Run benchmark unit tests
         run: >-
-          uv run --project benchmarks/coding python -m unittest discover
-          -s benchmarks/coding/tests -v
+          uv run --project benchmarks/swe-qa-bench python -m unittest discover
+          -s benchmarks/swe-qa-bench/tests -v
       - name: Verify the Harbor command without credentials
         run: >-
-          uv run --project benchmarks/coding zg-bench run
-          swe-qa-bench-manual
+          uv run --project benchmarks/swe-qa-bench zg-bench run
+          swe-qa-bench
           --tier smoke
           --task reflex-6
           --agent opencode
@@ -153,11 +153,11 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: ${{ runner.temp }}/swe-qa-index-seed
-          key: swe-qa-zvec-index-seed-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.task }}-bench-${{ hashFiles('benchmarks/coding/zg_bench/swe_qa/data/selection.json', 'benchmarks/coding/zg_bench/swe_qa/data/references.json', format('benchmarks/coding/datasets/swe-qa-bench-manual/{0}/environment/Dockerfile', matrix.task)) }}-npm-${{ hashFiles('package-lock.json') }}-zvec-${{ hashFiles('src/**', 'package.json', 'tsconfig.json', 'eslint.config.js', 'README.md', 'README_CN.md', 'LICENSE', 'docs/**', '.opencode/opencode.json', 'benchmarks/coding/pyproject.toml', 'benchmarks/coding/uv.lock', 'benchmarks/coding/suites/swe-qa-bench-manual.yaml', 'benchmarks/coding/zg_bench/agents/zvec_grep.py', 'benchmarks/coding/zg_bench/runner.py', 'benchmarks/coding/zg_bench/settings.py') }}
+          key: swe-qa-zvec-index-seed-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.task }}-bench-${{ hashFiles('benchmarks/swe-qa-bench/zg_bench/swe_qa/data/selection.json', 'benchmarks/swe-qa-bench/zg_bench/swe_qa/data/references.json', format('benchmarks/swe-qa-bench/datasets/swe-qa-bench/{0}/environment/Dockerfile', matrix.task)) }}-npm-${{ hashFiles('package-lock.json') }}-zvec-${{ hashFiles('src/**', 'package.json', 'tsconfig.json', 'eslint.config.js', 'README.md', 'README_CN.md', 'LICENSE', 'docs/**', '.opencode/opencode.json', 'benchmarks/swe-qa-bench/pyproject.toml', 'benchmarks/swe-qa-bench/uv.lock', 'benchmarks/swe-qa-bench/suites/swe-qa-bench.yaml', 'benchmarks/swe-qa-bench/zg_bench/agents/zvec_grep.py', 'benchmarks/swe-qa-bench/zg_bench/runner.py', 'benchmarks/swe-qa-bench/zg_bench/settings.py') }}
       - name: Install locked dependencies
         run: |
           python -m pip install --disable-pip-version-check uv==0.9.17
-          uv sync --project benchmarks/coding --frozen
+          uv sync --project benchmarks/swe-qa-bench --frozen
           npm ci
       - name: Run baseline and zvec-grep on the same runner
         env:
@@ -171,8 +171,8 @@ jobs:
             exit 2
           fi
           runs_dir="$RUNNER_TEMP/swe-qa-runs/$TASK_NAME"
-          uv run --project benchmarks/coding zg-bench run \
-            swe-qa-bench-manual \
+          uv run --project benchmarks/swe-qa-bench zg-bench run \
+            swe-qa-bench \
             --tier ci \
             --task "$TASK_NAME" \
             --agent opencode \
@@ -183,7 +183,7 @@ jobs:
             --zvec-grep-package "$GITHUB_WORKSPACE" \
             --jobs-dir "$runs_dir" \
             --job-name "gha-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${TASK_NAME}"
-          uv run --project benchmarks/coding python -m zg_bench.swe_qa collect \
+          uv run --project benchmarks/swe-qa-bench python -m zg_bench.swe_qa collect \
             --runs-dir "$runs_dir" \
             --task "$TASK_NAME" \
             --expected-trials "$SWE_QA_TRIALS_PER_PROFILE" \
@@ -194,9 +194,9 @@ jobs:
           TASK_NAME: ${{ matrix.task }}
         run: |
           set -euo pipefail
-          uv run --project benchmarks/coding python -m zg_bench.swe_qa judge \
+          uv run --project benchmarks/swe-qa-bench python -m zg_bench.swe_qa judge \
             --pairs-root "$RUNNER_TEMP/pair-${TASK_NAME}.json" \
-            --references benchmarks/coding/zg_bench/swe_qa/data/references.json \
+            --references benchmarks/swe-qa-bench/zg_bench/swe_qa/data/references.json \
             --output-dir "$RUNNER_TEMP/swe-qa-task-report/${TASK_NAME}" \
             --expected "$TASK_NAME"
       - name: Reject secret leakage in artifacts
@@ -282,7 +282,7 @@ jobs:
       - name: Install locked report environment
         run: |
           python -m pip install --disable-pip-version-check uv==0.9.17
-          uv sync --project benchmarks/coding --frozen
+          uv sync --project benchmarks/swe-qa-bench --frozen
       - name: Download this attempt's independent task reports
         uses: actions/download-artifact@v8
         with:
@@ -355,7 +355,7 @@ jobs:
             echo "::error::Locked selection produced no expected task IDs."
             exit 1
           fi
-          uv run --project benchmarks/coding python -m zg_bench.swe_qa aggregate \
+          uv run --project benchmarks/swe-qa-bench python -m zg_bench.swe_qa aggregate \
             --reports-root "$RUNNER_TEMP/task-reports" \
             --output-dir "$RUNNER_TEMP/swe-qa-aggregate-report" \
             --expected "${expected_tasks[@]}"
