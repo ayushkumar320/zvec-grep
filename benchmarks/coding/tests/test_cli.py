@@ -8,10 +8,42 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from zg_bench import runner
 from zg_bench.cli import build_parser, main
+
+_FIXTURE_SUITE_NAME = "external-suite-fixture"
+_FIXTURE_TASK = "fixture/task-one"
+_FIXTURE_SUITE_YAML = f"""\
+name: {_FIXTURE_SUITE_NAME}
+dataset: fixture/external-dataset@1
+tiers:
+  smoke:
+    tasks:
+      - {_FIXTURE_TASK}
+  full:
+    all: true
+"""
+
+
+def _install_external_suite_fixture(test_case: unittest.TestCase) -> str:
+    temp_dir = tempfile.TemporaryDirectory()
+    test_case.addCleanup(temp_dir.cleanup)
+    suites_dir = Path(temp_dir.name) / "suites"
+    suites_dir.mkdir()
+    (suites_dir / f"{_FIXTURE_SUITE_NAME}.yaml").write_text(
+        _FIXTURE_SUITE_YAML,
+        encoding="utf-8",
+    )
+    suites_patch = patch.object(runner, "SUITES_DIR", suites_dir)
+    suites_patch.start()
+    test_case.addCleanup(suites_patch.stop)
+    return _FIXTURE_SUITE_NAME
 
 
 class CliTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.suite_name = _install_external_suite_fixture(self)
+
     def test_doctor_accepts_run_specific_context(self) -> None:
         args = build_parser().parse_args(
             [
@@ -35,12 +67,19 @@ class CliTests(unittest.TestCase):
         output = io.StringIO()
 
         with contextlib.redirect_stdout(output):
-            return_code = main(
-                ["list", "tasks", "swebench-verified", "--tier", "smoke"]
-            )
+            return_code = main(["list", "tasks", self.suite_name, "--tier", "smoke"])
 
         self.assertEqual(return_code, 0)
-        self.assertIn("swe-bench/pallets__flask-5014", output.getvalue())
+        self.assertIn(_FIXTURE_TASK, output.getvalue())
+
+    def test_lists_registered_suites(self) -> None:
+        output = io.StringIO()
+
+        with contextlib.redirect_stdout(output):
+            return_code = main(["list", "suites"])
+
+        self.assertEqual(return_code, 0)
+        self.assertEqual(output.getvalue().splitlines(), [self.suite_name])
 
     def test_lists_supported_agent_models(self) -> None:
         output = io.StringIO()
@@ -50,7 +89,7 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(return_code, 0)
         listing = output.getvalue()
-        self.assertIn("qwen-coder", listing)
+        self.assertNotIn("qwen-coder", listing)
         self.assertIn("qwen3.7-max", listing)
         self.assertIn("opencode", listing)
         self.assertIn("aliyun-glm-5.2", listing)
@@ -62,7 +101,7 @@ class CliTests(unittest.TestCase):
             build_parser().parse_args(
                 [
                     "run",
-                    "swebench-verified",
+                    self.suite_name,
                     "--agent",
                     "opencode",
                     "--model",
@@ -72,8 +111,7 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(error.exception.code, 2)
         self.assertIn(
-            "supported models: aliyun-glm-5.2, custom-openai/glm-5.2, "
-            "qwen3.7-max",
+            "supported models: aliyun-glm-5.2, custom-openai/glm-5.2, qwen3.7-max",
             stderr.getvalue(),
         )
 
@@ -81,7 +119,7 @@ class CliTests(unittest.TestCase):
         args = build_parser().parse_args(
             [
                 "run",
-                "swebench-verified",
+                self.suite_name,
                 "--agent",
                 "opencode",
                 "--model",
@@ -96,7 +134,7 @@ class CliTests(unittest.TestCase):
         args = build_parser().parse_args(
             [
                 "run",
-                "swe-qa-bench-manual",
+                self.suite_name,
                 "--agent",
                 "opencode",
                 "--model",
@@ -113,7 +151,7 @@ class CliTests(unittest.TestCase):
             main(
                 [
                     "run",
-                    "swebench-verified",
+                    self.suite_name,
                     "--agent",
                     "opencode",
                     "--model",
@@ -176,7 +214,7 @@ class CliTests(unittest.TestCase):
                 return_code = main(
                     [
                         "run",
-                        "swebench-verified",
+                        self.suite_name,
                         "--agent",
                         "opencode",
                         "--model",

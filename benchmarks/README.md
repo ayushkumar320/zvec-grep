@@ -8,8 +8,9 @@ execution, and generated artifacts.
 
 - [`browse-comp-plus/`](browse-comp-plus/README.md): knowledge-base retrieval
   and end-to-end answer evaluation on BrowseComp-Plus.
-- [`coding/`](coding/README.md): paired agent evaluations on SWE-bench Verified
-  and Terminal-Bench 2.1.
+- [`coding/`](coding/README.md): paired OpenCode evaluations with and without
+  zvec-grep on a pinned 20-task SWE-QA-Bench subset, using an automated
+  five-task scope and manually triggered smoke or all-task scopes.
 
 ## What We Measure
 

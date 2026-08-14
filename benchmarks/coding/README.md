@@ -1,370 +1,156 @@
-# Coding benchmarks
+# SWE-QA coding benchmark
 
-This benchmark measures how `zvec-grep` affects an agent's ability to complete
-real-world coding and terminal tasks.
+This benchmark measures how `zvec-grep` affects an agent's ability to answer
+repository-level software-engineering questions. The canonical comparison uses
+the same OpenCode agent, model, task prompt, repository commit, environment, and
+limits for both profiles:
 
-The comparison keeps the model, agent loop, task prompt, environment, and limits
-the same. The only difference is the tool profile:
+- **Baseline:** OpenCode uses its standard tools.
+- **zvec-grep:** the same agent receives a prepared repository index and uses
+  zvec-grep through MCP.
 
-- **Baseline:** the agent's standard tools, including shell utilities such as
-  `rg` and `find` when available.
-- **zvec-grep:** the same agent with a prepared `zvec-grep` index. Codex and
-  OpenCode access it through MCP; Qwen Code retains its query-only skill.
+Index construction is measured separately and is not included in agent wall
+time.
 
-## Benchmark suites
+## Benchmark definition
 
-- **[SWE-bench Verified](https://www.swebench.com/SWE-bench/guides/datasets/):**
-  evaluates an agent's ability to resolve real-world software issues by
-  modifying an existing repository. Solutions are graded by running repository
-  tests.
-- **[Terminal-Bench 2.1](https://www.tbench.ai/news/terminal-bench-2-1):** a
-  collection of complex tasks completed in isolated terminal environments. It
-  covers areas such as software engineering, system administration, data
-  processing, and machine learning, with programmatic evaluation of results.
-
-## Run tiers
-
-Each benchmark suite can be run at different tiers:
-
-- **Smoke:** one task that quickly verifies the complete benchmark workflow.
-- **CI:** a fixed, representative subset used to detect regressions over time,
-  when that suite defines one.
-- **Full:** the complete suite, used for release results and reports.
-
-Smoke and CI results help us develop and maintain the benchmark. Only full runs
-are intended to support general performance claims.
-
-## Metrics
-
-We track two outcomes and one diagnostic:
-
-1. **Outcome quality:** the score or reward from the benchmark's official
-   evaluator, including correctness and any benchmark-provided quality signals.
-2. **Efficiency:** tokens, wall-clock time, cost, and tool calls used to
-   complete the task.
-3. **Tool behavior:** whether and how the agent used `zvec-grep`, and how
-   quickly it reached relevant information.
-
-Index construction time is recorded separately from agent execution.
-
-## SWE-QA GitHub Actions benchmark
-
-The [`SWE-QA Bench`](../../.github/workflows/swe-qa-bench.yml) workflow compares
-OpenCode with and without zvec-grep on a pinned subset of
+The [`SWE-QA Bench`](../../.github/workflows/swe-qa-bench.yml) workflow runs a
+pinned 20-task subset of
 [`peng-weihan/SWE-QA-Bench`](https://github.com/peng-weihan/SWE-QA-Bench).
-Pull requests from the same repository and pushes to `main` run a curated
-five-task set. Fork and Dependabot pull requests run validation only, without
-model credentials. Manual `workflow_dispatch` runs offer either the one-task
-`smoke` scope or the 20-task `all-full` scope. The exact task lists and pinned
-repository commits live in
-[`zg_bench/swe_qa/data/selection.json`](zg_bench/swe_qa/data/selection.json).
+The benchmark inputs are locked in this directory:
 
-Each task runs three baseline trials and three zvec-grep trials, then judges all
-six answers independently. Job Summary cells use
-`baseline / zvec-grep / change`. Judge change is `zvec-grep - baseline`, so a
-quality improvement is positive. For `input_token`, `toolcall`, and agent wall
-time, change is `(zvec-grep - baseline) / baseline`; lower usage is therefore
-negative. Index setup time is retained separately and is not included in agent
-wall time. A zero baseline denominator produces `N/A` for that comparison.
+- [`selection.json`](zg_bench/swe_qa/data/selection.json) records task IDs,
+  task slugs, repository commits, asset hashes, and CI scope membership.
+- [`references.json`](zg_bench/swe_qa/data/references.json) contains the
+  isolated references used by the independent judge; agents cannot access it.
+- [`datasets/swe-qa-bench-manual/`](datasets/swe-qa-bench-manual/) contains the
+  pinned Harbor task environments, prompts, and verifiers.
+- [`swe-qa-bench-manual.yaml`](suites/swe-qa-bench-manual.yaml) exposes the
+  local dataset to the benchmark runner.
 
-In the Aggregate row, Judge values are equal-weight task means. Efficiency
-values are sums of the per-task profile means, while the displayed change is
-the equal-weight mean of the task-level changes rather than a ratio of those
-sums. An `N/A` task is excluded only from the affected Aggregate metric. The
-workflow is report-only: numeric results do not gate review or merging, but all
-expected profile runs and Judge calls must complete successfully.
+The workflow validates the locked selection, repository commits, hashes, and
+reference isolation before starting model-backed jobs.
 
-## Setup instructions
+## CI scopes
 
-### Platform support
+- Same-repository pull requests and pushes to `main` run these five curated
+  tasks: `reflex:6`, `pylint:9`, `matplotlib:37`, `streamlink:14`, and
+  `xarray:32`.
+- Fork and Dependabot pull requests run locked-asset validation, unit tests, and
+  a dry-run preflight only, without model credentials.
+- Manual `workflow_dispatch` with `scope=smoke` runs `reflex:6`.
+- Manual `workflow_dispatch` with `scope=all-full` runs all 20 pinned tasks.
 
-Benchmarks can run through Docker on Linux or macOS. On Apple silicon, some
-images require emulation and individual tasks may not be compatible. Full
-benchmark reports should use a consistent Linux x86-64 environment.
+From the repository root, maintainers can trigger the manual scopes with the
+GitHub CLI:
 
-### Install dependencies
+```sh
+gh workflow run swe-qa-bench.yml -f scope=smoke
+gh workflow run swe-qa-bench.yml -f scope=all-full
+```
 
-You need [uv](https://docs.astral.sh/uv/),
-[Docker Engine or Docker Desktop](https://docs.docker.com/), Docker Compose v2,
-and the credentials required by your chosen Harbor agent and model. Verify that
-Compose is available as a Docker CLI plugin, not the legacy `docker-compose`
-command:
+`all-full` is a workflow scope, not a `zg-bench --tier full` value. The local
+suite stores its complete 20-task selection in the `ci` tier, and the workflow
+passes the tasks selected for each scope explicitly.
+
+Each selected task runs three baseline trials and three zvec-grep trials on the
+same runner. All six answers are judged independently. The workflow is
+report-only: numeric results do not gate review or merging, but every expected
+profile run and judge call must complete successfully.
+
+## Metrics and reporting
+
+Job Summary cells use `baseline / zvec-grep / change`. Each task's baseline and
+zvec-grep values are profile means across the three trials.
+
+| Metric | Change | Interpretation |
+| --- | --- | --- |
+| Judge | `zvec-grep - baseline` | Positive means higher judged quality. |
+| `input_token`, `toolcall`, agent wall time | `(zvec-grep - baseline) / baseline` | Negative means lower resource usage. |
+
+A zero baseline denominator produces `N/A` for that efficiency comparison.
+Index setup time is retained separately from agent wall time.
+
+In the Aggregate row:
+
+- Judge values are equal-weight means across tasks.
+- Baseline and zvec-grep efficiency values are sums of the per-task profile
+  means.
+- The displayed efficiency change is the equal-weight mean of task-level
+  changes, not a ratio of the aggregate sums.
+- An `N/A` task is excluded only from the affected Aggregate metric.
+
+## Local setup
+
+CI runs on Ubuntu 24.04 with Python 3.12 and Node.js 24. Local harness runs also
+support Docker on macOS, although comparable benchmark results should use a
+consistent Linux x86-64 environment.
+
+Install these prerequisites:
+
+- [uv](https://docs.astral.sh/uv/)
+- Docker Engine or Docker Desktop with Docker Compose v2
+- Node.js 22 or newer and npm
+
+Verify Docker Compose, install the locked dependencies, and export the model
+credential used by the workflow:
 
 ```sh
 docker compose version
-```
-
-On Ubuntu, an `Unable to locate package docker-compose-plugin` error normally
-means the Docker apt repository has not been configured. Follow Docker's Ubuntu
-installation instructions to add its official repository, then install the
-Compose plugin.
-
-From this directory, install the pinned Python environment and check the base
-setup:
-
-```sh
-uv sync
-source .venv/bin/activate
-zg-bench doctor
-```
-
-Using a local zvec-grep checkout additionally requires
-[Node.js 22 or newer and npm](https://nodejs.org/) and its installed dependencies:
-
-```sh
-npm --prefix ../.. ci
-```
-
-If doctor reports `registry.anpm.alibaba-inc.com`, either update the user-level
-registry or override it for setup and benchmark commands:
-
-```sh
-npm config set registry https://registry.npmjs.org/ --location=user
-# Or, for one command:
-npm_config_registry=https://registry.npmjs.org/ npm ci
-```
-
-The repository intentionally does not commit an `.npmrc` that rewrites registry
-hosts; public download URLs are kept correct in `package-lock.json` instead.
-
-Run a profile-aware check before starting Docker. It verifies credentials,
-package compatibility, Node/npm, local build dependencies, and registry state:
-
-```sh
-zg-bench doctor \
-  --agent opencode \
-  --model aliyun-glm-5.2 \
-  --profile zvec-grep \
-  --zvec-grep-package ../..
-```
-
-`zg-bench run` performs the same preflight automatically. The explicit doctor
-command is useful while preparing a machine because it stops before packaging
-or creating any Docker resources.
-
-### Ubuntu 24.04 OpenCode + GLM-5.2 quickstart
-
-From the repository root:
-
-```sh
-# Node.js 22 or newer must already be active.
 npm ci
 
 cd benchmarks/coding
-uv sync
+uv sync --frozen
 source .venv/bin/activate
-export DASHSCOPE_API_KEY="your-api-key"
+export GLM_API_KEY="your-api-key"
+```
 
+Run the same profile-aware preflight used for the SWE-QA configuration:
+
+```sh
 zg-bench doctor \
   --agent opencode \
-  --model aliyun-glm-5.2 \
+  --model custom-openai/glm-5.2 \
   --profile all \
+  --embedding-model local/potion-code-16m-v2 \
   --zvec-grep-package ../..
+```
 
-zg-bench run swebench-verified \
+The local package path requires the repository-root `npm ci` shown above.
+
+## Local smoke and dry run
+
+Inspect the locked task selections with:
+
+```sh
+zg-bench list tasks swe-qa-bench-manual --tier smoke
+zg-bench list tasks swe-qa-bench-manual --tier ci
+```
+
+Start with a dry run of the one-task, three-trial-per-profile configuration:
+
+```sh
+zg-bench run swe-qa-bench-manual \
   --tier smoke \
+  --task reflex-6 \
   --agent opencode \
-  --model aliyun-glm-5.2 \
+  --model custom-openai/glm-5.2 \
   --profile all \
-  --zvec-grep-package ../..
+  --n-attempts 3 \
+  --embedding-model local/potion-code-16m-v2 \
+  --zvec-grep-package ../.. \
+  --dry-run
 ```
 
-Omit `--job-name` unless a stable name is required. Timestamped defaults avoid
-collisions with existing Harbor output directories.
+Remove `--dry-run` to execute the paired Harbor run. The local runner writes
+trajectories and evaluator output to `runs/`; the GitHub Actions workflow is the
+canonical path for collecting pairs, independently judging every answer, and
+producing the aggregate report.
 
-### Codex authentication
+## Diagnose a failed run
 
-When using `--agent codex`, choose one authentication method.
-
-**API key:** Harbor uses `OPENAI_API_KEY` by default.
-
-```sh
-export OPENAI_API_KEY="your-api-key"
-```
-
-**ChatGPT subscription:** install the Codex CLI on the host, sign in, then tell
-Harbor to use the resulting credentials:
-
-```sh
-codex login
-codex login status
-export CODEX_FORCE_AUTH_JSON=1
-```
-
-Subscription authentication requires `~/.codex/auth.json`. If the Codex CLI
-uses the operating-system credential store instead, configure file storage in
-`~/.codex/config.toml` and sign in again:
-
-```toml
-cli_auth_credentials_store = "file"
-```
-
-Treat `auth.json` like a password: never commit or share it.
-
-### Qwen Code authentication
-
-Harbor names the [Qwen Code](https://github.com/QwenLM/qwen-code) agent
-`qwen-coder`. To run Qwen 3.7 Max through DashScope, export an API key:
-
-```sh
-export DASHSCOPE_API_KEY="your-api-key"
-```
-
-Use `--agent qwen-coder --model qwen3.7-max` in the test commands below. The
-runner pins the Qwen Code version and configures the DashScope endpoint. The
-same key can also authenticate the zvec-grep embedding model when both profiles
-are selected.
-
-### OpenCode authentication
-
-To run Aliyun GLM-5.2 or Qwen 3.7 Max through OpenCode, export a DashScope API
-key:
-
-```sh
-export DASHSCOPE_API_KEY="your-api-key"
-```
-
-Use either supported combination in the test commands below:
-
-```sh
---agent opencode --model aliyun-glm-5.2
---agent opencode --model qwen3.7-max
-```
-
-The runner pins the OpenCode version, maps the selected model to the custom
-DashScope provider, configures the public Beijing endpoint, and selects
-OpenCode's Chat Completions-compatible AI SDK package. OpenCode runs through
-its official ACP server so Harbor owns the session lifecycle through a
-structured protocol. Its ACP release manifest and SHA-256 checksum are pinned
-with the benchmark instead of being resolved from the mutable registry at run
-time. The credential is passed through Harbor's host-environment template and
-is neither included in the generated command nor persisted in benchmark
-output. Thinking is disabled so a single long response cannot consume the
-task's 50-minute agent timeout.
-
-### zvec-grep authentication
-
-The zvec-grep profile uses Qwen's `text-embedding-v4` model. Export a DashScope
-API key on the host before running that profile:
-
-```sh
-export DASHSCOPE_API_KEY="your-api-key"
-```
-
-The adapter uploads the embedding credential to a protected zvec-grep config
-file in the isolated agent environment and does not add its value to the
-generated Harbor command. Before indexing, it creates a Workspace-scoped Remote
-Embedding grant with `zg auth grant`; the index command and later MCP queries
-reuse that grant without `--allow-remote`. For Codex and OpenCode, it configures
-the agent's MCP integration and starts the zvec-grep server inside the task
-container. If the same credential also authenticates the agent's model, that
-agent's normal authentication path still applies.
-
-## Test run instructions
-
-Add `--dry-run` to inspect the generated Harbor command without starting a
-container. Harbor writes trajectories and evaluator output to `runs/`.
-
-Inspect the supported agent/model combinations, available suites, and exact
-tasks selected by a tier:
-
-```sh
-zg-bench list agent-models
-zg-bench list suites
-zg-bench list tasks swebench-verified --tier smoke
-```
-
-`run` and run-specific `doctor` commands reject unknown agents and unsupported
-models while parsing their arguments. Qwen Code and OpenCode accept only the
-combinations shown by `list agent-models`; Codex model identifiers are passed
-through to Codex's native model catalog.
-
-The first run may take several minutes while Docker downloads and builds the
-task image and prepares the agent environment. This is expected. By default,
-the zvec-grep profile installs the pinned npm package. Pass
-`--zvec-grep-package <version-or-npm-spec>` to select another published package,
-or `--zvec-grep-package <directory-or-tgz>` to test local code. Local directories
-are packaged with `npm pack`, and only the resulting tarball is mounted into the
-task container. Its SHA-256 is recorded in setup metadata and included in the
-setup-cache identity. Later runs of the same package reuse both the large task
-image and a Docker volume containing the installed agent runtime. Setup caches
-are isolated by agent and profile, so baseline containers never receive
-zvec-grep. They contain neither credentials, the repository index, nor the MCP
-configuration. The zvec-grep profile also skips the unused local embedding
-runtime when Qwen embeddings are selected.
-
-Each command runs both profiles by default. Use `--profile baseline` or
-`--profile zvec-grep` to run one profile. The zvec-grep profile supports Codex,
-Qwen Code, and OpenCode and builds its index before agent execution. Codex and
-OpenCode use MCP; Qwen Code keeps the benchmark skill integration.
-
-### Run the smoke test
-
-#### SWE-bench Verified
-
-```sh
-zg-bench run swebench-verified \
-  --tier smoke --agent <agent> --model <provider/model>
-```
-
-Use a published version or npm spec:
-
-```sh
-zg-bench run swebench-verified \
-  --agent <agent> --model <provider/model> \
-  --profile zvec-grep --zvec-grep-package <compatible-version>
-```
-
-Published zvec-grep `0.1.5` does not support Workspace Remote Embedding
-authorization and also lacks the OpenCode installer. Use the benchmark default
-(`0.1.6-alpha.3` or newer) or the current checkout.
-
-Use the current repository checkout when running from `benchmarks/coding/`:
-
-```sh
-zg-bench run swebench-verified \
-  --agent <agent> --model <provider/model> \
-  --profile zvec-grep --zvec-grep-package ../..
-```
-
-#### Terminal-Bench 2.1
-
-```sh
-zg-bench run terminal-bench-2.1 \
-  --tier smoke --agent <agent> --model <provider/model>
-```
-
-Override a tier with one or more exact Harbor task names when debugging:
-
-```sh
-zg-bench run swebench-verified \
-  --tier smoke --task swe-bench/pallets__flask-5014 \
-  --agent <agent> --model <provider/model>
-```
-
-### Run the CI test
-
-The CLI supports CI tiers, but a suite must define its curated task list first.
-The current built-in suites do not yet define one; attempting to run it reports
-the configured tiers instead of silently substituting smoke tasks.
-
-### Run the full benchmark
-
-Run every task in the pinned dataset revision explicitly with:
-
-```sh
-zg-bench run swebench-verified \
-  --tier full --agent <agent> --model <provider/model>
-```
-
-This can be expensive. Use `--dry-run` first and keep the agent, model, package,
-and platform fixed across compared profiles.
-
-### Diagnose a failed run
-
-When a trial records an exception, even if Harbor itself exits successfully,
-`zg-bench` prints the structured exception and zvec-grep setup error
-automatically and exits non-zero. The same report can be requested later:
+When a trial records an exception, `zg-bench` prints the structured agent or
+zvec-grep setup error and exits non-zero. Inspect a saved run with:
 
 ```sh
 zg-bench diagnose --latest

@@ -10,6 +10,35 @@ from unittest.mock import patch
 
 from zg_bench import runner
 
+_FIXTURE_SUITE_NAME = "external-suite-fixture"
+_FIXTURE_DATASET = "fixture/external-dataset@1"
+_FIXTURE_TASK = "fixture/task-one"
+_FIXTURE_SUITE_YAML = f"""\
+name: {_FIXTURE_SUITE_NAME}
+dataset: {_FIXTURE_DATASET}
+tiers:
+  smoke:
+    tasks:
+      - {_FIXTURE_TASK}
+  full:
+    all: true
+"""
+
+
+def _install_external_suite_fixture(test_case: unittest.TestCase) -> str:
+    temp_dir = tempfile.TemporaryDirectory()
+    test_case.addCleanup(temp_dir.cleanup)
+    suites_dir = Path(temp_dir.name) / "suites"
+    suites_dir.mkdir()
+    (suites_dir / f"{_FIXTURE_SUITE_NAME}.yaml").write_text(
+        _FIXTURE_SUITE_YAML,
+        encoding="utf-8",
+    )
+    suites_patch = patch.object(runner, "SUITES_DIR", suites_dir)
+    suites_patch.start()
+    test_case.addCleanup(suites_patch.stop)
+    return _FIXTURE_SUITE_NAME
+
 
 class LocalPackageTests(unittest.TestCase):
     def test_packs_current_checkout_and_names_artifact_by_digest(self) -> None:
@@ -210,10 +239,10 @@ class LocalPackageTests(unittest.TestCase):
     def test_harbor_command_installs_mounted_package_and_records_hash(self) -> None:
         digest = "c" * 64
         suite = runner.BenchmarkSuite(
-            name="swebench-verified",
-            dataset="swe-bench/swe-bench-verified@2",
+            name=_FIXTURE_SUITE_NAME,
+            dataset=_FIXTURE_DATASET,
             tier="smoke",
-            tasks=("swe-bench/pallets__flask-5014",),
+            tasks=(_FIXTURE_TASK,),
         )
 
         command = runner.build_harbor_command(
@@ -233,8 +262,11 @@ class LocalPackageTests(unittest.TestCase):
 
 
 class RunValidationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.suite_name = _install_external_suite_fixture(self)
+
     def test_harbor_command_forwards_independent_trial_count(self) -> None:
-        suite = runner.load_suite("swe-qa-bench-manual", tier="ci")
+        suite = runner.load_suite(self.suite_name, tier="smoke")
 
         command = runner.build_harbor_command(
             suite,
@@ -248,7 +280,7 @@ class RunValidationTests(unittest.TestCase):
         self.assertEqual(command[command.index("--n-attempts") + 1], "3")
 
     def test_harbor_command_rejects_non_positive_trial_count(self) -> None:
-        suite = runner.load_suite("swe-qa-bench-manual", tier="ci")
+        suite = runner.load_suite(self.suite_name, tier="smoke")
 
         with self.assertRaisesRegex(ValueError, "positive integer"):
             runner.build_harbor_command(
@@ -261,7 +293,7 @@ class RunValidationTests(unittest.TestCase):
             )
 
     def test_custom_glm_uses_openai_compatible_provider(self) -> None:
-        suite = runner.load_suite("swebench-verified", tier="smoke")
+        suite = runner.load_suite(self.suite_name, tier="smoke")
 
         command = runner.build_harbor_command(
             suite,
@@ -320,67 +352,12 @@ class RunValidationTests(unittest.TestCase):
                 embedding_model="local/potion-code-16m-v2",
             )
 
-    def test_qwen_code_model_is_supported(self) -> None:
-        support = runner.resolve_agent_model("qwen-coder", "qwen3.7-max")
-
-        self.assertEqual(support.agent, "qwen-coder")
-        self.assertEqual(support.model, "qwen3.7-max")
-
-    def test_qwen_code_rejects_unconfigured_model(self) -> None:
-        with self.assertRaisesRegex(ValueError, "supported models: qwen3.7-max"):
-            runner.resolve_agent_model("qwen-coder", "qwen3.8")
-
-    def test_qwen_code_uses_harbor_agent_name(self) -> None:
-        suite = runner.load_suite("swebench-verified", tier="smoke")
-
-        command = runner.build_harbor_command(
-            suite,
-            profile="baseline",
-            agent="qwen-coder",
-            model="qwen3.7-max",
-            job_name="qwen-code-test",
-        )
-
-        agent_index = command.index("--agent")
-        model_index = command.index("--model")
-        self.assertEqual(command[agent_index + 1], "qwen-coder")
-        self.assertEqual(command[model_index + 1], "qwen3.7-max")
-        self.assertIn(
-            f"base_url={runner.QWEN_CODE_DASHSCOPE_BASE_URL}", command
-        )
-
-    def test_qwen_code_zvec_profile_uses_custom_adapter(self) -> None:
-        suite = runner.load_suite("swebench-verified", tier="smoke")
-
-        command = runner.build_harbor_command(
-            suite,
-            profile="zvec-grep",
-            agent="qwen-coder",
-            model="qwen3.7-max",
-            job_name="qwen-code-zvec-test",
-        )
-
-        agent_index = command.index("--agent")
-        self.assertEqual(
-            command[agent_index + 1], runner.ZVEC_QWEN_CODE_IMPORT_PATH
-        )
-        self.assertIn("--skill", command)
-
-    def test_qwen_code_dashscope_key_is_forwarded_as_openai_key(self) -> None:
-        with patch.dict(
-            runner.os.environ,
-            {"DASHSCOPE_API_KEY": "qwen-secret"},
-            clear=True,
-        ):
-            environment = runner.execution_environment(
-                agent="qwen-coder",
-                model="qwen3.7-max",
-            )
-
-        self.assertEqual(environment["OPENAI_API_KEY"], "qwen-secret")
+    def test_qwen_code_agent_is_not_supported(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unsupported agent 'qwen-coder'"):
+            runner.resolve_agent_model("qwen-coder", "qwen3.7-max")
 
     def test_opencode_qwen_uses_dashscope_provider(self) -> None:
-        suite = runner.load_suite("swebench-verified", tier="smoke")
+        suite = runner.load_suite(self.suite_name, tier="smoke")
 
         command = runner.build_harbor_command(
             suite,
@@ -413,15 +390,13 @@ class RunValidationTests(unittest.TestCase):
                 agent="opencode",
                 model="qwen3.7-max",
             )
-        self.assertEqual(
-            environment["OPENAI_API_KEY"], "opencode-qwen-secret"
-        )
+        self.assertEqual(environment["OPENAI_API_KEY"], "opencode-qwen-secret")
         self.assertEqual(
             environment["OPENAI_BASE_URL"], runner.OPENCODE_DASHSCOPE_BASE_URL
         )
 
     def test_opencode_zvec_profile_keeps_mcp_in_native_config(self) -> None:
-        suite = runner.load_suite("swebench-verified", tier="smoke")
+        suite = runner.load_suite(self.suite_name, tier="smoke")
 
         command = runner.build_harbor_command(
             suite,
@@ -432,9 +407,7 @@ class RunValidationTests(unittest.TestCase):
         )
 
         agent_index = command.index("--agent")
-        self.assertEqual(
-            command[agent_index + 1], runner.ZVEC_OPENCODE_IMPORT_PATH
-        )
+        self.assertEqual(command[agent_index + 1], runner.ZVEC_OPENCODE_IMPORT_PATH)
         config_argument = next(
             value for value in command if value.startswith("opencode_config=")
         )
@@ -486,14 +459,18 @@ class RunValidationTests(unittest.TestCase):
             jobs_dir = Path(temp_dir)
             (jobs_dir / "existing").mkdir()
             with self.assertRaisesRegex(ValueError, "job output already exists"):
-                runner.validate_job_destinations(
-                    jobs_dir, (("baseline", "existing"),)
-                )
+                runner.validate_job_destinations(jobs_dir, (("baseline", "existing"),))
 
 
 class SuiteTierTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.suite_name = _install_external_suite_fixture(self)
+
     def test_local_swe_qa_suite_uses_harbor_path(self) -> None:
-        suite = runner.load_suite("swe-qa-bench-manual", tier="ci")
+        suite_path = (
+            Path(__file__).resolve().parents[1] / "suites" / "swe-qa-bench-manual.yaml"
+        )
+        suite = runner.load_suite(suite_path, tier="ci")
 
         command = runner.build_harbor_command(
             suite,
@@ -521,7 +498,7 @@ class SuiteTierTests(unittest.TestCase):
         self.assertNotIn("--dataset", command)
 
     def test_full_tier_runs_all_dataset_tasks(self) -> None:
-        suite = runner.load_suite("swebench-verified", tier="full")
+        suite = runner.load_suite(self.suite_name, tier="full")
 
         command = runner.build_harbor_command(
             suite,
@@ -531,12 +508,18 @@ class SuiteTierTests(unittest.TestCase):
             job_name="full-test",
         )
 
+        self.assertEqual(suite.dataset, _FIXTURE_DATASET)
+        self.assertIsNone(suite.path)
         self.assertIsNone(suite.tasks)
+        self.assertEqual(
+            command[command.index("--dataset") + 1],
+            _FIXTURE_DATASET,
+        )
         self.assertNotIn("--include-task-name", command)
 
     def test_task_overrides_are_forwarded_as_repeatable_filters(self) -> None:
         suite = runner.load_suite(
-            "swebench-verified",
+            self.suite_name,
             tier="smoke",
             task_overrides=("org/task-one", "org/task-two"),
         )
@@ -558,7 +541,7 @@ class SuiteTierTests(unittest.TestCase):
 
     def test_unconfigured_ci_tier_has_actionable_error(self) -> None:
         with self.assertRaisesRegex(runner.SuiteConfigError, "available: smoke, full"):
-            runner.load_suite("swebench-verified", tier="ci")
+            runner.load_suite(self.suite_name, tier="ci")
 
 
 if __name__ == "__main__":

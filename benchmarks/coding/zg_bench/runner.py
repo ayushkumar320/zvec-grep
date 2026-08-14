@@ -27,9 +27,6 @@ from .settings import (
     OPENCODE_DASHSCOPE_BASE_URL,
     OPENCODE_OPENAI_COMPATIBLE_PACKAGE,
     OPENCODE_VERSION,
-    QWEN_CODE_DASHSCOPE_BASE_URL,
-    QWEN_CODE_DASHSCOPE_MODEL,
-    QWEN_CODE_VERSION,
     ZVEC_GREP_API_KEY_ENV_VARS,
     ZVEC_GREP_BINDING_PACKAGE,
     ZVEC_GREP_EMBEDDING,
@@ -41,11 +38,7 @@ from .settings import (
 BENCHMARKS_DIR = Path(__file__).resolve().parents[1]
 SUITES_DIR = BENCHMARKS_DIR / "suites"
 DEFAULT_RUNS_DIR = BENCHMARKS_DIR / "runs"
-ZVEC_GREP_SKILL_DIR = BENCHMARKS_DIR / "skills" / "zvec-grep"
 ZVEC_CODEX_IMPORT_PATH = "zg_bench.agents.zvec_codex:ZvecCodex"
-ZVEC_QWEN_CODE_IMPORT_PATH = (
-    "zg_bench.agents.zvec_qwen_code:ZvecQwenCode"
-)
 ZVEC_OPENCODE_IMPORT_PATH = "zg_bench.agents.zvec_opencode:ZvecOpenCode"
 SETUP_CACHE_DIR = BENCHMARKS_DIR / ".cache" / "agent-setup"
 LOCAL_PACKAGE_DIR = SETUP_CACHE_DIR / "local-package"
@@ -53,19 +46,12 @@ LOCAL_NPM_CACHE_DIR = SETUP_CACHE_DIR / "npm-cache"
 LOCAL_ZVEC_GREP_PACKAGE_TARGET = "/tmp/zg-bench-zvec-grep.tgz"
 _SETUP_CACHE_TARGET = "/root/.nvm"
 _CODEX_AGENT = "codex"
-_QWEN_CODE_AGENT = "qwen-coder"
 _OPENCODE_AGENT = "opencode"
-_CACHEABLE_AGENTS = (_CODEX_AGENT, _QWEN_CODE_AGENT, _OPENCODE_AGENT)
+_CACHEABLE_AGENTS = (_CODEX_AGENT, _OPENCODE_AGENT)
 _ZVEC_AGENT_IMPORT_PATHS = {
     _CODEX_AGENT: ZVEC_CODEX_IMPORT_PATH,
-    _QWEN_CODE_AGENT: ZVEC_QWEN_CODE_IMPORT_PATH,
     _OPENCODE_AGENT: ZVEC_OPENCODE_IMPORT_PATH,
 }
-_QWEN_CODE_API_KEY_ENV_VARS = (
-    "DASHSCOPE_API_KEY",
-    "QWEN_API_KEY",
-    "OPENAI_API_KEY",
-)
 _OPENCODE_ALIYUN_API_KEY_ENV_VARS = (
     "DASHSCOPE_API_KEY",
     "OPENAI_API_KEY",
@@ -110,15 +96,6 @@ _CODEX_MODEL_SUPPORT = AgentModelSupport(
     "*",
     configuration="native passthrough",
 )
-_QWEN_CODE_MODEL_SUPPORT = AgentModelSupport(
-    _QWEN_CODE_AGENT,
-    QWEN_CODE_DASHSCOPE_MODEL,
-    aliases=(
-        f"dashscope/{QWEN_CODE_DASHSCOPE_MODEL}",
-        "qwen-3.7-max",
-        "dashscope/qwen-3.7-max",
-    ),
-)
 _OPENCODE_GLM_MODEL_SUPPORT = AgentModelSupport(
     _OPENCODE_AGENT,
     OPENCODE_ALIYUN_GLM_MODEL,
@@ -139,7 +116,6 @@ _OPENCODE_CUSTOM_GLM_MODEL_SUPPORT = AgentModelSupport(
 AGENT_MODEL_SUPPORT: tuple[AgentModelSupport, ...] = (
     # Codex owns its model catalog and receives the selected model unchanged.
     _CODEX_MODEL_SUPPORT,
-    _QWEN_CODE_MODEL_SUPPORT,
     _OPENCODE_GLM_MODEL_SUPPORT,
     _OPENCODE_CUSTOM_GLM_MODEL_SUPPORT,
     _OPENCODE_QWEN_MODEL_SUPPORT,
@@ -230,16 +206,12 @@ def load_suite(
     if not isinstance(run_all, bool):
         raise SuiteConfigError(f"tiers.{tier}.all must be a boolean")
     if run_all and raw_tasks is not None:
-        raise SuiteConfigError(
-            f"tiers.{tier} cannot define both all: true and tasks"
-        )
+        raise SuiteConfigError(f"tiers.{tier} cannot define both all: true and tasks")
     if run_all:
         tasks: tuple[str, ...] | None = None
     else:
         if not isinstance(raw_tasks, list) or not raw_tasks:
-            raise SuiteConfigError(
-                f"tiers.{tier} must contain tasks or set all: true"
-            )
+            raise SuiteConfigError(f"tiers.{tier} must contain tasks or set all: true")
         tasks = tuple(
             _require_nonempty_string(task, f"tiers.{tier}.tasks[{index}]")
             for index, task in enumerate(raw_tasks)
@@ -299,9 +271,7 @@ def resolve_agent_model(agent: str, model: str) -> AgentModelSupport:
         supported = ", ".join(
             dict.fromkeys(support.agent for support in AGENT_MODEL_SUPPORT)
         )
-        raise ValueError(
-            f"unsupported agent {agent!r}; supported agents: {supported}"
-        )
+        raise ValueError(f"unsupported agent {agent!r}; supported agents: {supported}")
 
     for support in agent_support:
         if support.model == "*" or support.matches(agent, model):
@@ -312,10 +282,6 @@ def resolve_agent_model(agent: str, model: str) -> AgentModelSupport:
         f"unsupported model {model!r} for agent {agent!r}; "
         f"supported models: {supported}"
     )
-
-
-def _is_qwen_code_dashscope_model(agent: str, model: str) -> bool:
-    return _QWEN_CODE_MODEL_SUPPORT.matches(agent, model)
 
 
 def _is_opencode_aliyun_glm_model(agent: str, model: str) -> bool:
@@ -354,27 +320,17 @@ def validate_profile_credentials(
     embedding_model: str = ZVEC_GREP_EMBEDDING,
 ) -> None:
     resolve_agent_model(agent, model)
-    if _is_qwen_code_dashscope_model(agent, model):
-        if _first_nonempty_env(_QWEN_CODE_API_KEY_ENV_VARS) is None:
-            accepted = ", ".join(_QWEN_CODE_API_KEY_ENV_VARS)
-            raise ValueError(
-                f"{QWEN_CODE_DASHSCOPE_MODEL} requires a DashScope API key; "
-                f"export one of: {accepted}"
-            )
-
     if _opencode_dashscope_model_id(agent, model) is not None:
         if _first_nonempty_env(_OPENCODE_ALIYUN_API_KEY_ENV_VARS) is None:
             accepted = ", ".join(_OPENCODE_ALIYUN_API_KEY_ENV_VARS)
             raise ValueError(
-                f"{model} requires a DashScope API key; "
-                f"export one of: {accepted}"
+                f"{model} requires a DashScope API key; " f"export one of: {accepted}"
             )
 
     if _is_opencode_custom_glm_model(agent, model):
         if _first_nonempty_env(("GLM_API_KEY", "OPENAI_API_KEY")) is None:
             raise ValueError(
-                f"{model} requires an API key; export GLM_API_KEY or "
-                "OPENAI_API_KEY"
+                f"{model} requires an API key; export GLM_API_KEY or " "OPENAI_API_KEY"
             )
 
     if "zvec-grep" not in profiles or not embedding_model.startswith("qwen/"):
@@ -400,8 +356,7 @@ def validate_zvec_grep_package_compatibility(
         if candidate.is_dir() or (candidate.is_file() and candidate.suffix == ".tgz"):
             return
         raise ValueError(
-            "local zvec-grep package must be a directory or .tgz file: "
-            f"{candidate}"
+            "local zvec-grep package must be a directory or .tgz file: " f"{candidate}"
         )
     if _looks_like_package_path(normalized):
         raise ValueError(f"local zvec-grep package does not exist: {candidate}")
@@ -427,7 +382,9 @@ def validate_job_destinations(
     names = [job_name for _, job_name in run_specs]
     if len(set(names)) != len(names):
         raise ValueError("profile job names must be unique")
-    collisions = [jobs_dir / job_name for job_name in names if (jobs_dir / job_name).exists()]
+    collisions = [
+        jobs_dir / job_name for job_name in names if (jobs_dir / job_name).exists()
+    ]
     if collisions:
         paths = ", ".join(str(path.resolve()) for path in collisions)
         raise ValueError(
@@ -440,11 +397,6 @@ def execution_environment(*, agent: str, model: str) -> dict[str, str]:
     """Return Harbor's environment without placing credentials in its command."""
     resolve_agent_model(agent, model)
     environment = os.environ.copy()
-    if _is_qwen_code_dashscope_model(agent, model):
-        credential = _first_nonempty_env(_QWEN_CODE_API_KEY_ENV_VARS)
-        if credential is not None:
-            _, api_key = credential
-            environment["OPENAI_API_KEY"] = api_key
     if _opencode_dashscope_model_id(agent, model) is not None:
         credential = _first_nonempty_env(_OPENCODE_ALIYUN_API_KEY_ENV_VARS)
         if credential is not None:
@@ -487,8 +439,6 @@ def _cache_slug(value: str) -> str:
 def _agent_version(agent: str) -> str:
     if agent == _CODEX_AGENT:
         return CODEX_VERSION
-    if agent == _QWEN_CODE_AGENT:
-        return QWEN_CODE_VERSION
     if agent == _OPENCODE_AGENT:
         return OPENCODE_VERSION
     raise ValueError(f"agent does not use a setup cache: {agent}")
@@ -514,8 +464,7 @@ def setup_cache_volume_name(
             else zvec_grep_package
         )
         identity += (
-            f"-{package_identity}-{ZVEC_GREP_BINDING_PACKAGE}"
-            f"-{embedding_model}"
+            f"-{package_identity}-{ZVEC_GREP_BINDING_PACKAGE}" f"-{embedding_model}"
         )
     return f"zg-bench-{_cache_slug(identity)}"
 
@@ -537,7 +486,9 @@ def prepare_local_zvec_grep_package(source_root: Path) -> tuple[Path, str]:
     """Pack a local zvec-grep checkout for installation in task containers."""
     source_root = source_root.expanduser().resolve()
     if not (source_root / "package.json").is_file():
-        raise RuntimeError(f"local zvec-grep package has no package.json: {source_root}")
+        raise RuntimeError(
+            f"local zvec-grep package has no package.json: {source_root}"
+        )
     if shutil.which("npm") is None:
         raise RuntimeError("npm is required to pack the local zvec-grep checkout")
     if not (source_root / "node_modules" / ".bin" / "tsc").is_file():
@@ -737,15 +688,9 @@ def build_harbor_command(
     harbor_agent = agent
     harbor_model = model
     agent_kwargs: list[str] = []
-    skills: list[str] = []
 
     if agent == _CODEX_AGENT:
         agent_kwargs.append(f"version={CODEX_VERSION}")
-    elif agent == _QWEN_CODE_AGENT:
-        agent_kwargs.append(f"version={QWEN_CODE_VERSION}")
-        if _is_qwen_code_dashscope_model(agent, model):
-            harbor_model = QWEN_CODE_DASHSCOPE_MODEL
-            agent_kwargs.append(f"base_url={QWEN_CODE_DASHSCOPE_BASE_URL}")
     elif agent == _OPENCODE_AGENT:
         agent_kwargs.append(f"version={OPENCODE_VERSION}")
         opencode_model_id = _opencode_dashscope_model_id(agent, model)
@@ -757,9 +702,7 @@ def build_harbor_command(
                         "npm": OPENCODE_OPENAI_COMPATIBLE_PACKAGE,
                         "name": "DashScope OpenAI Compatible",
                         "models": {
-                            opencode_model_id: {
-                                "options": {"enable_thinking": False}
-                            }
+                            opencode_model_id: {"options": {"enable_thinking": False}}
                         },
                         "options": {
                             "apiKey": "{env:OPENAI_API_KEY}",
@@ -783,8 +726,7 @@ def build_harbor_command(
                     }
                 }
             agent_kwargs.append(
-                "opencode_config="
-                + json.dumps(opencode_config, separators=(",", ":"))
+                "opencode_config=" + json.dumps(opencode_config, separators=(",", ":"))
             )
         elif _is_opencode_custom_glm_model(agent, model):
             harbor_model = OPENCODE_CUSTOM_GLM_MODEL
@@ -818,16 +760,14 @@ def build_harbor_command(
                     }
                 }
             agent_kwargs.append(
-                "opencode_config="
-                + json.dumps(opencode_config, separators=(",", ":"))
+                "opencode_config=" + json.dumps(opencode_config, separators=(",", ":"))
             )
 
     if profile == "zvec-grep":
         if agent not in _ZVEC_AGENT_IMPORT_PATHS:
             supported = ", ".join(_ZVEC_AGENT_IMPORT_PATHS)
             raise ValueError(
-                "the zvec-grep profile currently supports --agent "
-                f"{supported}"
+                "the zvec-grep profile currently supports --agent " f"{supported}"
             )
         harbor_agent = _ZVEC_AGENT_IMPORT_PATHS[agent]
         agent_kwargs.extend(
@@ -838,17 +778,8 @@ def build_harbor_command(
             ]
         )
         if zvec_grep_package_sha256 is not None:
-            agent_kwargs.append(
-                f"zvec_grep_package_sha256={zvec_grep_package_sha256}"
-            )
-        if agent in {_CODEX_AGENT, _OPENCODE_AGENT}:
-            agent_kwargs.append(f"mcp_target={agent}")
-        else:
-            if not ZVEC_GREP_SKILL_DIR.is_dir():
-                raise ValueError(
-                    f"zvec-grep skill not found: {ZVEC_GREP_SKILL_DIR}"
-                )
-            skills.append(str(ZVEC_GREP_SKILL_DIR.resolve()))
+            agent_kwargs.append(f"zvec_grep_package_sha256={zvec_grep_package_sha256}")
+        agent_kwargs.append(f"mcp_target={agent}")
 
     source_args = (
         ["--dataset", suite.dataset]
@@ -892,16 +823,10 @@ def build_harbor_command(
 
     for agent_kwarg in agent_kwargs:
         command.extend(["--agent-kwarg", agent_kwarg])
-    if (
-        _opencode_dashscope_model_id(agent, model) is not None
-        or _is_opencode_custom_glm_model(agent, model)
-    ):
-        command.extend(
-            ["--agent-env", "OPENAI_API_KEY=${OPENAI_API_KEY}"]
-        )
-    for skill in skills:
-        command.extend(["--skill", skill])
-
+    if _opencode_dashscope_model_id(
+        agent, model
+    ) is not None or _is_opencode_custom_glm_model(agent, model):
+        command.extend(["--agent-env", "OPENAI_API_KEY=${OPENAI_API_KEY}"])
     return command
 
 
