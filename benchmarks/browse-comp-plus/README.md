@@ -1,3 +1,7 @@
+<p align="right">
+  English | <a href="./README_CN.md">中文</a>
+</p>
+
 # BrowseComp-Plus
 
 This benchmark runs a native paired evaluation of Codex on the fixed

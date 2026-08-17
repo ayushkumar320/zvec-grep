@@ -1,3 +1,7 @@
+<p align="right">
+  English | <a href="./README_CN.md">中文</a>
+</p>
+
 # SWE-QA benchmark
 
 This benchmark measures how `zvec-grep` affects an agent's ability to answer
