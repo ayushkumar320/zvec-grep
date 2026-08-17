@@ -3,9 +3,6 @@
 </p>
 
 <div align="center">
-  <p>
-    <a href="./docs/08-roadmap.md"><img src="https://img.shields.io/badge/status-work%20in%20progress-F59E0B?style=for-the-badge" alt="项目开发中" /></a>
-  </p>
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="./.github/assets/zg-logo-dark.svg">
     <img src="./.github/assets/zg-logo.svg" width="150" alt="zg logo" />
@@ -132,10 +129,10 @@ zg 通过**缩小有效搜索空间**，帮助 Agent 更快找到相关证据—
 每项测试均遵循**受控、可复现的配对 A/B 协议**：同一个 Agent 在相同模型、
 Prompt、环境和限制下运行相同的固定任务；**唯一差异是 zg 的访问能力和使用指引**。
 
-| 测试 / 检索配置 | 回答质量 ↑ | 输入 Token ↓ | 工具调用 ↓ | Agent 耗时 ↓ |
+| 测试 | 回答质量&nbsp;↑ | 输入&nbsp;Token&nbsp;↓ | 工具调用&nbsp;↓ | Agent&nbsp;耗时&nbsp;↓ |
 | --- | ---: | ---: | ---: | ---: |
-| [**SWE-QA-Bench**](./benchmarks/swe-qa-bench/README_CN.md) · 20 个任务<br>Embedding: potion-code-16m-v2<br>FTS: Jieba | 评审得分<br>80.42 → 81.92<br>**+1.50 分** | **−47.3%** | **−58.6%** | **−37.5%** |
-| [**BrowseComp-Plus**](./benchmarks/browse-comp-plus/README_CN.md) · 80 个样例<br>Embedding: qwen3.7-text-embedding<br>FTS: Jieba | 准确率<br>90.00% → 90.00%<br>**0.00 个百分点** | **−41.7%** | **−37.3%** | **−30.0%** |
+| [**SWE-QA-Bench**](./benchmarks/swe-qa-bench/README_CN.md)<br>20 个任务 · 代码库问答 | 评审得分<br>80.42&nbsp;→&nbsp;81.92<br>**+1.50 分** | **−47.3%** | **−58.6%** | **−37.5%** |
+| [**BrowseComp-Plus**](./benchmarks/browse-comp-plus/README_CN.md)<br>80 个样例 · 深度研究问答 | 准确率<br>**90.00%** | **−41.7%** | **−37.3%** | **−30.0%** |
 
 所有变化均以**基线**为参照：回答质量越高、资源使用越少，表示 zg 带来的提升越大。
 

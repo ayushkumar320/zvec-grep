@@ -3,9 +3,6 @@
 </p>
 
 <div align="center">
-  <p>
-    <a href="./docs/08-roadmap.md"><img src="https://img.shields.io/badge/status-work%20in%20progress-F59E0B?style=for-the-badge" alt="Work in progress" /></a>
-  </p>
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="./.github/assets/zg-logo-dark.svg">
     <img src="./.github/assets/zg-logo.svg" width="150" alt="zg logo" />
@@ -134,10 +131,10 @@ Each benchmark follows a **controlled, reproducible paired A/B protocol**: the
 same agent runs the same pinned tasks with identical model, prompt, environment,
 and limits; **only zg access and usage guidance differ**.
 
-| Benchmark / retrieval config | Answer quality ↑ | Input tokens ↓ | Tool calls ↓ | Agent time ↓ |
+| Benchmark | Answer&nbsp;quality&nbsp;↑ | Input&nbsp;tokens&nbsp;↓ | Tool&nbsp;calls&nbsp;↓ | Agent&nbsp;time&nbsp;↓ |
 | --- | ---: | ---: | ---: | ---: |
-| [**SWE-QA-Bench**](./benchmarks/swe-qa-bench/README.md) · 20 tasks<br>Embedding: potion-code-16m-v2<br>FTS: Jieba | Judge<br>80.42 → 81.92<br>**+1.50 pts** | **−47.3%** | **−58.6%** | **−37.5%** |
-| [**BrowseComp-Plus**](./benchmarks/browse-comp-plus/README.md) · 80 cases<br>Embedding: qwen3.7-text-embedding<br>FTS: Jieba | Accuracy<br>90.00% → 90.00%<br>**0.00 pp** | **−41.7%** | **−37.3%** | **−30.0%** |
+| [**SWE-QA-Bench**](./benchmarks/swe-qa-bench/README.md)<br>20 tasks · Codebase QA | Judge<br>80.42&nbsp;→&nbsp;81.92<br>**+1.50 pts** | **−47.3%** | **−58.6%** | **−37.5%** |
+| [**BrowseComp-Plus**](./benchmarks/browse-comp-plus/README.md)<br>80 cases · Deep-research QA | Accuracy<br>**90.00%** | **−41.7%** | **−37.3%** | **−30.0%** |
 
 Changes are measured against the **baseline**: higher quality and lower resource
 use mean better results with zg.
