@@ -8,8 +8,8 @@
 能力有何影响。标准对照中，两个 profile 使用相同的 OpenCode Agent、模型、
 任务 prompt、代码仓库 commit、环境和限制：
 
-- **Baseline：**OpenCode 使用其标准工具。
-- **zvec-grep：**同一个 Agent 获得准备好的代码仓库索引，并通过 MCP 使用
+- **Baseline：** OpenCode 使用其标准工具。
+- **zvec-grep：** 同一个 Agent 获得准备好的代码仓库索引，并通过 MCP 使用
   zvec-grep。
 
 索引构建单独测量，不计入 Agent 墙钟时间。

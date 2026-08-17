@@ -10,8 +10,8 @@
 
 每个问题在相同的模型、prompt、语料库、Codex 配置和限制下运行两次：
 
-- **Baseline：**Codex 使用其标准工具集。
-- **zvec-grep：**保持相同的 Codex 配置，仅通过 `zg install` 增加
+- **Baseline：** Codex 使用其标准工具集。
+- **zvec-grep：** 保持相同的 Codex 配置，仅通过 `zg install` 增加
   zvec-grep MCP 工具和使用指引。
 
 Benchmark 记录回答质量、Token 用量、墙钟时间、工具调用次数和完整的

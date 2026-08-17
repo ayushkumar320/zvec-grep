@@ -23,8 +23,8 @@
 所有 benchmark 均采用受控的配对 A/B 评测。对于每个样例，baseline 和
 treatment 使用相同的任务输入、Agent、模型、环境和限制。
 
-- **Baseline：**Agent 使用其标准工具和指令。
-- **Treatment（zvec-grep）：**同一个 Agent 额外获得准备好的索引、
+- **Baseline：** Agent 使用其标准工具和指令。
+- **Treatment（zvec-grep）：** 同一个 Agent 额外获得准备好的索引、
   zvec-grep 工具和标准使用指引。
 
 两组配对运行的**唯一预期差异**是能否使用 zvec-grep。为使比较聚焦于

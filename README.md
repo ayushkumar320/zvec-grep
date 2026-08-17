@@ -134,10 +134,10 @@ Each benchmark follows a **controlled, reproducible paired A/B protocol**: the
 same agent runs the same pinned tasks with identical model, prompt, environment,
 and limits; **only zg access and usage guidance differ**.
 
-| Benchmark / `zg` config | Answer quality ↑ | Input tokens ↓ | Tool calls ↓ | Agent time ↓ |
+| Benchmark / retrieval config | Answer quality ↑ | Input tokens ↓ | Tool calls ↓ | Agent time ↓ |
 | --- | ---: | ---: | ---: | ---: |
-| [**SWE-QA-Bench**](./benchmarks/swe-qa-bench/README.md) · 20 tasks<br>Embedding: potion-code-16m-v2 · FTS: Jieba | Judge: 80.42 → 81.92<br>**+1.50 pts** | **−47.3%** | **−58.6%** | **−37.5%** |
-| [**BrowseComp-Plus**](./benchmarks/browse-comp-plus/README.md) · 80 cases<br>Embedding: qwen3.7-text-embedding · FTS: Jieba | Accuracy: 90.00% → 90.00%<br>**0.00 pp** | **−41.7%** | **−37.3%** | **−30.0%** |
+| [**SWE-QA-Bench**](./benchmarks/swe-qa-bench/README.md) · 20 tasks<br>Embedding: potion-code-16m-v2<br>FTS: Jieba | Judge<br>80.42 → 81.92<br>**+1.50 pts** | **−47.3%** | **−58.6%** | **−37.5%** |
+| [**BrowseComp-Plus**](./benchmarks/browse-comp-plus/README.md) · 80 cases<br>Embedding: qwen3.7-text-embedding<br>FTS: Jieba | Accuracy<br>90.00% → 90.00%<br>**0.00 pp** | **−41.7%** | **−37.3%** | **−30.0%** |
 
 Changes are measured against the **baseline**: higher quality and lower resource
 use mean better results with zg.
