@@ -126,53 +126,24 @@ zg returns the relevant passages from `sherlock-holmes.txt`, ranked ahead of
 
 ## 📊 Benchmarks
 
-zg is a general-purpose retrieval tool. Current benchmarks cover code and text
-retrieval.
+zg helps agents find relevant evidence faster by **narrowing the effective
+search space** — using **fewer tokens, tool calls, and less time** while
+preserving answer quality.
 
-### Repository code retrieval
+Each benchmark follows a **controlled, reproducible paired A/B protocol**: the
+same agent runs the same pinned tasks with identical model, prompt, environment,
+and limits; **only zg access and usage guidance differ**.
 
-We use [SWE-QA-Bench](https://github.com/peng-weihan/SWE-QA-Bench), which
-requires cross-file and multi-hop reasoning over real-world codebases.
+| Benchmark | zg retrieval config | Answer quality ↑ | Input tokens ↓ | Tool calls ↓ | Agent time ↓ |
+| --- | --- | ---: | ---: | ---: | ---: |
+| [**SWE-QA-Bench**](./benchmarks/swe-qa-bench/README.md)<br>20 tasks | **Embedding:** potion-code-16m-v2<br>**FTS tokenizer:** Jieba | Judge score<br>80.42 → 81.92<br>**+1.50 pts** | **−47.3%** | **−58.6%** | **−37.5%** |
+| [**BrowseComp-Plus**](./benchmarks/browse-comp-plus/README.md)<br>80 cases | **Embedding:** qwen3.7-text-embedding<br>**FTS tokenizer:** Jieba | Accuracy<br>90.00% → 90.00%<br>**0.00 pp** | **−41.7%** | **−37.3%** | **−30.0%** |
 
-- **Coverage:** 20 retrieval-intensive tasks covering the paper's four
-  top-level categories—**What, Where, How, and Why**—across 8 intentions and
-  11 repositories.
-- **Agent:** Claude Code with **Claude Opus 5**.
-- **Embedding:** **Qwen3.7 Text Embedding** for the zg profile.
-- **Protocol:** 3 runs per task and profile.
+Changes are measured against the **baseline**: higher quality and lower resource
+use mean better results with zg.
 
-| Profile | Judge /100 ↑ | Input tokens ↓ | Tool calls ↓ | Time (s) ↓ | Cost ↓ |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Native tools | 80.42 | 558,651 | 23.42 | 127.5 | $0.905 |
-| Native tools + zg | 81.92 | 294,262 | 9.70 | 79.7 | $0.558 |
-| Change | **+1.50 pp** | **−47.3%** | **−58.6%** | **−37.5%** | **−38.3%** |
-
-Across 20 tasks × 3 runs, zg increased the Judge score by 1.50 points while
-reducing input tokens by 47.3%, tool calls by 58.6%, execution time by 37.5%,
-and cost by 38.3%.
-
-### Large-scale text retrieval
-
-We use [BrowseComp-Plus](https://github.com/texttron/BrowseComp-Plus), which
-requires multi-document evidence retrieval over a fixed web corpus. The
-evaluation includes 30 queries covering 10 mapped topics and three
-evidence-breadth levels, with 3 runs per profile.
-
-| Profile | Accuracy ↑ | Evidence recall ↑ | Search calls ↓ | Input tokens ↓ | Time (s) ↓ | Cost ↓ |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Agent + BM25 | TBD | TBD | TBD | TBD | TBD | TBD |
-| Agent + zg | TBD | TBD | TBD | TBD | TBD | TBD |
-| Change | TBD | TBD | TBD | TBD | TBD | TBD |
-
-Across 30 queries × 3 runs, zg changed accuracy by TBD pp, evidence recall by
-TBD pp, search calls by TBD%, input tokens by TBD%, time by TBD%, and cost by
-TBD%.
-
-To reproduce the evaluation, follow the
-[benchmark guide](./benchmarks/README.md) for environment setup, pinned
-revisions, task manifests, baseline configuration, exact commands, and result
-aggregation. All profiles use the same agent, model, prompt, tool budget, and
-three-run protocol.
+See the [benchmark documentation](./benchmarks/README.md) for full results and
+reproduction details.
 
 ## 📚 Documentation
 
