@@ -369,7 +369,7 @@ class RunValidationTests(unittest.TestCase):
 
         agent_index = command.index("--agent")
         model_index = command.index("--model")
-        self.assertEqual(command[agent_index + 1], "opencode")
+        self.assertEqual(command[agent_index + 1], runner.OPENCODE_IMPORT_PATH)
         self.assertEqual(command[model_index + 1], "dashscope/qwen3.7-max")
         self.assertIn(f"version={runner.OPENCODE_VERSION}", command)
 

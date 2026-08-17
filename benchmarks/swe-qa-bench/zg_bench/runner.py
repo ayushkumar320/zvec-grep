@@ -38,6 +38,7 @@ from .settings import (
 BENCHMARKS_DIR = Path(__file__).resolve().parents[1]
 SUITES_DIR = BENCHMARKS_DIR / "suites"
 DEFAULT_RUNS_DIR = BENCHMARKS_DIR / "runs"
+OPENCODE_IMPORT_PATH = "zg_bench.agents.opencode:ResilientOpenCode"
 ZVEC_CODEX_IMPORT_PATH = "zg_bench.agents.zvec_codex:ZvecCodex"
 ZVEC_OPENCODE_IMPORT_PATH = "zg_bench.agents.zvec_opencode:ZvecOpenCode"
 SETUP_CACHE_DIR = BENCHMARKS_DIR / ".cache" / "agent-setup"
@@ -692,6 +693,7 @@ def build_harbor_command(
     if agent == _CODEX_AGENT:
         agent_kwargs.append(f"version={CODEX_VERSION}")
     elif agent == _OPENCODE_AGENT:
+        harbor_agent = OPENCODE_IMPORT_PATH
         agent_kwargs.append(f"version={OPENCODE_VERSION}")
         opencode_model_id = _opencode_dashscope_model_id(agent, model)
         if opencode_model_id is not None:
