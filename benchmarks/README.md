@@ -47,9 +47,25 @@ Where applicable, benchmarks measure:
 Additional metrics may be reported when relevant. Completion status and raw
 trajectories may also be retained for auditing and diagnosis.
 
-## Reproducibility
+## Comparing results
 
-Compare baseline and zvec-grep only within the same paired run. Results produced
-with different models, environments, dataset revisions, repository commits, or
-index configurations are not directly comparable. Use each benchmark's locked
-dependencies and documented preparation path when reproducing results.
+Each benchmark's README provides its complete reproduction instructions. When
+comparing results:
+
+- **Align the evaluation stack.** Keep the model and version, reasoning
+  settings, agent framework and version, base prompt, shared tools, task set,
+  environment, and limits fixed. A stronger model under Baseline may outperform
+  a weaker model with zvec-grep; that comparison does not isolate zvec-grep's
+  effect.
+- **Account for stochasticity.** Model outputs, tool choices, judge scores, and
+  timing can vary between runs. Where practical, use the same number of
+  independent trials for both conditions and report variation or confidence
+  intervals alongside aggregate results.
+- **Fix the analysis before running.** Pin the evaluation scope, judge,
+  aggregation method, and treatment of failures and timeouts. Do not cherry-pick
+  cases or silently drop incomplete runs.
+- **Keep measurement conditions consistent.** Hardware, system load, network
+  and cache state can affect timing, while token and tool-call accounting may
+  differ across models, providers, and agent runners.
+- **Prevent leakage.** Keep reference answers, previous outputs, reports, and
+  other evaluation artifacts outside the agent-visible workspace.

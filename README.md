@@ -131,6 +131,10 @@ Each benchmark follows a **controlled, reproducible paired A/B protocol**: the
 same agent runs the same pinned tasks with identical model, prompt, environment,
 and limits; **only `zg` access and usage guidance differ**.
 
+<p align="center">
+  <img src="./.github/assets/benchmark-comparison.svg" alt="Paired baseline and zvec-grep comparison for SWE-QA-Bench and BrowseComp-Plus" width="900" />
+</p>
+
 | Benchmark | Answer&nbsp;quality&nbsp;↑ | Input&nbsp;tokens&nbsp;↓ | Tool&nbsp;calls&nbsp;↓ | Agent&nbsp;time&nbsp;↓ |
 | --- | ---: | ---: | ---: | ---: |
 | [**SWE-QA-Bench**](./benchmarks/swe-qa-bench/README.md)<br>20 tasks · Codebase QA | Judge Score<br>80.42&nbsp;→&nbsp;81.92<br>**+1.50 pts** | **−47.3%** | **−58.6%** | **−37.5%** |

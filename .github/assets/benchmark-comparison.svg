@@ -1,0 +1,107 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 600" role="img" aria-labelledby="title desc">
+  <title id="title">Paired baseline and zvec-grep benchmark results</title>
+  <desc id="desc">Two panels compare baseline and zvec-grep treatment for SWE-QA-Bench and BrowseComp-Plus. Answer quality is maintained or improved while normalized input tokens, tool calls, and agent time are lower with zvec-grep.</desc>
+  <style>
+    .canvas { fill: #ffffff; }
+    .panel { fill: #f6f8fa; stroke: #d0d7de; }
+    .text { fill: #1f2328; }
+    .muted { fill: #59636e; }
+    .rule { stroke: #d0d7de; }
+    .baseline { fill: #afb8c1; }
+    .treatment { fill: #2da44e; }
+    .gain { fill: #1a7f37; }
+    @media (prefers-color-scheme: dark) {
+      .canvas { fill: #0d1117; }
+      .panel { fill: #161b22; stroke: #30363d; }
+      .text { fill: #f0f6fc; }
+      .muted { fill: #9da7b3; }
+      .rule { stroke: #30363d; }
+      .baseline { fill: #6e7681; }
+      .treatment { fill: #3fb950; }
+      .gain { fill: #56d364; }
+    }
+  </style>
+
+  <rect class="canvas" width="1200" height="600" />
+
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+    <text class="text" x="28" y="44" font-size="28" font-weight="700">Paired A/B results</text>
+    <text class="muted" x="28" y="74" font-size="16">Efficiency metrics are normalized to Baseline = 100 · Lower is better</text>
+
+    <rect class="baseline" x="832" y="38" width="18" height="12" rx="3" />
+    <text class="muted" x="860" y="49" font-size="15">Baseline</text>
+    <rect class="treatment" x="952" y="38" width="18" height="12" rx="3" />
+    <text class="muted" x="980" y="49" font-size="15">Treatment (zvec-grep)</text>
+
+    <g aria-label="SWE-QA-Bench results">
+      <rect class="panel" x="24" y="102" width="566" height="470" rx="14" />
+      <text class="text" x="50" y="143" font-size="23" font-weight="700">SWE-QA-Bench</text>
+      <text class="muted" x="50" y="170" font-size="15">20 tasks · Codebase QA</text>
+
+      <text class="muted" x="50" y="211" font-size="15">Judge score</text>
+      <text class="text" x="180" y="211" font-size="19" font-weight="600">80.42</text>
+      <text class="muted" x="239" y="211" font-size="18">→</text>
+      <text class="gain" x="270" y="211" font-size="19" font-weight="700">81.92</text>
+      <text class="gain" x="565" y="211" font-size="17" font-weight="700" text-anchor="end">+1.50 pts</text>
+      <line class="rule" x1="50" y1="232" x2="564" y2="232" />
+
+      <text class="text" x="50" y="275" font-size="16" font-weight="600">Input tokens</text>
+      <rect class="baseline" x="180" y="257" width="270" height="12" rx="4" />
+      <text class="muted" x="460" y="268" font-size="14">100</text>
+      <rect class="treatment" x="180" y="281" width="142.3" height="12" rx="4" />
+      <text class="gain" x="332" y="292" font-size="14">52.7</text>
+      <text class="gain" x="565" y="292" font-size="17" font-weight="700" text-anchor="end">−47.3%</text>
+
+      <text class="text" x="50" y="360" font-size="16" font-weight="600">Tool calls</text>
+      <rect class="baseline" x="180" y="342" width="270" height="12" rx="4" />
+      <text class="muted" x="460" y="353" font-size="14">100</text>
+      <rect class="treatment" x="180" y="366" width="111.8" height="12" rx="4" />
+      <text class="gain" x="302" y="377" font-size="14">41.4</text>
+      <text class="gain" x="565" y="377" font-size="17" font-weight="700" text-anchor="end">−58.6%</text>
+
+      <text class="text" x="50" y="445" font-size="16" font-weight="600">Agent time</text>
+      <rect class="baseline" x="180" y="427" width="270" height="12" rx="4" />
+      <text class="muted" x="460" y="438" font-size="14">100</text>
+      <rect class="treatment" x="180" y="451" width="168.8" height="12" rx="4" />
+      <text class="gain" x="359" y="462" font-size="14">62.5</text>
+      <text class="gain" x="565" y="462" font-size="17" font-weight="700" text-anchor="end">−37.5%</text>
+
+      <text class="muted" x="50" y="536" font-size="13">Relative resource use</text>
+    </g>
+
+    <g aria-label="BrowseComp-Plus results">
+      <rect class="panel" x="610" y="102" width="566" height="470" rx="14" />
+      <text class="text" x="636" y="143" font-size="23" font-weight="700">BrowseComp-Plus</text>
+      <text class="muted" x="636" y="170" font-size="15">80 cases · Deep-research QA</text>
+
+      <text class="muted" x="636" y="211" font-size="15">Accuracy</text>
+      <text class="text" x="766" y="211" font-size="19" font-weight="600">90.00%</text>
+      <text class="muted" x="842" y="211" font-size="18">→</text>
+      <text class="gain" x="873" y="211" font-size="19" font-weight="700">90.00%</text>
+      <line class="rule" x1="636" y1="232" x2="1150" y2="232" />
+
+      <text class="text" x="636" y="275" font-size="16" font-weight="600">Input tokens</text>
+      <rect class="baseline" x="766" y="257" width="270" height="12" rx="4" />
+      <text class="muted" x="1046" y="268" font-size="14">100</text>
+      <rect class="treatment" x="766" y="281" width="157.4" height="12" rx="4" />
+      <text class="gain" x="933" y="292" font-size="14">58.3</text>
+      <text class="gain" x="1151" y="292" font-size="17" font-weight="700" text-anchor="end">−41.7%</text>
+
+      <text class="text" x="636" y="360" font-size="16" font-weight="600">Tool calls</text>
+      <rect class="baseline" x="766" y="342" width="270" height="12" rx="4" />
+      <text class="muted" x="1046" y="353" font-size="14">100</text>
+      <rect class="treatment" x="766" y="366" width="169.3" height="12" rx="4" />
+      <text class="gain" x="945" y="377" font-size="14">62.7</text>
+      <text class="gain" x="1151" y="377" font-size="17" font-weight="700" text-anchor="end">−37.3%</text>
+
+      <text class="text" x="636" y="445" font-size="16" font-weight="600">Agent time</text>
+      <rect class="baseline" x="766" y="427" width="270" height="12" rx="4" />
+      <text class="muted" x="1046" y="438" font-size="14">100</text>
+      <rect class="treatment" x="766" y="451" width="189" height="12" rx="4" />
+      <text class="gain" x="965" y="462" font-size="14">70.0</text>
+      <text class="gain" x="1151" y="462" font-size="17" font-weight="700" text-anchor="end">−30.0%</text>
+
+      <text class="muted" x="636" y="536" font-size="13">Relative resource use</text>
+    </g>
+  </g>
+</svg>
