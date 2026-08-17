@@ -35,17 +35,17 @@ and reported separately.
 
 ## Evaluation metrics
 
-Where applicable, we measure:
+Where applicable, benchmarks measure:
 
-- answer quality;
-- input-token usage;
-- tool-call counts;
-- agent wall time;
-- completion state and raw trajectories.
+| Metric | What it measures | Better |
+| --- | --- | --- |
+| Answer quality | Task-specific judge score or accuracy | Higher |
+| Input tokens | Model input consumed during agent execution | Lower |
+| Tool calls | Recorded tool invocations during agent execution | Lower |
+| Agent wall time | Agent execution time, excluding separately reported zvec-grep index preparation time | Lower |
 
-Higher answer quality and lower resource usage indicate better results. See each
-benchmark's README for its exact judge, metric definitions, aggregation rules,
-full results, and reproduction instructions.
+Additional metrics may be reported when relevant. Completion status and raw
+trajectories may also be retained for auditing and diagnosis.
 
 ## Reproducibility
 

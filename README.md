@@ -129,12 +129,12 @@ preserving answer quality.
 
 Each benchmark follows a **controlled, reproducible paired A/B protocol**: the
 same agent runs the same pinned tasks with identical model, prompt, environment,
-and limits; **only zg access and usage guidance differ**.
+and limits; **only `zg` access and usage guidance differ**.
 
 | Benchmark | Answer&nbsp;quality&nbsp;↑ | Input&nbsp;tokens&nbsp;↓ | Tool&nbsp;calls&nbsp;↓ | Agent&nbsp;time&nbsp;↓ |
 | --- | ---: | ---: | ---: | ---: |
-| [**SWE-QA-Bench**](./benchmarks/swe-qa-bench/README.md)<br>20 tasks · Codebase QA | Judge<br>80.42&nbsp;→&nbsp;81.92<br>**+1.50 pts** | **−47.3%** | **−58.6%** | **−37.5%** |
-| [**BrowseComp-Plus**](./benchmarks/browse-comp-plus/README.md)<br>80 cases · Deep-research QA | Accuracy<br>**90.00%** | **−41.7%** | **−37.3%** | **−30.0%** |
+| [**SWE-QA-Bench**](./benchmarks/swe-qa-bench/README.md)<br>20 tasks · Codebase QA | Judge Score<br>80.42&nbsp;→&nbsp;81.92<br>**+1.50 pts** | **−47.3%** | **−58.6%** | **−37.5%** |
+| [**BrowseComp-Plus**](./benchmarks/browse-comp-plus/README.md)<br>80 cases · Deep-research QA | Accuracy<br>90.00%&nbsp;→&nbsp;90.00% | **−41.7%** | **−37.3%** | **−30.0%** |
 
 Changes are measured against the **baseline**: higher quality and lower resource
 use mean better results with zg.

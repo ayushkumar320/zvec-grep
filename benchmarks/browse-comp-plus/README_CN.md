@@ -4,18 +4,14 @@
 
 # BrowseComp-Plus
 
-此 benchmark 使用固定的
-[BrowseComp-Plus](https://github.com/texttron/BrowseComp-Plus) 语料库，
-对 Codex 进行原生配对评测。
+此 benchmark 使用固定的 [BrowseComp-Plus](https://github.com/texttron/BrowseComp-Plus) 语料库，对 Codex 进行原生配对评测。
 
 每个问题在相同的模型、prompt、语料库、Codex 配置和限制下运行两次：
 
 - **Baseline：** Codex 使用其标准工具集。
-- **zvec-grep：** 保持相同的 Codex 配置，仅通过 `zg install` 增加
-  zvec-grep MCP 工具和使用指引。
+- **zvec-grep：** 保持相同的 Codex 配置，仅通过 `zg install` 增加 zvec-grep MCP 工具和使用指引。
 
-Benchmark 记录回答质量、Token 用量、墙钟时间、工具调用次数和完整的
-Codex 轨迹。
+Benchmark 记录回答质量、Token 用量、Agent 执行耗时、工具调用次数和完整的 Codex 轨迹。
 
 ## 前置条件
 
@@ -36,15 +32,13 @@ zg-bench doctor
 
 ## 准备 benchmark
 
-下载锁定版本的官方数据，将语料库中的每个 `text` 字段原样生成为
-`<docid>.md`，并构建可复用索引：
+下载锁定版本的官方数据，将语料库中的每个 `text` 字段原样生成为 `<docid>.md`，并构建可复用索引：
 
 ```sh
 zg-bench prepare
 ```
 
-首次准备需要网络连接，并需要足够的磁盘空间来存放下载的数据、生成的
-语料库和索引。
+首次准备需要网络连接，并需要足够的磁盘空间来存放下载的数据、生成的语料库和索引。
 
 后续运行会复用已经完成的下载、语料库和索引阶段。
 
@@ -56,8 +50,7 @@ zg-bench prepare
 zg-bench run --suite smoke
 ```
 
-Codex 模型和 reasoning effort 在 `benchmark.toml` 中配置。Runner 会在
-创建 trial 前验证配置的模型。
+Codex 模型和 reasoning effort 在 `benchmark.toml` 中配置。Runner 会在创建 trial 前验证配置的模型。
 
 运行固定随机选取的 5 个问题组成的 CI 子集：
 
@@ -85,8 +78,7 @@ zg-bench run --suite full
 zg-bench evaluate
 ```
 
-仅对于 `smoke` 套件，评测还会审计 zvec-grep profile 的工具轨迹，并报告
-zvec-grep 是否使用正确。该审计独立于对回答正确性的盲测评审。
+仅对于 `smoke` 套件，评测还会审计 zvec-grep profile 的工具轨迹，并报告 zvec-grep 是否使用正确。该审计独立于对回答正确性的盲测评审。
 
 如有需要，可以明确指定 run：
 
@@ -114,6 +106,4 @@ zg-bench clean
 
 ## 产物
 
-生成的数据保存在 `artifacts/` 下，不会提交到代码仓库。其中包括锁定的
-源数据快照、生成的语料库、可复用索引、各次运行隔离的 profile、原始尝试、
-评审器输入和报告。Gold data 和 manifest 始终位于 Agent workspace 之外。
+生成的数据保存在 `artifacts/` 下，不会提交到代码仓库。其中包括锁定的源数据快照、生成的语料库、可复用索引、各次运行隔离的 profile、原始尝试、评审器输入和报告。Gold data 和 manifest 始终位于 Agent workspace 之外。
