@@ -7,14 +7,14 @@ on:
       - "**/*.md"
       - ".github/assets/**"
       - "LICENSE"
-      - "scripts/readme-demo.py"
+      - ".github/scripts/readme-demo.py"
   pull_request:
     types: [opened, synchronize, reopened, edited]
     paths-ignore:
       - "**/*.md"
       - ".github/assets/**"
       - "LICENSE"
-      - "scripts/readme-demo.py"
+      - ".github/scripts/readme-demo.py"
   workflow_dispatch:
 
 permissions: {}

@@ -4,11 +4,11 @@
 The install scene mirrors the interactive UI and output implemented in
 src/cli/commands.ts. Run with:
 
-  uv run --with pillow scripts/readme-demo.py
+  uv run --with pillow .github/scripts/readme-demo.py
 
 Generate a visual comparison variant with:
 
-  uv run --with pillow scripts/readme-demo.py --variant accent
+  uv run --with pillow .github/scripts/readme-demo.py --variant accent
 """
 
 import argparse
@@ -31,7 +31,7 @@ PURPLE = "#bc8cff"
 YELLOW = "#d29922"
 CYAN = "#39c5cf"
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 OUTPUT = ROOT / ".github" / "assets" / "zvec-grep-tour.gif"
 VARIANT_OUTPUTS = {
     "baseline": ROOT / ".github" / "assets" / "zvec-grep-tour-00-baseline.gif",
