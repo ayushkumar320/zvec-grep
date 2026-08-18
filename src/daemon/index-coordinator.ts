@@ -49,51 +49,42 @@ export class IndexCoordinator {
     }
     this.pending.merge(changes);
     this.targetRevision = this.options.runtime.markDirty();
-    this.options.runtime.setWriterPending(true);
     let jobChanges: ChangeSetSnapshot | undefined;
     let jobRevision = 0;
     const submitted = this.options.scheduler.submit({
       canonicalRoot: this.options.runtime.canonicalRoot,
       reason,
       followupIfRunning: true,
-      run: (report, signal) =>
-        this.options.runtime.withWrite(async () => {
-          if (!jobChanges) {
-            jobChanges = this.pending.snapshot();
-            jobRevision = this.targetRevision;
-            this.pending = new ChangeSet();
-          }
-          if (
-            !jobChanges.forceFullReconcile &&
-            jobChanges.touchedFiles.length === 0 &&
-            jobChanges.rescanDirectories.length === 0 &&
-            jobChanges.deletedPrefixes.length === 0
-          ) {
-            this.options.runtime.markIndexed(jobRevision);
-            return;
-          }
-          const proof = await this.options.run(jobChanges, report, signal);
-          if (jobChanges.forceFullReconcile) {
-            if (proof?.reconciled === true) {
-              this.options.runtime.markReconciled(
-                jobRevision,
-                proof.reconciliationEpoch,
-              );
-            } else {
-              this.options.runtime.markIndexed(jobRevision);
-            }
+      run: async (report, signal) => {
+        if (!jobChanges) {
+          jobChanges = this.pending.snapshot();
+          jobRevision = this.targetRevision;
+          this.pending = new ChangeSet();
+        }
+        if (
+          !jobChanges.forceFullReconcile &&
+          jobChanges.touchedFiles.length === 0 &&
+          jobChanges.rescanDirectories.length === 0 &&
+          jobChanges.deletedPrefixes.length === 0
+        ) {
+          this.options.runtime.markIndexed(jobRevision);
+          return;
+        }
+        const proof = await this.options.run(jobChanges, report, signal);
+        if (jobChanges.forceFullReconcile) {
+          if (proof?.reconciled === true) {
+            this.options.runtime.markReconciled(
+              jobRevision,
+              proof.reconciliationEpoch,
+            );
           } else {
             this.options.runtime.markIndexed(jobRevision);
           }
-        }),
+        } else {
+          this.options.runtime.markIndexed(jobRevision);
+        }
+      },
     });
-    if (!submitted.reused) {
-      void this.options.scheduler
-        .waitForRootIdle(this.options.runtime.canonicalRoot)
-        .finally(() => {
-          this.options.runtime.setWriterPending(false);
-        });
-    }
     return submitted.job;
   }
 }

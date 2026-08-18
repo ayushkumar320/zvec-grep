@@ -329,49 +329,34 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
     const targetRevision = createsWork
       ? runtime.markDirty()
       : runtime.snapshot().dirtyRevision;
-    runtime.setWriterPending(true);
-    let submitted;
-    try {
-      submitted = this.scheduler.submit({
-        canonicalRoot: runtime.canonicalRoot,
-        reason: "manual",
-        followupIfRunning: input.rebuild === true || followsNarrowJob,
-        run: (report, signal) =>
-          runtime.withWrite(async () => {
-            const proof = await this.runIndex(
-              runtime,
-              input,
-              report,
-              options.authorization,
-              signal,
-            );
-            this.lastScanDiagnostics.set(
-              runtime.canonicalRoot,
-              proof.scanDiagnostics,
-            );
-            if (proof.reconciled) {
-              runtime.markReconciled(targetRevision, proof.reconciliationEpoch);
-            } else {
-              runtime.markIndexed(targetRevision);
-            }
-          }),
-      });
-    } catch (error) {
-      runtime.setWriterPending(false);
-      throw error;
-    }
-
-    if (!submitted.reused) {
-      void this.scheduler.waitForRootIdle(runtime.canonicalRoot).finally(() => {
-        runtime.setWriterPending(false);
-      });
-    }
+    const submitted = this.scheduler.submit({
+      canonicalRoot: runtime.canonicalRoot,
+      reason: "manual",
+      followupIfRunning: input.rebuild === true || followsNarrowJob,
+      run: async (report, signal) => {
+        const proof = await this.runIndex(
+          runtime,
+          input,
+          report,
+          options.authorization,
+          signal,
+        );
+        this.lastScanDiagnostics.set(
+          runtime.canonicalRoot,
+          proof.scanDiagnostics,
+        );
+        if (proof.reconciled) {
+          runtime.markReconciled(targetRevision, proof.reconciliationEpoch);
+        } else {
+          runtime.markIndexed(targetRevision);
+        }
+      },
+    });
     const job = input.wait
       ? await this.scheduler.wait(submitted.job.id, options.onProgress)
       : submitted.job;
     if (input.wait) {
       await this.settleKnownChanges(runtime);
-      runtime.setWriterPending(false);
     }
     this.options.logger?.event("job.submitted", {
       root_id: rootIdentity(runtime.canonicalRoot),
@@ -544,12 +529,6 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
         (runtime.requiresFullReconciliation() ||
           !this.scheduler.hasActiveRoot(runtime.canonicalRoot))
       ) {
-        if (
-          !runtime.requiresFullReconciliation() ||
-          runtime.canProbeFullReconciliation()
-        ) {
-          await this.probeCurrentFreshness(runtime);
-        }
         const currentJob = this.scheduler.getByRoot(runtime.canonicalRoot);
         const terminalKnownPathJob =
           !runtime.requiresFullReconciliation() &&
@@ -749,6 +728,27 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
     authorization?: RemoteEmbeddingOperationPermit,
     signal?: AbortSignal,
   ): Promise<IndexReconciliationProof> {
+    const releaseRuntimeActivity = runtime.beginActivity();
+    try {
+      return await this.runIndexOperation(
+        runtime,
+        input,
+        report,
+        authorization,
+        signal,
+      );
+    } finally {
+      releaseRuntimeActivity();
+    }
+  }
+
+  private async runIndexOperation(
+    runtime: RootRuntime,
+    input: DaemonIndexInput,
+    report: (progress: IndexProgress) => void,
+    authorization?: RemoteEmbeddingOperationPermit,
+    signal?: AbortSignal,
+  ): Promise<IndexReconciliationProof> {
     const startedAt = Date.now();
     // Watcher path updates already identify their indexing scope, so avoid a
     // workspace-wide status scan here. Silent watcher misses are repaired by
@@ -793,9 +793,8 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
         device: input.runtimeOverridesAreEphemeral ? undefined : input.device,
         daemonInstanceToken: this.runtimeManager.instanceToken,
       });
-      const result = await withRemoteEmbeddingOperationPermit(
-        authorization,
-        () =>
+      const result = await runtime.withWrite(() =>
+        withRemoteEmbeddingOperationPermit(authorization, () =>
           service!.index({
             root: runtime.canonicalRoot,
             rebuild: input.rebuild,
@@ -819,6 +818,7 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
             onWriterContext: (context) =>
               runtime.setWriterContext(context, lease.key),
           }),
+        ),
       );
       scanDiagnostics = result.scanDiagnostics;
     } finally {
@@ -877,42 +877,35 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
       : runtime.snapshot().dirtyRevision;
     const followsNarrowWatch =
       this.scheduler.getByRoot(runtime.canonicalRoot)?.reason === "watch";
-    runtime.setWriterPending(true);
-    let submitted;
-    try {
-      submitted = this.scheduler.submit({
-        canonicalRoot: runtime.canonicalRoot,
-        reason,
-        followupIfRunning: followsNarrowWatch,
-        run: (report, signal) =>
-          runtime.withWrite(async () => {
-            const proof = await this.runIndex(
-              runtime,
-              input,
-              report,
-              authorization,
-              signal,
-            );
-            if (proof.reconciled) {
-              runtime.markReconciled(targetRevision, proof.reconciliationEpoch);
-            } else {
-              runtime.markIndexed(targetRevision);
-            }
-          }),
-      });
-    } catch (error) {
-      runtime.setWriterPending(false);
-      throw error;
-    }
-    if (!submitted.reused) {
-      void this.scheduler.waitForRootIdle(runtime.canonicalRoot).finally(() => {
-        runtime.setWriterPending(false);
-      });
-    }
+    const submitted = this.scheduler.submit({
+      canonicalRoot: runtime.canonicalRoot,
+      reason,
+      followupIfRunning: followsNarrowWatch,
+      run: async (report, signal) => {
+        if (
+          reason === "background_reconcile" &&
+          runtime.canProbeFullReconciliation() &&
+          (await this.probeCurrentFreshness(runtime)) === "fresh"
+        ) {
+          return;
+        }
+        const proof = await this.runIndex(
+          runtime,
+          input,
+          report,
+          authorization,
+          signal,
+        );
+        if (proof.reconciled) {
+          runtime.markReconciled(targetRevision, proof.reconciliationEpoch);
+        } else {
+          runtime.markIndexed(targetRevision);
+        }
+      },
+    });
     if (!wait) return submitted.job;
     const job = await this.scheduler.wait(submitted.job.id);
     await this.scheduler.waitForRootIdle(runtime.canonicalRoot);
-    runtime.setWriterPending(false);
     return job;
   }
 
@@ -1117,18 +1110,20 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
   private async probeCurrentFreshness(
     runtime: RootRuntime,
   ): Promise<"fresh" | "stale"> {
-    const freshness = await runtime.probeFreshness(async () => {
-      const info = await inspectRoot(
-        runtime.canonicalRoot,
-        this.options.serviceOptions,
-      );
-      this.statusCache.set(runtime.canonicalRoot, info);
-      return indexStatusIsFresh(info);
-    });
-    this.options.logger?.event(`runtime.recovery_probe_${freshness}`, {
-      root_id: rootIdentity(runtime.canonicalRoot),
-    });
-    return freshness;
+    const releaseRuntimeActivity = runtime.beginActivity();
+    try {
+      const freshness = await runtime.probeFreshness(async () => {
+        const info = await this.inspectRoot(runtime.canonicalRoot, true);
+        this.statusCache.set(runtime.canonicalRoot, info);
+        return indexStatusIsFresh(info);
+      });
+      this.options.logger?.event(`runtime.recovery_probe_${freshness}`, {
+        root_id: rootIdentity(runtime.canonicalRoot),
+      });
+      return freshness;
+    } finally {
+      releaseRuntimeActivity();
+    }
   }
 
   private async closeWatcher(canonicalRoot: string): Promise<void> {

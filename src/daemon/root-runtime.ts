@@ -280,7 +280,7 @@ export class RootRuntime {
   }
 
   async withWrite<T>(operation: () => Promise<T>): Promise<T> {
-    this.options.onActivity?.();
+    this.setWriterPending(true);
     try {
       return await this.runGenerationSerial(async () => {
         const generation = this.generation;
@@ -289,7 +289,7 @@ export class RootRuntime {
         return operation();
       });
     } finally {
-      this.options.onActivity?.();
+      this.setWriterPending(false);
     }
   }
 

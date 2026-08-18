@@ -266,6 +266,38 @@ test("root runtime searches the writer context as soon as it becomes available",
   await pool.close();
 });
 
+test("root runtime marks writer pending only while a write owns the runtime", async () => {
+  const pool = new EmbeddingModelPool({
+    createModel: () => ({ dispose: async () => {} }),
+  });
+  const runtime = new RootRuntime({
+    canonicalRoot: "/tmp/repo",
+    modelPool: pool,
+    modelLoadRequest: modelLoadRequest("model-a"),
+  });
+  let markWriteStarted;
+  let releaseWrite;
+  const writeStarted = new Promise((resolve) => {
+    markWriteStarted = resolve;
+  });
+  const writeReleased = new Promise((resolve) => {
+    releaseWrite = resolve;
+  });
+
+  const write = runtime.withWrite(async () => {
+    markWriteStarted();
+    await writeReleased;
+  });
+  await writeStarted;
+  assert.equal(runtime.snapshot().writerPending, true);
+  releaseWrite();
+  await write;
+  assert.equal(runtime.snapshot().writerPending, false);
+
+  await runtime.close();
+  await pool.close();
+});
+
 test("root runtime does not reuse a writer context with a different model runtime", async () => {
   const pool = new EmbeddingModelPool({
     keyForRequest: (request) => request.runtime.apiKey,

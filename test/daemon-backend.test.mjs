@@ -771,6 +771,252 @@ test("wait_for_fresh consumes a running watch job without a status scan or full 
   }
 });
 
+test("eventual searches do not wait for full watcher writer preparation", async () => {
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-eventual-writer-preparation-"),
+  );
+  const root = join(temporaryDirectory, "repo");
+  await mkdir(root);
+  const source = join(root, "answer.ts");
+  await writeFile(source, "export const answer = 42;\n");
+  const service = await createZvecGrep({
+    root,
+    embeddingModel: new TestEmbeddingModel(),
+  });
+  await service.index();
+  await service.close();
+
+  let watcherOptions;
+  let blockWriterPreparation = false;
+  let blockWatchEmbedding = false;
+  let markWriterPreparationStarted;
+  let releaseWriterPreparation = () => {};
+  let markWatchEmbeddingStarted;
+  let releaseWatchEmbedding = () => {};
+  const writerPreparationStarted = new Promise((resolve) => {
+    markWriterPreparationStarted = resolve;
+  });
+  const writerPreparationReleased = new Promise((resolve) => {
+    releaseWriterPreparation = resolve;
+  });
+  const watchEmbeddingStarted = new Promise((resolve) => {
+    markWatchEmbeddingStarted = resolve;
+  });
+  const watchEmbeddingReleased = new Promise((resolve) => {
+    releaseWatchEmbedding = resolve;
+  });
+  const backend = new DaemonBackend({
+    version: "1.0.0",
+    modelPoolOptions: {
+      createModel: () =>
+        new TestEmbeddingModel(async (contents) => {
+          if (
+            blockWatchEmbedding &&
+            contents.some(
+              (content) =>
+                content.kind === "text" &&
+                content.text.includes("changedAnswer"),
+            )
+          ) {
+            markWatchEmbeddingStarted();
+            await watchEmbeddingReleased;
+          }
+        }),
+    },
+    inspectRoot: async (...args) => {
+      if (blockWriterPreparation && (args[2] ?? true)) {
+        markWriterPreparationStarted();
+        await writerPreparationReleased;
+      }
+      return await inspectRoot(...args);
+    },
+    watchManagerFactory: (options) => {
+      watcherOptions = options;
+      return {
+        start() {},
+        flushPending: async () => {},
+        close: async () => {},
+      };
+    },
+  });
+
+  try {
+    await backend.search(searchInput(root, "answer", "wait_for_fresh"));
+    await writeFile(source, "export const changedAnswer = 43;\n");
+    blockWriterPreparation = true;
+    blockWatchEmbedding = true;
+    await watcherOptions.onChanges(
+      {
+        touchedFiles: [source],
+        rescanDirectories: [],
+        deletedPrefixes: [],
+        forceFullReconcile: true,
+      },
+      "watch",
+    );
+    await writerPreparationStarted;
+
+    let backgroundSettled = false;
+    let offSettled = false;
+    let waitSettled = false;
+    const backgroundSearch = backend
+      .search(searchInput(root, "answer", "eventual"))
+      .then((result) => {
+        backgroundSettled = true;
+        return result;
+      });
+    const offSearch = backend
+      .search({
+        ...searchInput(root, "answer", "eventual"),
+        autoUpdate: false,
+      })
+      .then((result) => {
+        offSettled = true;
+        return result;
+      });
+    const waitSearch = backend
+      .search(searchInput(root, "changedAnswer", "wait_for_fresh"))
+      .then((result) => {
+        waitSettled = true;
+        return result;
+      });
+    await Promise.race([
+      Promise.all([backgroundSearch, offSearch]),
+      new Promise((resolve) => setTimeout(resolve, 2_000)),
+    ]);
+    const settledDuringPreparation = {
+      background: backgroundSettled,
+      off: offSettled,
+      wait: waitSettled,
+    };
+
+    blockWriterPreparation = false;
+    releaseWriterPreparation();
+    await watchEmbeddingStarted;
+    const [backgroundResult, offResult] = await Promise.all([
+      backgroundSearch,
+      offSearch,
+    ]);
+    assert.equal(waitSettled, false);
+    blockWatchEmbedding = false;
+    releaseWatchEmbedding();
+    const waitResult = await waitSearch;
+
+    assert.deepEqual(settledDuringPreparation, {
+      background: true,
+      off: true,
+      wait: false,
+    });
+    assert.equal(backgroundResult.freshness, "possibly_stale");
+    assert.equal(offResult.freshness, "possibly_stale");
+    assert.equal(waitResult.freshness, "fresh");
+  } finally {
+    releaseWriterPreparation();
+    releaseWatchEmbedding();
+    await backend.close();
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("background search schedules an unknown watcher reconciliation without waiting for its probe", async () => {
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-background-reconciliation-probe-"),
+  );
+  const root = join(temporaryDirectory, "repo");
+  await mkdir(root);
+  await writeFile(join(root, "answer.ts"), "export const answer = 42;\n");
+  const service = await createZvecGrep({
+    root,
+    embeddingModel: new TestEmbeddingModel(),
+  });
+  await service.index();
+  await service.close();
+
+  let watcherOptions;
+  let blockProbe = false;
+  let markProbeStarted;
+  let releaseProbe = () => {};
+  const probeStarted = new Promise((resolve) => {
+    markProbeStarted = resolve;
+  });
+  const probeReleased = new Promise((resolve) => {
+    releaseProbe = resolve;
+  });
+  const backend = new DaemonBackend({
+    version: "1.0.0",
+    modelPoolOptions: { createModel: () => new TestEmbeddingModel() },
+    inspectRoot: async (...args) => {
+      if (blockProbe && (args[2] ?? true)) {
+        markProbeStarted();
+        await probeReleased;
+      }
+      return await inspectRoot(...args);
+    },
+    watchManagerFactory: (options) => {
+      watcherOptions = options;
+      return {
+        start() {},
+        flushPending: async () => {},
+        close: async () => {},
+      };
+    },
+  });
+
+  try {
+    await backend.search(searchInput(root, "answer", "wait_for_fresh"));
+    await watcherOptions.onChanges(
+      {
+        touchedFiles: [],
+        rescanDirectories: [],
+        deletedPrefixes: [],
+        forceFullReconcile: true,
+      },
+      "reconcile",
+    );
+
+    const offResult = await backend.search({
+      ...searchInput(root, "answer", "eventual"),
+      autoUpdate: false,
+    });
+    assert.equal(offResult.freshness, "possibly_stale");
+    assert.equal(backend.scheduler.getByRoot(await realpath(root)), undefined);
+
+    blockProbe = true;
+    let backgroundSettled = false;
+    const backgroundSearch = backend
+      .search(searchInput(root, "answer", "eventual"))
+      .then((result) => {
+        backgroundSettled = true;
+        return result;
+      });
+    await probeStarted;
+    await Promise.race([
+      backgroundSearch,
+      new Promise((resolve) => setTimeout(resolve, 2_000)),
+    ]);
+    assert.equal(backgroundSettled, true);
+    const backgroundResult = await backgroundSearch;
+    assert.equal(backgroundResult.freshness, "possibly_stale");
+
+    let waitSettled = false;
+    const waitSearch = backend
+      .search(searchInput(root, "answer", "wait_for_fresh"))
+      .then((result) => {
+        waitSettled = true;
+        return result;
+      });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(waitSettled, false);
+    blockProbe = false;
+    releaseProbe();
+    assert.equal((await waitSearch).freshness, "fresh");
+  } finally {
+    releaseProbe();
+    await backend.close();
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
 test("wait_for_fresh flushes watcher changes until revisions are caught up", async () => {
   const temporaryDirectory = await mkdtemp(
     join(tmpdir(), "zvec-grep-fresh-pending-"),
