@@ -13,7 +13,7 @@ import {
   type ZVecStatus,
 } from "@zvec/zvec";
 import { closeSync, existsSync, mkdirSync, openSync } from "node:fs";
-import { dirname, join, sep } from "node:path";
+import { dirname, join } from "node:path";
 import { EngineError } from "../errors.js";
 import type {
   CodeEntityModifier,
@@ -136,10 +136,16 @@ class ZvecWorkspaceIndexStorage implements WorkspaceIndexStorage {
   }
 
   listFilesByPathPrefix(absolutePath: string): FileInfo[] {
-    const prefix = normalizePath(absolutePath);
-    const descendantPrefix = `${prefix}${sep}`;
+    return this.listFilesByPathPrefixes([absolutePath]);
+  }
+
+  listFilesByPathPrefixes(absolutePaths: readonly string[]): FileInfo[] {
+    const prefixes = new Set(absolutePaths.map((path) => normalizePath(path)));
+    if (prefixes.size === 0) {
+      return [];
+    }
     return [...this.filesByAbsolutePath.entries()]
-      .filter(([path]) => path === prefix || path.startsWith(descendantPrefix))
+      .filter(([path]) => hasPathPrefix(path, prefixes))
       .map(([, file]) => fileRecordToInfo(file));
   }
 
@@ -439,6 +445,20 @@ class ZvecWorkspaceIndexStorage implements WorkspaceIndexStorage {
         context: `operation=${operation}`,
       });
     }
+  }
+}
+
+function hasPathPrefix(path: string, prefixes: ReadonlySet<string>): boolean {
+  let current = path;
+  while (true) {
+    if (prefixes.has(current)) {
+      return true;
+    }
+    const parent = dirname(current);
+    if (parent === current) {
+      return false;
+    }
+    current = parent;
   }
 }
 

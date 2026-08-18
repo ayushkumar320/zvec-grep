@@ -823,12 +823,12 @@ test("eventual searches do not wait for full watcher writer preparation", async 
           }
         }),
     },
-    inspectRoot: async (...args) => {
-      if (blockWriterPreparation && (args[2] ?? true)) {
+    createService: async (options) => {
+      if (blockWriterPreparation) {
         markWriterPreparationStarted();
         await writerPreparationReleased;
       }
-      return await inspectRoot(...args);
+      return await createZvecGrep(options);
     },
     watchManagerFactory: (options) => {
       watcherOptions = options;
@@ -1012,6 +1012,63 @@ test("background search schedules an unknown watcher reconciliation without wait
     assert.equal((await waitSearch).freshness, "fresh");
   } finally {
     releaseProbe();
+    await backend.close();
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("full watcher reconciliation skips the initial status scan", async () => {
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-watcher-full-scan-count-"),
+  );
+  const root = join(temporaryDirectory, "repo");
+  await mkdir(root);
+  const source = join(root, "answer.ts");
+  await writeFile(source, "export const answer = 42;\n");
+  const service = await createZvecGrep({
+    root,
+    embeddingModel: new TestEmbeddingModel(),
+  });
+  await service.index();
+  await service.close();
+
+  let watcherOptions;
+  let recordScans = false;
+  const includeStatusCalls = [];
+  const backend = new DaemonBackend({
+    version: "1.0.0",
+    modelPoolOptions: { createModel: () => new TestEmbeddingModel() },
+    inspectRoot: async (...args) => {
+      if (recordScans) includeStatusCalls.push(args[2] ?? true);
+      return await inspectRoot(...args);
+    },
+    watchManagerFactory: (options) => {
+      watcherOptions = options;
+      return {
+        start() {},
+        flushPending: async () => {},
+        close: async () => {},
+      };
+    },
+  });
+
+  try {
+    await backend.search(searchInput(root, "answer", "wait_for_fresh"));
+    await writeFile(source, "export const changedAnswer = 43;\n");
+    recordScans = true;
+    await watcherOptions.onChanges(
+      {
+        touchedFiles: [source],
+        rescanDirectories: [],
+        deletedPrefixes: [],
+        forceFullReconcile: true,
+      },
+      "reconcile",
+    );
+    await backend.search(searchInput(root, "changedAnswer", "wait_for_fresh"));
+
+    assert.deepEqual(includeStatusCalls, [false, true]);
+  } finally {
     await backend.close();
     await rm(temporaryDirectory, { recursive: true, force: true });
   }

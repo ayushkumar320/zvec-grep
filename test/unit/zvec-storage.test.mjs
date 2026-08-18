@@ -8,6 +8,7 @@ import {
   ZVecCreateAndOpen,
   ZVecDataType,
 } from "@zvec/zvec";
+import { createWorkspaceIndexStorage } from "../../dist/engine/storage/index.js";
 import { queryFileMetadataDocs } from "../../dist/engine/storage/zvec.js";
 
 function doc(id) {
@@ -102,3 +103,52 @@ test("file metadata partitions use zvec string range semantics", async (t) => {
     documents.map((item) => item.id).sort(),
   );
 });
+
+test("file metadata supports one batched path-prefix lookup", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "zvec-grep-file-prefixes-"));
+  const root = join(parent, "repo");
+  const storage = createWorkspaceIndexStorage({
+    storagePath: join(parent, "storage"),
+    readOnly: false,
+    embedding: {
+      provider: "local",
+      model: "test",
+      dimension: 2,
+      metric: "cosine",
+    },
+  });
+  t.after(async () => {
+    storage.close();
+    await rm(parent, { recursive: true, force: true });
+  });
+  const files = [
+    fileInfo("a", root, "src/a.ts"),
+    fileInfo("b", root, "src/nested/b.ts"),
+    fileInfo("c", root, "docs/c.md"),
+  ];
+  for (const file of files) storage.replaceFile(file, []);
+
+  const matches = storage.listFilesByPathPrefixes([
+    join(root, "src"),
+    join(root, "docs", "c.md"),
+  ]);
+
+  assert.deepEqual(matches.map((file) => file.relativePath).sort(), [
+    "docs/c.md",
+    "src/a.ts",
+    "src/nested/b.ts",
+  ]);
+});
+
+function fileInfo(id, root, relativePath) {
+  return {
+    id: id.repeat(64),
+    absolutePath: join(root, relativePath),
+    relativePath,
+    rootPath: root,
+    sizeBytes: 1,
+    lastModifiedTime: 1,
+    kind: relativePath.endsWith(".md") ? "markdown" : "code",
+    format: relativePath.endsWith(".md") ? "markdown" : "typescript",
+  };
+}

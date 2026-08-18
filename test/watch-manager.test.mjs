@@ -88,7 +88,7 @@ test("watch manager uses per-directory watchers on Linux Node 22.0", async () =>
   }
 });
 
-test("watch manager collapses an event storm into one full reconciliation", async () => {
+test("watch manager compacts an exact event storm into one directory scan", async () => {
   const temporaryDirectory = await mkdtemp(
     join(tmpdir(), "zvec-grep-watch-storm-"),
   );
@@ -122,7 +122,12 @@ test("watch manager collapses an event storm into one full reconciliation", asyn
     manager.start();
     for (let index = 0; index < 4; index++) listener("change", `${index}.ts`);
     await waitFor(() => batches.length === 1);
-    assert.equal(batches[0].forceFullReconcile, true);
+    assert.deepEqual(batches[0], {
+      touchedFiles: [],
+      rescanDirectories: [root],
+      deletedPrefixes: [],
+      forceFullReconcile: false,
+    });
     assert.equal(batches.length, 1);
   } finally {
     await manager.close();

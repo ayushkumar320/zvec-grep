@@ -118,9 +118,98 @@ test("a full reconciliation without proof remains unconfirmed", async () => {
   await scheduler.close();
 });
 
+test("a high-ratio exact batch remains incremental", async () => {
+  const scheduler = new JobScheduler({ concurrency: 1 });
+  let dirtyRevision = 0;
+  let fullReconciliations = 0;
+  const snapshots = [];
+  const coordinator = new IndexCoordinator({
+    runtime: {
+      canonicalRoot: "/repo",
+      requireFullReconciliation: () => {
+        fullReconciliations += 1;
+      },
+      markDirty: () => ++dirtyRevision,
+      markIndexed: () => {},
+    },
+    scheduler,
+    getIndexedFileCount: () => 10,
+    minRatioChangedPaths: 2,
+    fullReconcileRatio: 0.2,
+    run: async (changes) => {
+      snapshots.push(changes);
+    },
+  });
+
+  const job = coordinator.enqueue({
+    touchedFiles: ["/repo/a.ts", "/repo/b.ts", "/repo/c.ts"],
+    rescanDirectories: [],
+    deletedPrefixes: [],
+    forceFullReconcile: false,
+  });
+
+  assert.equal((await scheduler.wait(job.id)).state, "succeeded");
+  assert.equal(snapshots[0].forceFullReconcile, false);
+  assert.equal(fullReconciliations, 0);
+  await scheduler.close();
+});
+
+test("queued exact batches compact without becoming a full reconciliation", async () => {
+  const scheduler = new JobScheduler({ concurrency: 1 });
+  let dirtyRevision = 0;
+  let releaseFirst;
+  const firstRunning = new Promise((resolve) => {
+    releaseFirst = resolve;
+  });
+  const snapshots = [];
+  const coordinator = new IndexCoordinator({
+    runtime: {
+      canonicalRoot: "/repo",
+      requireFullReconciliation: () => {
+        throw new Error("exact batches must not require full reconciliation");
+      },
+      markDirty: () => ++dirtyRevision,
+      markIndexed: () => {},
+    },
+    scheduler,
+    run: async (changes) => {
+      snapshots.push(changes);
+      if (snapshots.length === 1) await firstRunning;
+    },
+  });
+  coordinator.enqueue(change("/repo/initial.ts"));
+  await waitFor(() => snapshots.length === 1);
+
+  coordinator.enqueue(exactBatch("/repo/package-a", 600));
+  coordinator.enqueue(exactBatch("/repo/package-b", 600));
+  releaseFirst();
+  await scheduler.waitForRootIdle("/repo");
+
+  assert.equal(snapshots.length, 2);
+  assert.deepEqual(snapshots[1], {
+    touchedFiles: [],
+    rescanDirectories: ["/repo/package-a", "/repo/package-b"],
+    deletedPrefixes: [],
+    forceFullReconcile: false,
+  });
+  await scheduler.close();
+});
+
 function change(path) {
   return {
     touchedFiles: [path],
+    rescanDirectories: [],
+    deletedPrefixes: [],
+    forceFullReconcile: false,
+  };
+}
+
+function exactBatch(directory, count) {
+  return {
+    touchedFiles: Array.from(
+      { length: count },
+      (_, index) => `${directory}/${index}.ts`,
+    ),
     rescanDirectories: [],
     deletedPrefixes: [],
     forceFullReconcile: false,

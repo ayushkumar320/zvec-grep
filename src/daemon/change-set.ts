@@ -1,4 +1,4 @@
-import { basename, dirname, isAbsolute } from "node:path";
+import { basename, dirname, isAbsolute, relative, sep } from "node:path";
 import { normalizePath } from "../engine/utils/path.js";
 
 export type ChangeKind = "created" | "changed" | "deleted";
@@ -11,6 +11,7 @@ export type ChangeSetSnapshot = {
 };
 
 export type ChangeSetOptions = {
+  root?: string;
   maxChangedPaths?: number;
 };
 
@@ -19,9 +20,11 @@ export class ChangeSet {
   private readonly rescanDirectories = new Set<string>();
   private readonly deletedPrefixes = new Set<string>();
   private forceFullReconcile = false;
+  private readonly root?: string;
   private readonly maxChangedPaths: number;
 
   constructor(options: ChangeSetOptions = {}) {
+    this.root = options.root ? normalizePath(options.root) : undefined;
     this.maxChangedPaths = options.maxChangedPaths ?? 1_000;
   }
 
@@ -33,6 +36,12 @@ export class ChangeSet {
       return;
     }
     const normalized = normalizePath(path);
+    if (
+      this.pathCoveredBy(this.rescanDirectories, normalized) ||
+      this.pathCoveredBy(this.deletedPrefixes, normalized)
+    ) {
+      return;
+    }
     if (basename(normalized) === ".gitignore") {
       this.rescanDirectories.add(dirname(normalized));
     } else if (kind === "deleted") {
@@ -43,10 +52,7 @@ export class ChangeSet {
       this.touchedFiles.add(normalized);
     }
     if (this.size >= this.maxChangedPaths) {
-      this.collapsePaths();
-      if (this.size >= this.maxChangedPaths) {
-        this.forceFullReconcile = true;
-      }
+      this.enforcePathBudget();
     }
   }
 
@@ -63,6 +69,9 @@ export class ChangeSet {
       this.rescanDirectories.add(path);
     for (const path of other.deletedPrefixes) this.deletedPrefixes.add(path);
     this.forceFullReconcile ||= other.forceFullReconcile;
+    if (!this.forceFullReconcile && this.size >= this.maxChangedPaths) {
+      this.enforcePathBudget();
+    }
   }
 
   snapshot(): ChangeSetSnapshot {
@@ -104,6 +113,60 @@ export class ChangeSet {
       }
     }
   }
+
+  private enforcePathBudget(): void {
+    this.collapsePaths();
+    if (this.size < this.maxChangedPaths) {
+      return;
+    }
+    if (!this.root) {
+      this.forceFullReconcile = true;
+      return;
+    }
+    // Exact watcher events are still trustworthy when the batch is large.
+    // Widen their scope to parent directories to bound memory without turning
+    // an exact update into a full reconciliation for possible missed events.
+    const leafScopes = [...this.touchedFiles, ...this.deletedPrefixes];
+    if (leafScopes.length > 0) {
+      this.touchedFiles.clear();
+      this.deletedPrefixes.clear();
+      for (const path of leafScopes) {
+        this.rescanDirectories.add(this.parentScope(path));
+      }
+      this.collapsePaths();
+    }
+    while (this.size >= this.maxChangedPaths) {
+      const previousSize = this.size;
+      const directories = [...this.rescanDirectories].map((path) =>
+        this.parentScope(path),
+      );
+      this.rescanDirectories.clear();
+      for (const directory of directories) {
+        this.rescanDirectories.add(directory);
+      }
+      this.collapsePaths();
+      if (this.size >= previousSize) {
+        break;
+      }
+    }
+  }
+
+  private pathCoveredBy(paths: ReadonlySet<string>, path: string): boolean {
+    return paths.has(path) || hasAncestor(paths, path);
+  }
+
+  private parentScope(path: string): string {
+    if (path === this.root) {
+      return path;
+    }
+    const parent = dirname(path);
+    const fromRoot = relative(this.root!, parent);
+    return isAbsolute(fromRoot) ||
+      fromRoot === ".." ||
+      fromRoot.startsWith(`..${sep}`)
+      ? this.root!
+      : parent;
+  }
 }
 
 function collapseSet(paths: Set<string>): void {
@@ -115,7 +178,7 @@ function collapseSet(paths: Set<string>): void {
   }
 }
 
-function hasAncestor(paths: Set<string>, target: string): boolean {
+function hasAncestor(paths: ReadonlySet<string>, target: string): boolean {
   let current = dirname(target);
   while (current !== target) {
     if (paths.has(current)) {

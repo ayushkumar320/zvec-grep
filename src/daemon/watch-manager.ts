@@ -207,7 +207,10 @@ export class WatchManager {
   }
 
   private newChangeSet(): ChangeSet {
-    return new ChangeSet({ maxChangedPaths: this.options.maxChangedPaths });
+    return new ChangeSet({
+      root: this.options.root,
+      maxChangedPaths: this.options.maxChangedPaths,
+    });
   }
 
   private startFlush(): Promise<void> {

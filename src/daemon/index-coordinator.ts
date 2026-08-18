@@ -11,9 +11,6 @@ export type IndexCoordinatorOptions = {
     report: (progress: IndexProgress) => void,
     signal: AbortSignal,
   ) => Promise<IndexReconciliationProof | void>;
-  getIndexedFileCount?: () => number | undefined;
-  fullReconcileRatio?: number;
-  minRatioChangedPaths?: number;
 };
 
 export type IndexReconciliationProof = {
@@ -23,27 +20,17 @@ export type IndexReconciliationProof = {
 };
 
 export class IndexCoordinator {
-  private pending = new ChangeSet();
+  private pending: ChangeSet;
   private targetRevision = 0;
 
-  constructor(private readonly options: IndexCoordinatorOptions) {}
+  constructor(private readonly options: IndexCoordinatorOptions) {
+    this.pending = this.newChangeSet();
+  }
 
   enqueue(
     changes: ChangeSetSnapshot,
     reason: "watch" | "reconcile" = "watch",
   ): IndexJobSnapshot {
-    const indexedFiles = this.options.getIndexedFileCount?.();
-    const changedPathCount =
-      changes.touchedFiles.length +
-      changes.rescanDirectories.length +
-      changes.deletedPrefixes.length;
-    if (
-      indexedFiles &&
-      changedPathCount >= (this.options.minRatioChangedPaths ?? 10) &&
-      changedPathCount / indexedFiles > (this.options.fullReconcileRatio ?? 0.2)
-    ) {
-      changes = { ...changes, forceFullReconcile: true };
-    }
     if (changes.forceFullReconcile) {
       this.options.runtime.requireFullReconciliation();
     }
@@ -59,7 +46,7 @@ export class IndexCoordinator {
         if (!jobChanges) {
           jobChanges = this.pending.snapshot();
           jobRevision = this.targetRevision;
-          this.pending = new ChangeSet();
+          this.pending = this.newChangeSet();
         }
         if (
           !jobChanges.forceFullReconcile &&
@@ -86,5 +73,9 @@ export class IndexCoordinator {
       },
     });
     return submitted.job;
+  }
+
+  private newChangeSet(): ChangeSet {
+    return new ChangeSet({ root: this.options.runtime.canonicalRoot });
   }
 }

@@ -147,6 +147,10 @@ file-system watchers can silently miss events, the Server schedules an hourly
 full reconciliation probe; the next search uses it to scan the Workspace and
 repair index drift.
 
+Large bursts of exact watcher events are compacted into directory-scoped
+updates. A full reconciliation is reserved for watcher errors, missing event
+paths, resume drift, and other cases where events may have been lost.
+
 ## Endpoint and toolset
 
 The default endpoint is:

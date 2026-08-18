@@ -379,11 +379,22 @@ async function runPathIndexPass(
     };
   });
   throwIfIndexCancelled(ctx);
+  const exactExisting: FileInfo[] = [];
+  const prefixPaths: string[] = [];
+  for (const path of changedPaths) {
+    const exact = ctx.storage.getFileByPath(path);
+    if (exact) {
+      exactExisting.push(exact);
+    } else {
+      prefixPaths.push(path);
+    }
+  }
   const existing = [
     ...new Map(
-      changedPaths
-        .flatMap((path) => ctx.storage.listFilesByPathPrefix(path))
-        .map((file) => [file.id, file]),
+      [
+        ...exactExisting,
+        ...ctx.storage.listFilesByPathPrefixes(prefixPaths),
+      ].map((file) => [file.id, file]),
     ).values(),
   ];
   return runDiffPass(
@@ -405,9 +416,11 @@ async function runIndexPass(
   progressBase?: IndexProgressBase,
 ): Promise<IndexPassResult> {
   reportScanning(report, scanningDetail, progressBase);
+  const existing = ctx.storage.listFiles();
   const scan = await timings.time("index_scan", () =>
     scanRootPaths(ctx.workspaceIndex.id, ctx.workspaceIndex.rootPaths, {
       signal: ctx.signal,
+      knownFiles: existing,
     }),
   );
   throwIfIndexCancelled(ctx);
@@ -415,7 +428,7 @@ async function runIndexPass(
     ctx,
     report,
     scan.files,
-    ctx.storage.listFiles(),
+    existing,
     timings,
     progressBase,
     scan.diagnostics,

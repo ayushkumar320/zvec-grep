@@ -100,6 +100,7 @@ export type DaemonBackendOptions = {
 type DaemonIndexInput = ZvecGrepIndexRequest & {
   changedPaths?: readonly string[];
   runtimeOverridesAreEphemeral?: boolean;
+  skipInitialStatus?: boolean;
 };
 
 export class DaemonBackend implements ZvecGrepDaemonBackend {
@@ -750,17 +751,19 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
     signal?: AbortSignal,
   ): Promise<IndexReconciliationProof> {
     const startedAt = Date.now();
-    // Watcher path updates already identify their indexing scope, so avoid a
-    // workspace-wide status scan here. Silent watcher misses are repaired by
-    // the periodic full-reconciliation probes scheduled by WatchManager.
+    // Watcher path updates already identify their indexing scope. Uncertain
+    // watcher reconciliations are verified by the final status scan, so neither
+    // path needs another workspace-wide status scan before indexing starts.
     const includeInitialStatus =
-      input.rebuild !== true && input.changedPaths === undefined;
+      input.skipInitialStatus !== true &&
+      input.rebuild !== true &&
+      input.changedPaths === undefined;
     const includeFinalStatus = input.changedPaths === undefined;
     const before = await this.inspectRoot(
       runtime.canonicalRoot,
       includeInitialStatus,
     );
-    if (input.changedPaths === undefined) {
+    if (includeInitialStatus) {
       this.statusCache.set(runtime.canonicalRoot, before);
     }
     const modelLoadRequest = this.indexModelLoadRequest(before, input);
@@ -916,8 +919,6 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
     const coordinator = new IndexCoordinator({
       runtime,
       scheduler: this.scheduler,
-      getIndexedFileCount: () =>
-        this.statusCache.get(runtime.canonicalRoot)?.status?.filesStored,
       run: async (changes, report, signal) => {
         const changedPaths = [
           ...changes.touchedFiles,
@@ -940,6 +941,7 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
           {
             root: runtime.canonicalRoot,
             changedPaths: changes.forceFullReconcile ? undefined : changedPaths,
+            skipInitialStatus: changes.forceFullReconcile,
           },
           report,
           automaticAuthorization.authorization,

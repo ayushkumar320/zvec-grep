@@ -49,6 +49,7 @@ export interface WorkspaceIndexStorage {
   readonly readOnly: boolean;
   getFileByPath(absolutePath: string): FileInfo | null;
   listFilesByPathPrefix(absolutePath: string): FileInfo[];
+  listFilesByPathPrefixes(absolutePaths: readonly string[]): FileInfo[];
   listFiles(): FileInfo[];
   listEntitiesByFile(
     fileId: string,
