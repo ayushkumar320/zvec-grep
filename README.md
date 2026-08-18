@@ -84,7 +84,10 @@ opencode run --model opencode/deepseek-v4-flash-free \
   "An unseen creature left a few marks. What did the detective infer? Cite local evidence."
 ```
 
-OpenCode chooses zg on its own—the prompt does not name a tool:
+OpenCode chooses zg on its own—the prompt does not name a tool.
+
+<details>
+<summary><strong>See the full agent run and answer</strong></summary>
 
 ```text
 ⚙ zvec_grep_zvec_grep_search {"root":".../zg-mystery","query":"An unseen creature left a few marks. What did the detective infer?","fts":["marks","unseen creature","inferred","detective"],"fuse":true}
@@ -107,6 +110,8 @@ From the animal's foot-marks, he inferred:
 Holmes also inferred that a man entered through the window with it and later
 left with the key (sherlock-holmes.txt:5464-5470, 5527-5528).
 ```
+
+</details>
 
 #### For humans: search directly
 
