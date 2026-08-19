@@ -138,13 +138,12 @@ and limits; **only `zg` access and usage guidance differ**.
 
 <img src="./.github/assets/benchmark-comparison-v2.svg" alt="Paired baseline and zvec-grep comparison for SWE-QA-Bench and BrowseComp-Plus" width="900" />
 
-| Benchmark | Answer&nbsp;quality&nbsp;↑ | Input&nbsp;tokens&nbsp;↓ | Tool&nbsp;calls&nbsp;↓ | Agent&nbsp;time&nbsp;↓ |
+| Benchmark | Answer&nbsp;quality&nbsp;↑ | Avg.&nbsp;input&nbsp;tokens&nbsp;↓ | Avg.&nbsp;tool&nbsp;calls&nbsp;↓ | Avg.&nbsp;agent&nbsp;time&nbsp;↓ |
 | --- | ---: | ---: | ---: | ---: |
-| [**SWE-QA-Bench**](./benchmarks/swe-qa-bench/README.md)<br>20 tasks · Codebase QA | Judge Score<br>80.42&nbsp;→&nbsp;81.92<br>**+1.50 pts** | **−47.3%** | **−58.6%** | **−37.5%** |
-| [**BrowseComp-Plus**](./benchmarks/browse-comp-plus/README.md)<br>80 cases · Deep-research QA | Accuracy<br>90.00%&nbsp;→&nbsp;90.00% | **−41.7%** | **−37.3%** | **−30.0%** |
+| [**SWE-QA-Bench**](./benchmarks/swe-qa-bench/README.md)<br>20 tasks · Codebase QA | Judge Score<br>80.42&nbsp;→&nbsp;81.92 | 558,651&nbsp;→&nbsp;294,262 | 23.42&nbsp;→&nbsp;9.70 | 127.5s&nbsp;→&nbsp;79.7s |
+| [**BrowseComp-Plus**](./benchmarks/browse-comp-plus/README.md)<br>80 cases · Deep-research QA | Accuracy<br>90.00%&nbsp;→&nbsp;90.00% | 2.04M&nbsp;→&nbsp;1.19M | 22.70&nbsp;→&nbsp;14.24 | 284.8s&nbsp;→&nbsp;199.3s |
 
-Changes are measured against the **baseline**: higher quality and lower resource
-use mean better results with zg.
+Values show **Baseline → zg**.
 
 See the [benchmark documentation](./benchmarks/README.md) for full results and
 reproduction details.

@@ -134,12 +134,12 @@ zg 通过**缩小有效搜索空间**，帮助 Agent 更快找到相关证据 �
 
 <img src="./.github/assets/benchmark-comparison-cn-v2.svg" alt="SWE-QA-Bench 和 BrowseComp-Plus 中 Baseline 与 zvec-grep 的配对对比" width="900" />
 
-| 测试 | 回答质量&nbsp;↑ | 输入&nbsp;Token&nbsp;↓ | 工具调用&nbsp;↓ | Agent&nbsp;耗时&nbsp;↓ |
+| 测试 | 回答质量&nbsp;↑ | 平均输入&nbsp;Token&nbsp;↓ | 平均工具调用&nbsp;↓ | 平均&nbsp;Agent&nbsp;耗时&nbsp;↓ |
 | --- | ---: | ---: | ---: | ---: |
-| [**SWE-QA-Bench**](./benchmarks/swe-qa-bench/README_CN.md)<br>20 个任务 · 代码库 QA | 评审得分<br>80.42&nbsp;→&nbsp;81.92<br>**+1.50 分** | **−47.3%** | **−58.6%** | **−37.5%** |
-| [**BrowseComp-Plus**](./benchmarks/browse-comp-plus/README_CN.md)<br>80 个样例 · 深度研究 QA | 准确率<br>90.00%&nbsp;→&nbsp;90.00% | **−41.7%** | **−37.3%** | **−30.0%** |
+| [**SWE-QA-Bench**](./benchmarks/swe-qa-bench/README_CN.md)<br>20 个任务 · 代码库 QA | 评审得分<br>80.42&nbsp;→&nbsp;81.92 | 558,651&nbsp;→&nbsp;294,262 | 23.42&nbsp;→&nbsp;9.70 | 127.5s&nbsp;→&nbsp;79.7s |
+| [**BrowseComp-Plus**](./benchmarks/browse-comp-plus/README_CN.md)<br>80 个样例 · 深度研究 QA | 准确率<br>90.00%&nbsp;→&nbsp;90.00% | 2.04M&nbsp;→&nbsp;1.19M | 22.70&nbsp;→&nbsp;14.24 | 284.8s&nbsp;→&nbsp;199.3s |
 
-所有变化均以**基线**为参照：回答质量越高、资源使用越少，表示 zg 带来的提升越大。
+表中数值均按 **Baseline → zg** 展示。
 
 完整结果和复现细节参见[性能测试文档](./benchmarks/README_CN.md)。
 
