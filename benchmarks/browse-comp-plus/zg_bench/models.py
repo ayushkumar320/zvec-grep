@@ -64,6 +64,7 @@ class TraceSummary:
 class AttemptResult:
     query_id: str
     profile: Profile
+    trial_index: int
     status: str
     attempt: int
     started_at: str
@@ -78,6 +79,7 @@ class AttemptResult:
         return {
             "query_id": self.query_id,
             "profile": self.profile,
+            "trial_index": self.trial_index,
             "status": self.status,
             "attempt": self.attempt,
             "started_at": self.started_at,

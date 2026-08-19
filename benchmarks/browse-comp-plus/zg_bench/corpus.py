@@ -123,6 +123,24 @@ def prepared_corpus(config: BenchmarkConfig, artifacts: Path) -> Path | None:
     return state_path
 
 
+def validate_workspace(artifacts: Path, profile: str) -> None:
+    state_path = artifacts / "state" / "corpus.json"
+    if not state_path.is_file():
+        raise RuntimeError("corpus state is missing")
+    state = read_json(state_path)
+    snapshots = state.get("workspace_snapshots")
+    if not isinstance(snapshots, dict) or not isinstance(
+        snapshots.get(profile), dict
+    ):
+        raise RuntimeError(f"corpus state is missing the {profile} snapshot")
+    root = workspace_root(artifacts, profile)
+    if not root.is_dir() or _workspace_snapshot(root) != snapshots[profile]:
+        raise RuntimeError(
+            f"{profile} workspace changed during benchmark execution; "
+            "restore the prepared corpus before continuing"
+        )
+
+
 def materialize(
     config: BenchmarkConfig,
     artifacts: Path,

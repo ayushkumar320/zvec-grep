@@ -15,6 +15,7 @@ from .artifacts import (
     find_run,
     fingerprint,
     new_run_id,
+    next_attempt_number,
     read_json,
     sha256_file,
     utc_now,
@@ -26,7 +27,7 @@ from .codex import (
 )
 from .console import Console
 from .config import BENCHMARK_ROOT, BenchmarkConfig, PROMPT_PATH, SUITES_DIR
-from .corpus import prepared_corpus
+from .corpus import prepared_corpus, validate_workspace
 from .dataset import load_queries, prepared_dataset
 from .index import prepared_index
 from .models import PROFILES, AttemptResult, Profile
@@ -174,17 +175,25 @@ def load_suite(name: str, queries: list[dict[str, Any]]) -> list[str]:
 
 
 def _randomized_profile_orders(
-    query_ids: list[str],
-) -> dict[str, tuple[Profile, Profile]]:
+    query_ids: list[str], trials_per_case: int
+) -> dict[str, dict[int, tuple[Profile, Profile]]]:
     rng = random.SystemRandom()
-    orders: list[tuple[Profile, Profile]] = [PROFILES] * (len(query_ids) // 2)
-    orders.extend(
-        [("zvec-grep", "baseline")] * (len(query_ids) // 2)
-    )
-    if len(query_ids) % 2:
+    blocks = [
+        (query_id, trial_index)
+        for query_id in query_ids
+        for trial_index in range(1, trials_per_case + 1)
+    ]
+    orders: list[tuple[Profile, Profile]] = [PROFILES] * (len(blocks) // 2)
+    orders.extend([("zvec-grep", "baseline")] * (len(blocks) // 2))
+    if len(blocks) % 2:
         orders.append(rng.choice((PROFILES, ("zvec-grep", "baseline"))))
     rng.shuffle(orders)
-    return dict(zip(query_ids, orders, strict=True))
+    output: dict[str, dict[int, tuple[Profile, Profile]]] = {
+        query_id: {} for query_id in query_ids
+    }
+    for (query_id, trial_index), order in zip(blocks, orders, strict=True):
+        output[query_id][trial_index] = order
+    return output
 
 
 def _prompt(query: str) -> str:
@@ -192,16 +201,27 @@ def _prompt(query: str) -> str:
     return template.replace("{query}", query).rstrip() + "\n"
 
 
-def _result_path(run_root: Path, query_id: str, profile: Profile) -> Path:
-    return run_root / "cases" / query_id / profile / "result.json"
+def _result_path(
+    run_root: Path, query_id: str, profile: Profile, trial_index: int
+) -> Path:
+    return (
+        run_root
+        / "cases"
+        / query_id
+        / profile
+        / "trials"
+        / f"trial-{trial_index:03d}"
+        / "result.json"
+    )
 
 
 def _attempt_results(selected_path: Path) -> list[dict[str, Any]]:
     attempts_root = selected_path.parent / "attempts"
-    return [
+    results = [
         read_json(path)
         for path in sorted(attempts_root.glob("attempt-*/result.json"))
     ]
+    return sorted(results, key=lambda result: int(result["attempt"]))
 
 
 def _remaining_attempts(config: BenchmarkConfig, selected_path: Path) -> int:
@@ -210,6 +230,26 @@ def _remaining_attempts(config: BenchmarkConfig, selected_path: Path) -> int:
         for result in _attempt_results(selected_path)
     )
     return max(0, config.run.infrastructure_retries + 1 - failures)
+
+
+def _validate_result_identity(
+    result: dict[str, Any],
+    *,
+    query_id: str,
+    profile: Profile,
+    trial_index: int,
+    path: Path,
+) -> None:
+    expected = (query_id, profile, trial_index)
+    actual = (
+        str(result.get("query_id")),
+        result.get("profile"),
+        result.get("trial_index"),
+    )
+    if actual != expected:
+        raise RuntimeError(
+            f"trial identity mismatch in {path}: expected {expected}, found {actual}"
+        )
 
 
 def _needs_run(config: BenchmarkConfig, path: Path) -> bool:
@@ -229,20 +269,41 @@ def _run_profile(
     run_root: Path,
     query: dict[str, Any],
     profile: Profile,
+    trial_index: int,
     model: str,
     reasoning_effort: str,
     profiles_root: Path,
     codex_bin: str,
 ) -> AttemptResult:
     query_id = str(query["query_id"])
-    selected_path = _result_path(run_root, query_id, profile)
+    selected_path = _result_path(run_root, query_id, profile, trial_index)
     persisted_attempts = _attempt_results(selected_path)
     if selected_path.is_file():
         existing = read_json(selected_path)
+        _validate_result_identity(
+            existing,
+            query_id=query_id,
+            profile=profile,
+            trial_index=trial_index,
+            path=selected_path,
+        )
         if not _needs_run(config, selected_path):
             return _result_from_dict(existing)
     elif persisted_attempts:
         latest = persisted_attempts[-1]
+        latest_path = (
+            selected_path.parent
+            / "attempts"
+            / f"attempt-{int(latest['attempt']):03d}"
+            / "result.json"
+        )
+        _validate_result_identity(
+            latest,
+            query_id=query_id,
+            profile=profile,
+            trial_index=trial_index,
+            path=latest_path,
+        )
         if (
             latest["status"] in {"completed", "failed"}
             or _remaining_attempts(config, selected_path) == 0
@@ -252,8 +313,7 @@ def _run_profile(
 
     attempts_root = selected_path.parent / "attempts"
     attempts_root.mkdir(parents=True, exist_ok=True)
-    existing_attempts = sorted(attempts_root.glob("attempt-*"))
-    first_attempt = len(existing_attempts) + 1
+    first_attempt = next_attempt_number(attempts_root)
     final: AttemptResult | None = None
     for offset in range(_remaining_attempts(config, selected_path)):
         number = first_attempt + offset
@@ -262,6 +322,7 @@ def _run_profile(
             config,
             artifacts,
             query_id=query_id,
+            trial_index=trial_index,
             prompt=_prompt(str(query["query"])),
             profile=profile,
             model=model,
@@ -272,6 +333,7 @@ def _run_profile(
             codex_bin=codex_bin,
             idle_timeout_seconds=config.run.idle_timeout_seconds,
         )
+        validate_workspace(artifacts, profile)
         if (
             final.status == "completed"
             or not final.infrastructure_failure
@@ -288,8 +350,12 @@ def _execution_source_fingerprint() -> str:
         for name in (
             "codex.py",
             "config.py",
+            "artifacts.py",
+            "corpus.py",
             "dataset.py",
+            "index.py",
             "models.py",
+            "process.py",
             "profiles.py",
             "runner.py",
             "trace.py",
@@ -309,7 +375,7 @@ def _run_protocol(
     suite: str,
     query_ids: list[str],
     queries: dict[str, dict[str, Any]],
-    profile_orders: dict[str, tuple[Profile, Profile]],
+    profile_orders: dict[str, dict[int, tuple[Profile, Profile]]],
     model: str,
     reasoning_effort: str,
     codex: Path,
@@ -332,8 +398,9 @@ def _run_protocol(
             for query_id in query_ids
         ),
         "profile_orders_sha256": fingerprint(
-            f"{query_id}:{','.join(profile_orders[query_id])}"
+            f"{query_id}:{trial_index}:{','.join(profile_orders[query_id][trial_index])}"
             for query_id in query_ids
+            for trial_index in sorted(profile_orders[query_id])
         ),
         "corpus_fingerprint": corpus_state["fingerprint"],
         "index_fingerprint": index_state["fingerprint"],
@@ -351,6 +418,7 @@ def _run_protocol(
         "history_persistence": "none",
         "git_ceiling": "workspace-parent",
         "infrastructure_retries": config.run.infrastructure_retries,
+        "trials_per_case": config.run.trials_per_case,
         "idle_timeout_seconds": config.run.idle_timeout_seconds,
         "mcp_tool_timeout_seconds": config.zvec_grep.mcp_tool_timeout_seconds,
         "server_port": config.zvec_grep.server_port,
@@ -395,6 +463,7 @@ def _result_from_dict(raw: dict[str, Any]) -> AttemptResult:
     return AttemptResult(
         query_id=str(raw["query_id"]),
         profile=raw["profile"],
+        trial_index=int(raw["trial_index"]),
         status=str(raw["status"]),
         attempt=int(raw["attempt"]),
         started_at=str(raw["started_at"]),
@@ -416,16 +485,7 @@ def _result_from_dict(raw: dict[str, Any]) -> AttemptResult:
     )
 
 
-def _write_pair(run_root: Path, query_id: str) -> bool:
-    results: dict[str, Any] = {}
-    for profile in PROFILES:
-        path = _result_path(run_root, query_id, profile)
-        if not path.is_file():
-            return False
-        results[profile] = read_json(path)
-    baseline = results["baseline"]
-    treatment = results["zvec-grep"]
-
+def _write_pair(run_root: Path, query_id: str, trials_per_case: int) -> bool:
     def metrics(result: dict[str, Any]) -> dict[str, Any]:
         calls = result["trace"].get("tool_calls", [])
         counts: dict[str, int] = {}
@@ -439,19 +499,60 @@ def _write_pair(run_root: Path, query_id: str) -> bool:
             "tool_calls": len(calls),
             "tool_call_counts": counts,
             "observed_docids": len(result["trace"].get("observed_docids", [])),
+            "result": str(
+                _result_path(
+                    run_root,
+                    query_id,
+                    result["profile"],
+                    int(result["trial_index"]),
+                ).resolve()
+            ),
         }
+
+    trials: list[dict[str, Any]] = []
+    complete = True
+    for trial_index in range(1, trials_per_case + 1):
+        results: dict[str, Any] = {}
+        for profile in PROFILES:
+            path = _result_path(run_root, query_id, profile, trial_index)
+            if not path.is_file():
+                complete = False
+                continue
+            result = read_json(path)
+            _validate_result_identity(
+                result,
+                query_id=query_id,
+                profile=profile,
+                trial_index=trial_index,
+                path=path,
+            )
+            results[profile] = result
+        if len(results) != len(PROFILES):
+            continue
+        trial = {
+            "trial_index": trial_index,
+            "eligible": all(
+                result["status"] == "completed" for result in results.values()
+            ),
+            **{profile: metrics(results[profile]) for profile in PROFILES},
+        }
+        trials.append(trial)
 
     pair = {
         "query_id": query_id,
-        "eligible": all(result["status"] == "completed" for result in results.values()),
-        "baseline": metrics(baseline),
-        "zvec-grep": metrics(treatment),
+        "expected_trials": trials_per_case,
+        "persisted_trials": len(trials),
+        "eligible_trials": sum(bool(trial["eligible"]) for trial in trials),
+        "eligible": complete
+        and len(trials) == trials_per_case
+        and all(trial["eligible"] for trial in trials),
+        "trials": trials,
     }
     write_json(run_root / "cases" / query_id / "pair.json", pair)
-    return True
+    return bool(pair["eligible"])
 
 
-def completed_pairs(run_root: Path, query_ids: list[str]) -> int:
+def completed_cases(run_root: Path, query_ids: list[str]) -> int:
     count = 0
     for query_id in query_ids:
         path = run_root / "cases" / query_id / "pair.json"
@@ -516,14 +617,21 @@ def run_benchmark(
         metadata = read_json(metadata_path)
         query_ids = [str(value) for value in metadata["query_ids"]]
         profile_orders = {
-            str(query_id): tuple(order)
-            for query_id, order in metadata["profile_orders"].items()
+            str(query_id): {
+                int(trial_index): tuple(order)
+                for trial_index, order in trials.items()
+            }
+            for query_id, trials in metadata["profile_orders"].items()
         }
         if metadata["model"] != model:
             raise RuntimeError("cannot resume a run after changing [run].model")
         if metadata["reasoning_effort"] != reasoning_effort:
             raise RuntimeError(
                 "cannot resume a run after changing [run].reasoning_effort"
+            )
+        if metadata["trials_per_case"] != config.run.trials_per_case:
+            raise RuntimeError(
+                "cannot resume a run after changing [run].trials_per_case"
             )
         suite = str(metadata["suite"])
         recorded_manifest = Path(metadata["profiles_manifest"])
@@ -557,7 +665,9 @@ def run_benchmark(
             for name in ("corpus", "index")
         }
         query_ids = load_suite(suite, queries)
-        profile_orders = _randomized_profile_orders(query_ids)
+        profile_orders = _randomized_profile_orders(
+            query_ids, config.run.trials_per_case
+        )
         corpus_state = read_json(required_states["corpus"])
         index_state = read_json(required_states["index"])
 
@@ -565,14 +675,18 @@ def run_benchmark(
     if missing:
         raise RuntimeError(f"run references missing queries: {', '.join(missing)}")
     for query_id in query_ids:
-        _write_pair(run_root, query_id)
-    tasks: list[tuple[dict[str, Any], Profile]] = []
+        _write_pair(run_root, query_id, config.run.trials_per_case)
+    tasks: list[tuple[dict[str, Any], int, Profile]] = []
     for query_id in query_ids:
-        for profile in profile_orders[query_id]:
-            if _needs_run(config, _result_path(run_root, query_id, profile)):
-                tasks.append((by_id[query_id], profile))
+        for trial_index in range(1, config.run.trials_per_case + 1):
+            for profile in profile_orders[query_id][trial_index]:
+                if _needs_run(
+                    config,
+                    _result_path(run_root, query_id, profile, trial_index),
+                ):
+                    tasks.append((by_id[query_id], trial_index, profile))
     server_required = new_run or any(
-        profile == "zvec-grep" for _, profile in tasks
+        profile == "zvec-grep" for _, _, profile in tasks
     )
     benchmark_error: BaseException | None = None
     with _cleanup_on_termination():
@@ -627,9 +741,13 @@ def run_benchmark(
                     "model": model,
                     "reasoning_effort": reasoning_effort,
                     "profiles": list(PROFILES),
+                    "trials_per_case": config.run.trials_per_case,
                     "profile_orders": {
-                        query_id: list(order)
-                        for query_id, order in profile_orders.items()
+                        query_id: {
+                            str(trial_index): list(order)
+                            for trial_index, order in trials.items()
+                        }
+                        for query_id, trials in profile_orders.items()
                     },
                     "profiles_manifest": str(profiles_manifest_path.resolve()),
                     "profiles_fingerprint": profile_manifest["fingerprint"],
@@ -647,6 +765,8 @@ def run_benchmark(
                     "index_build_wall_seconds": float(
                         index_state["build_wall_seconds"]
                     ),
+                    "index_bytes": int(index_state["index_bytes"]),
+                    "index_statistics": dict(index_state["statistics"]),
                     "runtime_setups": [],
                 }
                 write_json(metadata_path, metadata)
@@ -683,7 +803,7 @@ def run_benchmark(
                     flush=True,
                 )
 
-            for query, profile in tasks:
+            for query, trial_index, profile in tasks:
                 query_id = str(query["query_id"])
                 result = _run_profile(
                     config,
@@ -691,22 +811,26 @@ def run_benchmark(
                     run_root,
                     query,
                     profile,
+                    trial_index,
                     model,
                     reasoning_effort,
                     profiles_root,
                     str(codex),
                 )
-                _write_pair(run_root, query_id)
-                done = completed_pairs(run_root, query_ids)
+                _write_pair(
+                    run_root, query_id, config.run.trials_per_case
+                )
+                done = completed_cases(run_root, query_ids)
                 print(
                     json.dumps(
                         {
                             "run_id": run_id,
                             "query_id": query_id,
                             "profile": profile,
+                            "trial_index": trial_index,
                             "status": result.status,
-                            "pairs": done,
-                            "total_pairs": len(query_ids),
+                            "completed_cases": done,
+                            "total_cases": len(query_ids),
                             "input_tokens": (
                                 result.trace.usage.input_tokens
                                 if result.trace.usage
@@ -724,13 +848,35 @@ def run_benchmark(
                 )
 
             metadata["finished_at"] = utc_now()
-            metadata["completed_pairs"] = completed_pairs(run_root, query_ids)
+            metadata["completed_cases"] = completed_cases(run_root, query_ids)
+            metadata.pop("error", None)
+            metadata["status"] = (
+                "completed"
+                if metadata["completed_cases"] == len(query_ids)
+                else "partial"
+            )
             write_json(metadata_path, metadata)
             from .report import generate_report
 
             generate_report(run_root)
         except BaseException as error:
             benchmark_error = error
+            if metadata_path.is_file():
+                failed_metadata = read_json(metadata_path)
+                failed_metadata["finished_at"] = utc_now()
+                failed_metadata["completed_cases"] = completed_cases(
+                    run_root, query_ids
+                )
+                failed_metadata["status"] = (
+                    "interrupted"
+                    if isinstance(error, (KeyboardInterrupt, RunTerminated))
+                    else "failed"
+                )
+                failed_metadata["error"] = {
+                    "type": type(error).__name__,
+                    "message": str(error),
+                }
+                write_json(metadata_path, failed_metadata)
             raise
         finally:
             if server_required:

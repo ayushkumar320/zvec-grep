@@ -3,23 +3,35 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 import statistics
 from collections import Counter
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from .artifacts import atomic_write_text, read_json, utc_now, write_json
 from .dataset import load_queries
-from .models import PROFILES
-from .trace import extract_docids, mcp_result_text, parse_trace
+from .models import PROFILES, Profile
+from .trace import extract_docids, mcp_result_text
+
+
+ZG_COMMAND_PATTERN = re.compile(r"(?:^|[;&|()\s])zg(?:\s|$)")
+
+
+def _is_zvec_tool(name: str) -> bool:
+    return name.startswith(("zvec_grep", "zvec-grep"))
+
+
+def _mean(values: list[float]) -> float | None:
+    return statistics.fmean(values) if values else None
 
 
 def _median(values: list[float]) -> float | None:
     return statistics.median(values) if values else None
 
 
-def _display_number(value: int | float | None, *, digits: int = 2) -> str:
-    return "-" if value is None else f"{value:.{digits}f}"
+def _display(value: int | float | None, *, digits: int = 2) -> str:
+    return "-" if value is None else f"{value:,.{digits}f}"
 
 
 def _markdown_cell(value: Any) -> str:
@@ -28,531 +40,236 @@ def _markdown_cell(value: Any) -> str:
     return str(value).replace("|", "\\|").replace("\n", " ")
 
 
-def _aggregate(
-    rows: list[dict[str, Any]], profile: str, run_root: Path
+def _pairs(run_root: Path) -> list[dict[str, Any]]:
+    metadata = read_json(run_root / "run.json")
+    pairs: list[dict[str, Any]] = []
+    for query_id in map(str, metadata["query_ids"]):
+        path = run_root / "cases" / query_id / "pair.json"
+        if not path.is_file():
+            continue
+        pair = read_json(path)
+        if str(pair.get("query_id")) != query_id:
+            raise RuntimeError(
+                f"pair identity mismatch in {path}: expected {query_id!r}"
+            )
+        pairs.append(pair)
+    return pairs
+
+
+def _trial_pairs(pairs: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    for pair in pairs:
+        for trial in pair["trials"]:
+            output.append({"query_id": str(pair["query_id"]), **trial})
+    return output
+
+
+def _result(trial: dict[str, Any], profile: Profile) -> dict[str, Any]:
+    return read_json(Path(trial[profile]["result"]))
+
+
+def _judge_path(
+    run_root: Path, profile: Profile, query_id: str, trial_index: int
+) -> Path:
+    return (
+        run_root
+        / "evaluation"
+        / "results"
+        / profile
+        / query_id
+        / f"trial-{trial_index:03d}.json"
+    )
+
+
+def _judgement(
+    run_root: Path, profile: Profile, query_id: str, trial_index: int
+) -> dict[str, Any] | None:
+    path = _judge_path(run_root, profile, query_id, trial_index)
+    from .evaluate import _completed_judgement
+
+    if not _completed_judgement(
+        path,
+        run_root=run_root,
+        profile=profile,
+        query_id=query_id,
+        trial_index=trial_index,
+    ):
+        return None
+    return read_json(path)
+
+
+def _number_summary(values: list[float]) -> dict[str, int | float | None]:
+    return {
+        "available": len(values),
+        "total": sum(values),
+        "mean": _mean(values),
+        "median": _median(values),
+    }
+
+
+def _aggregate_profile(
+    trials: list[dict[str, Any]], profile: Profile
 ) -> dict[str, Any]:
-    selected = [row[profile] for row in rows]
+    selected = [trial[profile] for trial in trials]
     completed = [row for row in selected if row["status"] == "completed"]
     measured = [row for row in completed if isinstance(row.get("usage"), dict)]
+
+    def token_values(key: str) -> list[float]:
+        return [float(row["usage"].get(key, 0)) for row in measured]
+
+    input_tokens = token_values("input_tokens")
+    cached_input_tokens = token_values("cached_input_tokens")
+    output_tokens = token_values("output_tokens")
+    reasoning_tokens = token_values("reasoning_output_tokens")
+    total_tokens = [
+        input_value + output_value
+        for input_value, output_value in zip(
+            input_tokens, output_tokens, strict=True
+        )
+    ]
+    wall_seconds = [float(row["wall_seconds"]) for row in completed]
+    tool_calls = [float(row.get("tool_calls", 0)) for row in completed]
+    command_calls = [
+        float(row.get("tool_call_counts", {}).get("command_execution", 0))
+        for row in completed
+    ]
+    zvec_calls = [
+        float(
+            sum(
+                count
+                for name, count in row.get("tool_call_counts", {}).items()
+                if _is_zvec_tool(str(name))
+            )
+        )
+        for row in completed
+    ]
+    observed_docids = [float(row.get("observed_docids", 0)) for row in completed]
     return {
-        "attempts": len(selected),
+        "trials": len(selected),
         "completed": len(completed),
         "status_counts": dict(Counter(row["status"] for row in selected)),
         "tokens": {
-            "input_total": sum(row["usage"].get("input_tokens", 0) for row in measured),
-            "cached_input_total": sum(
-                row["usage"].get("cached_input_tokens", 0) for row in measured
-            ),
-            "output_total": sum(
-                row["usage"].get("output_tokens", 0) for row in measured
-            ),
-            "reasoning_output_total": sum(
-                row["usage"].get("reasoning_output_tokens", 0) for row in measured
-            ),
-            "available": len(measured),
+            "input": _number_summary(input_tokens),
+            "cached_input": _number_summary(cached_input_tokens),
+            "output": _number_summary(output_tokens),
+            "reasoning_output": _number_summary(reasoning_tokens),
+            "total": _number_summary(total_tokens),
             "unavailable": len(completed) - len(measured),
-            "median_total": _median(
-                [
-                    row["usage"].get("input_tokens", 0)
-                    + row["usage"].get("output_tokens", 0)
-                    for row in measured
-                ]
-            ),
         },
-        "wall_seconds": {
-            "total": sum(float(row["wall_seconds"]) for row in completed),
-            "median": _median([float(row["wall_seconds"]) for row in completed]),
-        },
+        "wall_seconds": _number_summary(wall_seconds),
         "tools": {
-            "total": sum(int(row.get("tool_calls", 0)) for row in completed),
-            "commands": sum(
-                int(row.get("tool_call_counts", {}).get("command_execution", 0))
-                for row in completed
-            ),
-            "zvec_search": sum(
-                int(row.get("tool_call_counts", {}).get("zvec_grep_search", 0))
-                for row in completed
-            ),
-            "observed_docids": sum(
-                len(
-                    _observed_docids(
-                        Path(
-                            read_json(
-                                run_root
-                                / "cases"
-                                / str(pair["query_id"])
-                                / profile
-                                / "result.json"
-                            )["paths"]["events"]
-                        )
-                    )
-                )
-                for pair in rows
-                if pair[profile]["status"] == "completed"
-            ),
+            "all": _number_summary(tool_calls),
+            "commands": _number_summary(command_calls),
+            "zvec_grep": _number_summary(zvec_calls),
+            "observed_docids": _number_summary(observed_docids),
         },
     }
 
 
-def _pairs(run_root: Path) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for path in sorted((run_root / "cases").glob("*/pair.json")):
-        rows.append(read_json(path))
-    return rows
-
-
-def generate_report(run_root: Path) -> Path:
-    metadata = read_json(run_root / "run.json")
-    pairs = _pairs(run_root)
-    eligible_pairs = [pair for pair in pairs if pair["eligible"]]
-    query_path = run_root.parent.parent / "source" / "browsecomp_plus_decrypted.jsonl"
-    queries = {str(query["query_id"]): query for query in load_queries(query_path)}
-    eligible_ids = {str(pair["query_id"]) for pair in eligible_pairs}
-    answer_quality = _judge_quality(run_root, eligible_ids)
-    usage_quality = _zvec_grep_usage_quality(
-        run_root, eligible_ids, str(metadata["suite"])
-    )
-    retrieval_quality = _retrieval_quality(run_root, eligible_pairs, queries)
-    interaction_quality = _tool_interaction_quality(
-        run_root, eligible_pairs, queries
-    )
-    evaluation_summary = run_root / "evaluation" / "summary.json"
-    evaluator = (
-        read_json(evaluation_summary) if evaluation_summary.is_file() else None
-    )
-    runtime_setups = metadata["runtime_setups"]
-    runtime_preparation = {
-        "sessions": len(runtime_setups),
-        "total_wall_seconds": sum(
-            float(setup["total_wall_seconds"]) for setup in runtime_setups
-        ),
-        "server_start_wall_seconds": sum(
-            float(setup["server_start_wall_seconds"]) for setup in runtime_setups
-        ),
-        "profile_preparation_wall_seconds": sum(
-            float(setup["profile_preparation_wall_seconds"])
-            for setup in runtime_setups
-        ),
-        "profile_install_wall_seconds": sum(
-            float(setup["profile_install_wall_seconds"])
-            for setup in runtime_setups
-        ),
-        "warmup_wall_seconds": sum(
-            float(setup["warmup_wall_seconds"]) for setup in runtime_setups
-        ),
-    }
-    summary = {
-        "generated_at": utc_now(),
-        "run_id": metadata["run_id"],
-        "suite": metadata["suite"],
-        "model": metadata["model"],
-        "reasoning_effort": metadata["reasoning_effort"],
-        "environment": metadata["environment"],
-        "index_build_wall_seconds": metadata["index_build_wall_seconds"],
-        "runtime_preparation": runtime_preparation,
-        "planned_pairs": len(metadata["query_ids"]),
-        "persisted_pairs": len(pairs),
-        "completed_pairs": sum(bool(pair["eligible"]) for pair in pairs),
-        "profiles": {
-            profile: _aggregate(eligible_pairs, profile, run_root)
-            for profile in PROFILES
-        },
-        "quality": {
-            "answer": answer_quality,
-            "retrieval": retrieval_quality,
-            "zvec_grep_usage": usage_quality,
-        },
-        "evaluator": evaluator,
-        "tool_interaction_batches": interaction_quality,
-    }
-    report_dir = run_root / "report"
-    write_json(report_dir / "summary.json", summary)
-    baseline = summary["profiles"]["baseline"]
-    treatment = summary["profiles"]["zvec-grep"]
-    quality_line = "pending evaluation"
-    if answer_quality.get("status") in {"scored", "partial"}:
-        pair_label = "pair" if answer_quality["scored_pairs"] == 1 else "pairs"
-        quality_line = (
-            f"Baseline {answer_quality['baseline_accuracy_percent']:.2f}% · "
-            f"zvec-grep {answer_quality['treatment_accuracy_percent']:.2f}% · "
-            f"{answer_quality['scored_pairs']} scored {pair_label}"
-        )
-        if answer_quality["status"] == "partial":
-            quality_line += " (partial)"
-    evaluator_section = ""
-    if evaluator:
-        evaluator_cost = evaluator["cost"]
-        evaluator_rows = "\n".join(
-            "| {label} | {completed_calls} | {usage_records} | {input_tokens} | "
-            "{cached_input_tokens} | {output_tokens} | "
-            "{reasoning_output_tokens} | {wall_seconds:.1f} |".format(
-                label=label,
-                usage_records=(
-                    f"{evaluator_cost[key]['usage_available']} / "
-                    f"{evaluator_cost[key]['completed_calls']}"
-                ),
-                **evaluator_cost[key],
-            )
-            for label, key in (
-                ("Answer judgements", "answer_judgements"),
-                ("zvec-grep usage audits", "zvec_grep_usage_audits"),
-                ("Total evaluator cost", "total"),
-            )
-        )
-        evaluator_section = f"""
-
-## Evaluator cost
-
-- Model: `{evaluator["model"]}`
-- Reasoning: `{evaluator["reasoning_effort"]}`
-- Scope: evaluator-only cost; excluded from baseline and zvec-grep run metrics
-
-| Workload | Completed calls | Usage records | Input tokens | Cached input tokens | Output tokens | Reasoning output tokens | Wall seconds |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-{evaluator_rows}
-"""
-    usage_audit_line = ""
-    usage_audit_section = ""
-    if usage_quality["status"] in {"scored", "partial"}:
-        usage_audit_line = (
-            f"\n- zvec-grep usage audit: {usage_quality['correct_cases']} / "
-            f"{usage_quality['evaluated_cases']} correct"
-        )
-        rows = "\n".join(
-            "| {query_id} | {used} | {correct} | {calls} | {reasoning} |".format(
-                query_id=row["query_id"],
-                used="Yes" if row["used_zvec_grep"] else "No",
-                correct="Yes" if row["correct_usage"] else "No",
-                calls=row["observed_zvec_grep_search_calls"],
-                reasoning=str(row["reasoning"])
-                .replace("|", "\\|")
-                .replace("\n", " "),
-            )
-            for row in usage_quality["cases"]
-        )
-        usage_audit_section = f"""
-
-## zvec-grep usage audit
-
-| Case | Used zvec-grep | Correct usage | Search calls | Reasoning |
-| --- | --- | --- | ---: | --- |
-{rows}
-"""
-    baseline_evidence = retrieval_quality["evidence"]["baseline"]
-    treatment_evidence = retrieval_quality["evidence"]["zvec-grep"]
-    baseline_gold = retrieval_quality["gold"]["baseline"]
-    treatment_gold = retrieval_quality["gold"]["zvec-grep"]
-    baseline_interactions = interaction_quality["baseline"]
-    treatment_interactions = interaction_quality["zvec-grep"]
-    runtime_preparation = summary["runtime_preparation"]
-    environment = summary["environment"]
-    available_cpu_count = environment["available_cpu_count"]
-    logical_cpu_count = environment["logical_cpu_count"]
-    cpu_counts = (
-        f"{available_cpu_count if available_cpu_count is not None else '-'} "
-        "available / "
-        f"{logical_cpu_count if logical_cpu_count is not None else '-'} logical"
-    )
-    environment_rows = "\n".join(
-        f"| {label} | {_markdown_cell(value)} |"
-        for label, value in (
-            ("Operating system", environment["operating_system"]),
-            ("Kernel / platform", environment["platform"]),
-            ("Architecture", environment["machine"]),
-            ("CPU", environment["cpu_model"]),
-            ("CPU count", cpu_counts),
-            ("Python", environment["python"]),
-            ("Codex", environment["codex_version"]),
-            ("Codex executable", environment["codex_bin"]),
-            ("Codex sandbox", environment["codex_sandbox"]),
-            ("Web search", environment["web_search"]),
-            ("History persistence", environment["history_persistence"]),
-            ("zvec-grep", environment["zg_version"]),
-            ("Embedding", environment["embedding"]),
-            (
-                "Index embedding concurrency",
-                environment["embedding_concurrency"],
-            ),
-            ("Configured embedding device", environment["embedding_device"]),
-            ("Maximum indexed file size", environment["max_filesize"]),
-            ("MCP transport", environment["mcp_transport"]),
-            (
-                "MCP tool timeout",
-                f"{environment['mcp_tool_timeout_seconds']} seconds",
-            ),
-            ("zvec-grep server", environment["zg_server_url"]),
-        )
-    )
-    markdown = f"""# BrowseComp-Plus paired report
-
-- Run: `{summary["run_id"]}`
-- Suite: `{summary["suite"]}`
-- Model: `{summary["model"]}`
-- Reasoning: `{summary["reasoning_effort"]}`
-- Index build wall time: {summary["index_build_wall_seconds"]:,.1f} seconds (one-time preparation; excluded from measured run wall time)
-- Runtime preparation wall time: {runtime_preparation["total_wall_seconds"]:,.1f} seconds across {runtime_preparation["sessions"]} session(s) (excluded from measured run wall time)
-- Completed pairs: {summary["completed_pairs"]} / {summary["planned_pairs"]}
-- Quality: {quality_line}{usage_audit_line}
-
-## Environment
-
-| Setting | Value |
-| --- | --- |
-{environment_rows}
-
-## Runtime preparation
-
-| Phase | Wall seconds |
-| --- | ---: |
-| End-to-end preparation | {runtime_preparation["total_wall_seconds"]:.1f} |
-| Server startup | {runtime_preparation["server_start_wall_seconds"]:.1f} |
-| Profile preparation | {runtime_preparation["profile_preparation_wall_seconds"]:.1f} |
-| `zg install` (included in profile preparation) | {runtime_preparation["profile_install_wall_seconds"]:.1f} |
-| Runtime verification and index warmup | {runtime_preparation["warmup_wall_seconds"]:.1f} |
-
-## Paired results
-
-| Metric | Baseline | zvec-grep |
-| --- | ---: | ---: |
-| Completed | {baseline["completed"]} | {treatment["completed"]} |
-| Input tokens | {baseline["tokens"]["input_total"]} | {treatment["tokens"]["input_total"]} |
-| Cached input tokens | {baseline["tokens"]["cached_input_total"]} | {treatment["tokens"]["cached_input_total"]} |
-| Output tokens | {baseline["tokens"]["output_total"]} | {treatment["tokens"]["output_total"]} |
-| Median total tokens | {baseline["tokens"]["median_total"]} | {treatment["tokens"]["median_total"]} |
-| Total wall seconds | {baseline["wall_seconds"]["total"]:.1f} | {treatment["wall_seconds"]["total"]:.1f} |
-| Median wall seconds | {_display_number(baseline["wall_seconds"]["median"])} | {_display_number(treatment["wall_seconds"]["median"])} |
-| Tool calls | {baseline["tools"]["total"]} | {treatment["tools"]["total"]} |
-| Command calls | {baseline["tools"]["commands"]} | {treatment["tools"]["commands"]} |
-| zvec-search calls | {baseline["tools"]["zvec_search"]} | {treatment["tools"]["zvec_search"]} |
-| Document ID mentions | {baseline["tools"]["observed_docids"]} | {treatment["tools"]["observed_docids"]} |
-| Evidence recall | {baseline_evidence["mean_recall_percent"]:.2f}% | {treatment_evidence["mean_recall_percent"]:.2f}% |
-| Evidence hit rate | {baseline_evidence["hit_rate_percent"]:.2f}% | {treatment_evidence["hit_rate_percent"]:.2f}% |
-| Gold recall | {baseline_gold["mean_recall_percent"]:.2f}% | {treatment_gold["mean_recall_percent"]:.2f}% |
-| Gold hit rate | {baseline_gold["hit_rate_percent"]:.2f}% | {treatment_gold["hit_rate_percent"]:.2f}% |
-| Tool interaction batches | {baseline_interactions["total"]} | {treatment_interactions["total"]} |
-| Median tool interaction batches | {_display_number(baseline_interactions["median"])} | {_display_number(treatment_interactions["median"])} |
-| Evidence found cases | {baseline_interactions["first_evidence_hits"]} | {treatment_interactions["first_evidence_hits"]} |
-| Mean batch to first evidence (hits only) | {_display_number(baseline_interactions["first_evidence_mean"])} | {_display_number(treatment_interactions["first_evidence_mean"])} |
-| Gold found cases | {baseline_interactions["first_gold_hits"]} | {treatment_interactions["first_gold_hits"]} |
-| Mean batch to first gold (hits only) | {_display_number(baseline_interactions["first_gold_mean"])} | {_display_number(treatment_interactions["first_gold_mean"])} |
-{evaluator_section}{usage_audit_section}"""
-    atomic_write_text(report_dir / "summary.md", markdown)
-
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(
-        [
-            "query_id",
-            "baseline_status",
-            "treatment_status",
-            "baseline_correct",
-            "treatment_correct",
-            "baseline_tokens",
-            "treatment_tokens",
-            "baseline_wall_seconds",
-            "treatment_wall_seconds",
-            "baseline_tool_calls",
-            "treatment_tool_calls",
-            "zvec_grep_usage_correct",
-        ]
-    )
-    for pair in pairs:
-        query_id = str(pair["query_id"])
-        baseline_row = pair["baseline"]
-        treatment_row = pair["zvec-grep"]
-        baseline_usage = baseline_row.get("usage")
-        treatment_usage = treatment_row.get("usage")
-        usage_audit_path = (
-            run_root
-            / "evaluation"
-            / "usage-audit"
-            / "results"
-            / f"{query_id}.json"
-        )
-        usage_audit = (
-            read_json(usage_audit_path) if usage_audit_path.is_file() else {}
-        )
-        correctness: dict[str, bool | str] = {}
-        for profile in PROFILES:
-            path = (
-                run_root
-                / "evaluation"
-                / "results"
-                / profile
-                / f"{query_id}.json"
-            )
-            result = read_json(path) if path.is_file() else {}
-            correctness[profile] = (
-                bool(result["correct"])
-                if result.get("status") == "completed"
-                else ""
-            )
-        writer.writerow(
-            [
-                query_id,
-                baseline_row["status"],
-                treatment_row["status"],
-                correctness["baseline"],
-                correctness["zvec-grep"],
-                baseline_usage.get("total_tokens", "")
-                if isinstance(baseline_usage, dict)
-                else "",
-                treatment_usage.get("total_tokens", "")
-                if isinstance(treatment_usage, dict)
-                else "",
-                baseline_row["wall_seconds"],
-                treatment_row["wall_seconds"],
-                baseline_row.get("tool_calls", 0),
-                treatment_row.get("tool_calls", 0),
-                usage_audit.get("correct_usage", "")
-                if usage_audit.get("status") == "completed"
-                else "",
-            ]
-        )
-    atomic_write_text(report_dir / "cases.csv", output.getvalue())
-    return report_dir
-
-
-def _judge_quality(run_root: Path, eligible_ids: set[str]) -> dict[str, Any]:
-    scored: list[tuple[bool, bool]] = []
-    for query_id in sorted(eligible_ids):
-        paths = {
-            profile: run_root
-            / "evaluation"
-            / "results"
-            / profile
-            / f"{query_id}.json"
+def _judge_quality(
+    run_root: Path, trials: list[dict[str, Any]]
+) -> dict[str, Any]:
+    outcomes: list[dict[str, Any]] = []
+    for trial in trials:
+        query_id = str(trial["query_id"])
+        trial_index = int(trial["trial_index"])
+        results = {
+            profile: _judgement(run_root, profile, query_id, trial_index)
             for profile in PROFILES
         }
-        if not all(path.is_file() for path in paths.values()):
+        if any(result is None for result in results.values()):
             continue
-        results = {profile: read_json(path) for profile, path in paths.items()}
-        if not all(result.get("status") == "completed" for result in results.values()):
-            continue
-        scored.append(
-            (
-                bool(results["baseline"]["correct"]),
-                bool(results["zvec-grep"]["correct"]),
-            )
-        )
-    if not scored:
-        return {"status": "pending"}
-    wins = sum(treatment > baseline for baseline, treatment in scored)
-    losses = sum(treatment < baseline for baseline, treatment in scored)
-    return {
-        "status": "scored" if len(scored) == len(eligible_ids) else "partial",
-        "source": str((run_root / "evaluation" / "results").resolve()),
-        "scored_pairs": len(scored),
-        "baseline_accuracy_percent": 100
-        * sum(int(baseline) for baseline, _ in scored)
-        / len(scored),
-        "treatment_accuracy_percent": 100
-        * sum(int(treatment) for _, treatment in scored)
-        / len(scored),
-        "treatment_wins": wins,
-        "treatment_losses": losses,
-        "ties": len(scored) - wins - losses,
-    }
-
-
-def _zvec_grep_usage_quality(
-    run_root: Path, eligible_ids: set[str], suite: str
-) -> dict[str, Any]:
-    if suite != "smoke":
-        return {"status": "not_applicable"}
-    cases: list[dict[str, Any]] = []
-    for query_id in sorted(eligible_ids):
-        path = (
-            run_root
-            / "evaluation"
-            / "usage-audit"
-            / "results"
-            / f"{query_id}.json"
-        )
-        if not path.is_file():
-            continue
-        result = read_json(path)
-        if result.get("status") != "completed":
-            continue
-        cases.append(
+        baseline_correct = bool(results["baseline"]["correct"])
+        treatment_correct = bool(results["zvec-grep"]["correct"])
+        outcomes.append(
             {
                 "query_id": query_id,
-                "used_zvec_grep": bool(result["used_zvec_grep"]),
-                "correct_usage": bool(result["correct_usage"]),
-                "observed_zvec_grep_search_calls": int(
-                    result["observed_zvec_grep_search_calls"]
-                ),
-                "reasoning": str(result["reasoning"]),
+                "trial_index": trial_index,
+                "baseline_correct": baseline_correct,
+                "treatment_correct": treatment_correct,
             }
         )
-    if not cases:
-        return {"status": "pending", "expected_cases": len(eligible_ids)}
+    if not outcomes:
+        return {"status": "pending", "expected_trials": len(trials)}
+    both_correct = sum(
+        row["baseline_correct"] and row["treatment_correct"] for row in outcomes
+    )
+    baseline_only = sum(
+        row["baseline_correct"] and not row["treatment_correct"]
+        for row in outcomes
+    )
+    treatment_only = sum(
+        not row["baseline_correct"] and row["treatment_correct"]
+        for row in outcomes
+    )
+    neither = len(outcomes) - both_correct - baseline_only - treatment_only
     return {
-        "status": "scored" if len(cases) == len(eligible_ids) else "partial",
-        "expected_cases": len(eligible_ids),
-        "evaluated_cases": len(cases),
-        "correct_cases": sum(case["correct_usage"] for case in cases),
-        "cases": cases,
+        "status": "scored" if len(outcomes) == len(trials) else "partial",
+        "expected_trials": len(trials),
+        "scored_trials": len(outcomes),
+        "baseline_accuracy_percent": 100
+        * sum(row["baseline_correct"] for row in outcomes)
+        / len(outcomes),
+        "treatment_accuracy_percent": 100
+        * sum(row["treatment_correct"] for row in outcomes)
+        / len(outcomes),
+        "both_correct": both_correct,
+        "baseline_only_correct": baseline_only,
+        "treatment_only_correct": treatment_only,
+        "neither_correct": neither,
+        "outcomes": outcomes,
     }
 
 
 def _expected_docids(value: Any) -> set[str]:
-    result: set[str] = set()
     if not isinstance(value, list):
-        return result
-    for item in value:
-        if isinstance(item, (str, int)):
-            result.add(str(item))
-        elif isinstance(item, dict) and item.get("docid") is not None:
-            result.add(str(item["docid"]))
-    return result
+        return set()
+    return {
+        str(item["docid"] if isinstance(item, dict) else item)
+        for item in value
+        if (not isinstance(item, dict) or item.get("docid") is not None)
+        and isinstance(item, (str, int, dict))
+    }
 
 
 def _retrieval_quality(
-    run_root: Path,
-    pairs: list[dict[str, Any]],
-    queries: dict[str, dict[str, Any]],
-) -> dict[str, dict[str, dict[str, int | float]]]:
-    output: dict[str, dict[str, dict[str, int | float]]] = {}
+    trials: list[dict[str, Any]], queries: dict[str, dict[str, Any]]
+) -> dict[str, dict[str, dict[str, int | float | None]]]:
+    output: dict[str, dict[str, dict[str, int | float | None]]] = {}
     for label, field in (("evidence", "evidence_docs"), ("gold", "gold_docs")):
-        recalls: dict[str, list[float]] = {profile: [] for profile in PROFILES}
+        recalls: dict[Profile, list[float]] = {profile: [] for profile in PROFILES}
         hits: Counter[str] = Counter()
-        for pair in pairs:
-            query_id = str(pair["query_id"])
-            expected = _expected_docids(queries[query_id][field])
+        for trial in trials:
+            expected = _expected_docids(queries[str(trial["query_id"])][field])
             if not expected:
                 continue
             for profile in PROFILES:
-                result_path = run_root / "cases" / query_id / profile / "result.json"
-                result = read_json(result_path)
-                observed = _observed_docids(Path(result["paths"]["events"]))
+                result = _result(trial, profile)
+                observed = set(result["trace"].get("observed_docids", []))
                 matched = expected & observed
                 recalls[profile].append(len(matched) / len(expected))
                 hits[profile] += bool(matched)
         output[label] = {
             profile: {
-                "eligible_cases": len(recalls[profile]),
-                "mean_recall_percent": 100 * statistics.fmean(recalls[profile])
-                if recalls[profile]
-                else 0.0,
-                "hit_rate_percent": 100 * hits[profile] / len(recalls[profile])
-                if recalls[profile]
-                else 0.0,
+                "eligible_trials": len(recalls[profile]),
+                "mean_recall_percent": (
+                    100 * statistics.fmean(recalls[profile])
+                    if recalls[profile]
+                    else None
+                ),
+                "hit_rate_percent": (
+                    100 * hits[profile] / len(recalls[profile])
+                    if recalls[profile]
+                    else None
+                ),
             }
             for profile in PROFILES
         }
     return output
 
 
-def _observed_docids(events_path: Path) -> set[str]:
-    return set(parse_trace(events_path).observed_docids)
-
-
 def _tool_interaction_batches(
-    events_path: Path,
-    *,
-    evidence: set[str],
-    gold: set[str],
+    events_path: Path, *, evidence: set[str], gold: set[str]
 ) -> dict[str, int | None]:
     rounds: list[dict[str, set[str]]] = []
     active: set[str] = set()
@@ -587,96 +304,743 @@ def _tool_interaction_batches(
                     rounds.append({"evidence": set(), "gold": set()})
                 round_index = len(rounds) - 1
             if item_type == "command_execution":
-                output = str(item.get("aggregated_output", ""))
-                observed = extract_docids(item.get("command"), output)
+                observed = extract_docids(
+                    item.get("command"), item.get("aggregated_output", "")
+                )
             else:
-                output = mcp_result_text(item.get("result"))
-                observed = extract_docids(output)
-            current = rounds[round_index]
-            current["evidence"].update(observed & evidence)
-            current["gold"].update(observed & gold)
+                observed = extract_docids(mcp_result_text(item.get("result")))
+            rounds[round_index]["evidence"].update(observed & evidence)
+            rounds[round_index]["gold"].update(observed & gold)
             active.discard(item_id)
 
     def first_hit(kind: str) -> int | None:
         return next(
-            (number for number, value in enumerate(rounds, 1) if value[kind]),
-            None,
+            (number for number, value in enumerate(rounds, 1) if value[kind]), None
         )
 
-    evidence_round = first_hit("evidence")
-    gold_round = first_hit("gold")
+    first_evidence = first_hit("evidence")
+    first_gold = first_hit("gold")
     return {
         "total": len(rounds),
-        "first_evidence": evidence_round,
+        "first_evidence": first_evidence,
         "after_first_evidence": (
-            len(rounds) - evidence_round if evidence_round is not None else None
+            len(rounds) - first_evidence if first_evidence is not None else None
         ),
-        "first_gold": gold_round,
+        "first_gold": first_gold,
         "after_first_gold": (
-            len(rounds) - gold_round if gold_round is not None else None
+            len(rounds) - first_gold if first_gold is not None else None
         ),
     }
 
 
-def _tool_interaction_quality(
-    run_root: Path,
-    pairs: list[dict[str, Any]],
-    queries: dict[str, dict[str, Any]],
+def _interaction_quality(
+    trials: list[dict[str, Any]], queries: dict[str, dict[str, Any]]
 ) -> dict[str, dict[str, int | float | None]]:
-    values: dict[str, list[dict[str, int | None]]] = {
+    values: dict[Profile, list[dict[str, int | None]]] = {
         profile: [] for profile in PROFILES
     }
-    for pair in pairs:
-        query_id = str(pair["query_id"])
-        evidence = _expected_docids(queries[query_id]["evidence_docs"])
-        gold = _expected_docids(queries[query_id]["gold_docs"])
+    for trial in trials:
+        query = queries[str(trial["query_id"])]
+        evidence = _expected_docids(query["evidence_docs"])
+        gold = _expected_docids(query["gold_docs"])
         for profile in PROFILES:
-            result = read_json(
-                run_root / "cases" / query_id / profile / "result.json"
-            )
-            events = Path(result["paths"]["events"])
+            result = _result(trial, profile)
             values[profile].append(
-                _tool_interaction_batches(events, evidence=evidence, gold=gold)
+                _tool_interaction_batches(
+                    Path(result["paths"]["events"]), evidence=evidence, gold=gold
+                )
             )
 
-    def aggregate(rows: list[dict[str, int | None]]) -> dict[str, int | float | None]:
-        def measured(key: str) -> list[int]:
-            return [int(row[key]) for row in rows if row[key] is not None]
+    def aggregate(rows: list[dict[str, int | None]]) -> dict[str, Any]:
+        def measured(key: str) -> list[float]:
+            return [float(row[key]) for row in rows if row[key] is not None]
 
-        totals = measured("total")
         return {
-            "eligible_cases": len(rows),
-            "total": sum(totals),
-            "mean": statistics.fmean(totals) if totals else None,
-            "median": _median(totals),
+            "eligible_trials": len(rows),
+            "batches": _number_summary(measured("total")),
             "first_evidence_hits": len(measured("first_evidence")),
-            "first_evidence_mean": (
-                statistics.fmean(measured("first_evidence"))
-                if measured("first_evidence")
-                else None
-            ),
-            "first_evidence_median": _median(measured("first_evidence")),
-            "after_first_evidence_mean": (
-                statistics.fmean(measured("after_first_evidence"))
-                if measured("after_first_evidence")
-                else None
-            ),
-            "after_first_evidence_median": _median(
+            "first_evidence_batch": _number_summary(measured("first_evidence")),
+            "after_first_evidence": _number_summary(
                 measured("after_first_evidence")
             ),
             "first_gold_hits": len(measured("first_gold")),
-            "first_gold_mean": (
-                statistics.fmean(measured("first_gold"))
-                if measured("first_gold")
-                else None
-            ),
-            "first_gold_median": _median(measured("first_gold")),
-            "after_first_gold_mean": (
-                statistics.fmean(measured("after_first_gold"))
-                if measured("after_first_gold")
-                else None
-            ),
-            "after_first_gold_median": _median(measured("after_first_gold")),
+            "first_gold_batch": _number_summary(measured("first_gold")),
+            "after_first_gold": _number_summary(measured("after_first_gold")),
         }
 
     return {profile: aggregate(values[profile]) for profile in PROFILES}
+
+
+def _resource_rows(profile: dict[str, Any]) -> list[tuple[str, float | None]]:
+    return [
+        ("Average input tokens", profile["tokens"]["input"]["mean"]),
+        ("Average cached input tokens", profile["tokens"]["cached_input"]["mean"]),
+        ("Average output tokens", profile["tokens"]["output"]["mean"]),
+        (
+            "Average reasoning output tokens",
+            profile["tokens"]["reasoning_output"]["mean"],
+        ),
+        ("Average total tokens", profile["tokens"]["total"]["mean"]),
+        ("Average tool calls", profile["tools"]["all"]["mean"]),
+        ("Average command calls", profile["tools"]["commands"]["mean"]),
+        ("Average zvec-grep calls", profile["tools"]["zvec_grep"]["mean"]),
+        ("Average Agent time (seconds)", profile["wall_seconds"]["mean"]),
+        (
+            "Average document ID mentions",
+            profile["tools"]["observed_docids"]["mean"],
+        ),
+    ]
+
+
+def _case_distribution(
+    trials: list[dict[str, Any]], metric: str
+) -> dict[str, int | float | None]:
+    grouped: dict[str, dict[Profile, list[float]]] = {}
+    for trial in trials:
+        values: dict[Profile, float] = {}
+        for profile in PROFILES:
+            row = trial[profile]
+            if metric == "input_tokens":
+                usage = row.get("usage")
+                if not isinstance(usage, dict):
+                    break
+                value = float(usage.get("input_tokens", 0))
+            elif metric == "tool_calls":
+                value = float(row.get("tool_calls", 0))
+            elif metric == "wall_seconds":
+                value = float(row["wall_seconds"])
+            else:
+                raise ValueError(f"unsupported case distribution metric: {metric}")
+            values[profile] = value
+        if len(values) != len(PROFILES):
+            continue
+        case = grouped.setdefault(
+            str(trial["query_id"]), {profile: [] for profile in PROFILES}
+        )
+        for profile, value in values.items():
+            case[profile].append(value)
+    changes: list[float] = []
+    improved = tied = regressed = 0
+    eligible_cases = 0
+    for profiles in grouped.values():
+        if not all(profiles[profile] for profile in PROFILES):
+            continue
+        eligible_cases += 1
+        baseline = statistics.fmean(profiles["baseline"])
+        treatment = statistics.fmean(profiles["zvec-grep"])
+        if treatment < baseline:
+            improved += 1
+        elif treatment > baseline:
+            regressed += 1
+        else:
+            tied += 1
+        if baseline:
+            changes.append(100 * (treatment - baseline) / baseline)
+    return {
+        "eligible_cases": eligible_cases,
+        "improved": improved,
+        "tied": tied,
+        "regressed": regressed,
+        "median_case_change_percent": _median(changes),
+    }
+
+
+def _tool_behavior(trials: list[dict[str, Any]]) -> dict[str, int | float]:
+    treatment_trials_with_zg = 0
+    treatment_zg_calls = 0
+    treatment_successful_zg_calls = 0
+    treatment_failed_zg_calls = 0
+    treatment_empty_zg_calls = 0
+    baseline_direct_zg_commands = 0
+    baseline_zvec_mcp_calls = 0
+    for trial in trials:
+        for profile in PROFILES:
+            result = _result(trial, profile)
+            trial_has_zg = False
+            for call in result["trace"].get("tool_calls", []):
+                name = str(call.get("name", ""))
+                if profile == "baseline":
+                    if name == "command_execution" and ZG_COMMAND_PATTERN.search(
+                        str(call.get("arguments", ""))
+                    ):
+                        baseline_direct_zg_commands += 1
+                    if _is_zvec_tool(name):
+                        baseline_zvec_mcp_calls += 1
+                    continue
+                if not _is_zvec_tool(name):
+                    continue
+                trial_has_zg = True
+                treatment_zg_calls += 1
+                if call.get("status") == "completed":
+                    treatment_successful_zg_calls += 1
+                    if not str(call.get("output") or "").strip():
+                        treatment_empty_zg_calls += 1
+                else:
+                    treatment_failed_zg_calls += 1
+            treatment_trials_with_zg += trial_has_zg
+    total_trials = len(trials)
+    return {
+        "eligible_trials": total_trials,
+        "treatment_trials_with_zvec_grep": treatment_trials_with_zg,
+        "treatment_trial_adoption_percent": (
+            100 * treatment_trials_with_zg / total_trials if total_trials else 0.0
+        ),
+        "treatment_zvec_grep_calls": treatment_zg_calls,
+        "treatment_successful_zvec_grep_calls": treatment_successful_zg_calls,
+        "treatment_failed_zvec_grep_calls": treatment_failed_zg_calls,
+        "treatment_empty_zvec_grep_calls": treatment_empty_zg_calls,
+        "baseline_direct_zg_commands": baseline_direct_zg_commands,
+        "baseline_zvec_grep_mcp_calls": baseline_zvec_mcp_calls,
+    }
+
+
+def _usage_audit(
+    run_root: Path, trials: list[dict[str, Any]], suite: str
+) -> dict[str, Any]:
+    if suite != "smoke":
+        return {"status": "not_applicable"}
+    rows: list[dict[str, Any]] = []
+    from .evaluate import _usage_audit_current
+
+    for trial in trials:
+        path = (
+            run_root
+            / "evaluation"
+            / "usage-audit"
+            / "results"
+            / str(trial["query_id"])
+            / f"trial-{int(trial['trial_index']):03d}.json"
+        )
+        query_id = str(trial["query_id"])
+        trial_index = int(trial["trial_index"])
+        if not _usage_audit_current(
+            path,
+            run_root=run_root,
+            query_id=query_id,
+            trial_index=trial_index,
+        ):
+            continue
+        result = read_json(path)
+        rows.append(result)
+    status = (
+        "scored"
+        if len(rows) == len(trials)
+        else "partial"
+        if rows
+        else "pending"
+    )
+    return {
+        "status": status,
+        "expected_trials": len(trials),
+        "evaluated_trials": len(rows),
+        "correct_trials": sum(bool(row["correct_usage"]) for row in rows),
+        "trials": rows,
+    }
+
+
+def _runtime_preparation(metadata: dict[str, Any]) -> dict[str, int | float]:
+    setups = metadata["runtime_setups"]
+    return {
+        "sessions": len(setups),
+        "total_wall_seconds": sum(float(row["total_wall_seconds"]) for row in setups),
+        "server_start_wall_seconds": sum(
+            float(row["server_start_wall_seconds"]) for row in setups
+        ),
+        "profile_preparation_wall_seconds": sum(
+            float(row["profile_preparation_wall_seconds"]) for row in setups
+        ),
+        "profile_install_wall_seconds": sum(
+            float(row["profile_install_wall_seconds"]) for row in setups
+        ),
+        "warmup_wall_seconds": sum(
+            float(row["warmup_wall_seconds"]) for row in setups
+        ),
+    }
+
+
+def _primary_rows(
+    quality: dict[str, Any], profiles: dict[str, dict[str, Any]]
+) -> list[tuple[str, float | None, float | None]]:
+    rows = [
+        (
+            "Accuracy",
+            quality.get("baseline_accuracy_percent"),
+            quality.get("treatment_accuracy_percent"),
+        )
+    ]
+    baseline_rows = _resource_rows(profiles["baseline"])
+    treatment_rows = dict(_resource_rows(profiles["zvec-grep"]))
+    rows.extend((label, value, treatment_rows[label]) for label, value in baseline_rows)
+    return rows
+
+
+def _markdown_metric_rows(
+    rows: Iterable[tuple[str, float | None, float | None]]
+) -> str:
+    output = []
+    for label, baseline, treatment in rows:
+        difference = None
+        if baseline is not None and treatment is not None:
+            difference = treatment - baseline
+        output.append(
+            f"| {label} | {_display(baseline)} | {_display(treatment)} | "
+            f"{_display(difference)} |"
+        )
+    return "\n".join(output)
+
+
+def _retrieval_rows(
+    retrieval: dict[str, Any], interactions: dict[str, Any]
+) -> list[tuple[str, float | None, float | None]]:
+    return [
+        (
+            "Evidence recall (%)",
+            retrieval["evidence"]["baseline"]["mean_recall_percent"],
+            retrieval["evidence"]["zvec-grep"]["mean_recall_percent"],
+        ),
+        (
+            "Evidence hit rate (%)",
+            retrieval["evidence"]["baseline"]["hit_rate_percent"],
+            retrieval["evidence"]["zvec-grep"]["hit_rate_percent"],
+        ),
+        (
+            "Gold recall (%)",
+            retrieval["gold"]["baseline"]["mean_recall_percent"],
+            retrieval["gold"]["zvec-grep"]["mean_recall_percent"],
+        ),
+        (
+            "Gold hit rate (%)",
+            retrieval["gold"]["baseline"]["hit_rate_percent"],
+            retrieval["gold"]["zvec-grep"]["hit_rate_percent"],
+        ),
+        (
+            "Average tool-interaction batches",
+            interactions["baseline"]["batches"]["mean"],
+            interactions["zvec-grep"]["batches"]["mean"],
+        ),
+        (
+            "Average batch to first evidence",
+            interactions["baseline"]["first_evidence_batch"]["mean"],
+            interactions["zvec-grep"]["first_evidence_batch"]["mean"],
+        ),
+        (
+            "Average batch to first gold",
+            interactions["baseline"]["first_gold_batch"]["mean"],
+            interactions["zvec-grep"]["first_gold_batch"]["mean"],
+        ),
+    ]
+
+
+def _environment_rows(environment: dict[str, Any]) -> str:
+    cpu_counts = (
+        f"{environment['available_cpu_count'] or '-'} available / "
+        f"{environment['logical_cpu_count'] or '-'} logical"
+    )
+    values = (
+        ("Operating system", environment["operating_system"]),
+        ("Kernel / platform", environment["platform"]),
+        ("Architecture", environment["machine"]),
+        ("CPU", environment["cpu_model"]),
+        ("CPU count", cpu_counts),
+        ("Python", environment["python"]),
+        ("Codex", environment["codex_version"]),
+        ("Codex executable", environment["codex_bin"]),
+        ("Codex sandbox", environment["codex_sandbox"]),
+        ("Web search", environment["web_search"]),
+        ("History persistence", environment["history_persistence"]),
+        ("zvec-grep", environment["zg_version"]),
+        ("Embedding", environment["embedding"]),
+        ("Index embedding concurrency", environment["embedding_concurrency"]),
+        ("Configured embedding device", environment["embedding_device"]),
+        ("Maximum indexed file size", environment["max_filesize"]),
+        ("MCP transport", environment["mcp_transport"]),
+        ("MCP tool timeout", f"{environment['mcp_tool_timeout_seconds']} seconds"),
+        ("zvec-grep server", environment["zg_server_url"]),
+    )
+    return "\n".join(
+        f"| {label} | {_markdown_cell(value)} |" for label, value in values
+    )
+
+
+def _write_trial_csv(
+    report_dir: Path, run_root: Path, trials: list[dict[str, Any]]
+) -> None:
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(
+        [
+            "query_id",
+            "trial_index",
+            "profile",
+            "status",
+            "correct",
+            "input_tokens",
+            "cached_input_tokens",
+            "output_tokens",
+            "reasoning_output_tokens",
+            "total_tokens",
+            "wall_seconds",
+            "tool_calls",
+            "command_calls",
+            "zvec_grep_calls",
+            "observed_docids",
+        ]
+    )
+    for trial in trials:
+        for profile in PROFILES:
+            row = trial[profile]
+            usage = row.get("usage") or {}
+            judgement = _judgement(
+                run_root,
+                profile,
+                str(trial["query_id"]),
+                int(trial["trial_index"]),
+            )
+            writer.writerow(
+                [
+                    trial["query_id"],
+                    trial["trial_index"],
+                    profile,
+                    row["status"],
+                    judgement["correct"] if judgement else "",
+                    usage.get("input_tokens", ""),
+                    usage.get("cached_input_tokens", ""),
+                    usage.get("output_tokens", ""),
+                    usage.get("reasoning_output_tokens", ""),
+                    usage.get("total_tokens", ""),
+                    row["wall_seconds"],
+                    row.get("tool_calls", 0),
+                    row.get("tool_call_counts", {}).get("command_execution", 0),
+                    sum(
+                        count
+                        for name, count in row.get("tool_call_counts", {}).items()
+                        if _is_zvec_tool(str(name))
+                    ),
+                    row.get("observed_docids", 0),
+                ]
+            )
+    atomic_write_text(report_dir / "trials.csv", output.getvalue())
+
+
+def _write_case_csv(report_dir: Path, trials: list[dict[str, Any]]) -> None:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for trial in trials:
+        grouped.setdefault(str(trial["query_id"]), []).append(trial)
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(
+        [
+            "query_id",
+            "completed_trials",
+            "baseline_mean_input_tokens",
+            "treatment_mean_input_tokens",
+            "input_tokens_change_percent",
+            "baseline_mean_tool_calls",
+            "treatment_mean_tool_calls",
+            "tool_calls_change_percent",
+            "baseline_mean_wall_seconds",
+            "treatment_mean_wall_seconds",
+            "wall_seconds_change_percent",
+        ]
+    )
+
+    def paired_means(
+        rows: list[dict[str, Any]], metric: str
+    ) -> tuple[float | None, float | None]:
+        values: dict[Profile, list[float]] = {
+            profile: [] for profile in PROFILES
+        }
+        for row in rows:
+            paired: dict[Profile, float] = {}
+            for profile in PROFILES:
+                profile_row = row[profile]
+                if metric == "input_tokens":
+                    usage = profile_row.get("usage")
+                    if not isinstance(usage, dict):
+                        break
+                    paired[profile] = float(usage.get("input_tokens", 0))
+                else:
+                    paired[profile] = float(profile_row[metric])
+            if len(paired) != len(PROFILES):
+                continue
+            for profile, value in paired.items():
+                values[profile].append(value)
+        return tuple(
+            statistics.fmean(values[profile]) if values[profile] else None
+            for profile in PROFILES
+        )
+
+    def change(
+        baseline: float | None, treatment: float | None
+    ) -> float | str:
+        if baseline is None or treatment is None or baseline == 0:
+            return ""
+        return 100 * (treatment - baseline) / baseline
+
+    for query_id, rows in sorted(grouped.items()):
+        values: list[float | str] = [query_id, len(rows)]
+        for metric in ("input_tokens", "tool_calls", "wall_seconds"):
+            baseline, treatment = paired_means(rows, metric)
+            values.extend(
+                (
+                    "" if baseline is None else baseline,
+                    "" if treatment is None else treatment,
+                    change(baseline, treatment),
+                )
+            )
+        writer.writerow(values)
+    atomic_write_text(report_dir / "cases.csv", output.getvalue())
+
+
+def generate_report(run_root: Path) -> Path:
+    metadata = read_json(run_root / "run.json")
+    pairs = _pairs(run_root)
+    trials = [trial for trial in _trial_pairs(pairs) if trial["eligible"]]
+    query_path = run_root.parent.parent / "source" / "browsecomp_plus_decrypted.jsonl"
+    queries = {str(row["query_id"]): row for row in load_queries(query_path)}
+    quality = _judge_quality(run_root, trials)
+    profiles = {
+        profile: _aggregate_profile(trials, profile) for profile in PROFILES
+    }
+    retrieval = _retrieval_quality(trials, queries)
+    interactions = _interaction_quality(trials, queries)
+    both_correct_keys = {
+        (str(row["query_id"]), int(row["trial_index"]))
+        for row in quality.get("outcomes", [])
+        if row["baseline_correct"] and row["treatment_correct"]
+    }
+    both_correct_trials = [
+        trial
+        for trial in trials
+        if (str(trial["query_id"]), int(trial["trial_index"]))
+        in both_correct_keys
+    ]
+    both_correct_profiles = {
+        profile: _aggregate_profile(both_correct_trials, profile)
+        for profile in PROFILES
+    }
+    both_correct_retrieval = _retrieval_quality(both_correct_trials, queries)
+    both_correct_interactions = _interaction_quality(both_correct_trials, queries)
+    runtime_preparation = _runtime_preparation(metadata)
+    evaluator_path = run_root / "evaluation" / "summary.json"
+    from .evaluate import evaluation_complete
+
+    evaluator = (
+        read_json(evaluator_path)
+        if evaluator_path.is_file() and evaluation_complete(run_root)
+        else None
+    )
+    planned_cases = len(metadata["query_ids"])
+    trials_per_case = int(metadata["trials_per_case"])
+    planned_trials = planned_cases * trials_per_case
+    summary = {
+        "schema_version": 2,
+        "generated_at": utc_now(),
+        "run_id": metadata["run_id"],
+        "suite": metadata["suite"],
+        "model": metadata["model"],
+        "reasoning_effort": metadata["reasoning_effort"],
+        "environment": metadata["environment"],
+        "cases": {
+            "planned": planned_cases,
+            "persisted": len(pairs),
+            "completed": sum(bool(pair["eligible"]) for pair in pairs),
+        },
+        "trials": {
+            "per_case": trials_per_case,
+            "planned": planned_trials,
+            "persisted": len(_trial_pairs(pairs)),
+            "completed": len(trials),
+        },
+        "profiles": profiles,
+        "quality": quality,
+        "retrieval": retrieval,
+        "tool_interaction_batches": interactions,
+        "quality_conditioned": {
+            "both_correct": {
+                "trials": len(both_correct_trials),
+                "profiles": both_correct_profiles,
+                "retrieval": both_correct_retrieval,
+                "tool_interaction_batches": both_correct_interactions,
+            }
+        },
+        "case_distribution": {
+            metric: _case_distribution(trials, metric)
+            for metric in ("input_tokens", "tool_calls", "wall_seconds")
+        },
+        "tool_behavior": _tool_behavior(trials),
+        "zvec_grep_usage_audit": _usage_audit(
+            run_root, trials, str(metadata["suite"])
+        ),
+        "index": {
+            "build_wall_seconds": metadata["index_build_wall_seconds"],
+            "bytes": metadata["index_bytes"],
+            "statistics": metadata["index_statistics"],
+        },
+        "runtime_preparation": runtime_preparation,
+        "evaluator": evaluator,
+    }
+    report_dir = run_root / "report"
+    write_json(report_dir / "summary.json", summary)
+    primary_rows = _primary_rows(quality, profiles)
+    both_rows = _primary_rows(quality, both_correct_profiles)[1:]
+    both_rows.extend(
+        _retrieval_rows(both_correct_retrieval, both_correct_interactions)
+    )
+    distribution_rows = "\n".join(
+        "| {metric} | {improved} | {tied} | {regressed} | {median} |".format(
+            metric=label,
+            improved=summary["case_distribution"][metric]["improved"],
+            tied=summary["case_distribution"][metric]["tied"],
+            regressed=summary["case_distribution"][metric]["regressed"],
+            median=_display(
+                summary["case_distribution"][metric]["median_case_change_percent"]
+            ),
+        )
+        for metric, label in (
+            ("input_tokens", "Input tokens"),
+            ("tool_calls", "Tool calls"),
+            ("wall_seconds", "Agent time"),
+        )
+    )
+    behavior = summary["tool_behavior"]
+    usage_audit = summary["zvec_grep_usage_audit"]
+    index = summary["index"]
+    usage_audit_markdown = ""
+    if usage_audit.get("status") in {"scored", "partial"}:
+        usage_audit_markdown = f"""
+
+## Smoke-test usage audit
+
+A model reviews each Treatment trace to determine whether the Agent used zvec-grep appropriately and whether its results helped the investigation. This diagnostic is separate from the deterministic call counts above.
+
+| Metric | Value |
+| --- | ---: |
+| Correct and helpful usage | {usage_audit['correct_trials']} / {usage_audit['evaluated_trials']} |
+| Expected trials | {usage_audit['expected_trials']} |
+"""
+    if quality.get("status") in {"scored", "partial"}:
+        quality_outcomes_markdown = f"""| Outcome | Trials |
+| --- | ---: |
+| Both correct | {quality['both_correct']} |
+| Baseline only correct | {quality['baseline_only_correct']} |
+| Treatment only correct | {quality['treatment_only_correct']} |
+| Neither correct | {quality['neither_correct']} |
+"""
+        both_correct_markdown = f"""This secondary view isolates resource and retrieval behavior on the {len(both_correct_trials)} trials where both profiles answered correctly. It does not replace the all-trial primary results.
+
+| Metric | Baseline | Treatment (zvec-grep) | Treatment - Baseline |
+| --- | ---: | ---: | ---: |
+{_markdown_metric_rows(both_rows)}
+"""
+    else:
+        quality_outcomes_markdown = "Answer evaluation is pending."
+        both_correct_markdown = (
+            "Both-correct analysis will be available after answer evaluation."
+        )
+    markdown = f"""# BrowseComp-Plus paired report
+
+- Run: `{summary['run_id']}`
+- Suite: `{summary['suite']}`
+- Model: `{summary['model']}`
+- Reasoning: `{summary['reasoning_effort']}`
+- Completed cases: {summary['cases']['completed']} / {summary['cases']['planned']}
+- Completed trials: {summary['trials']['completed']} / {summary['trials']['planned']} ({trials_per_case} per case)
+
+## Primary results
+
+All completed trials contribute to these means, including regressions. Accuracy is scored independently for every profile and trial.
+
+| Metric | Baseline | Treatment (zvec-grep) | Treatment - Baseline |
+| --- | ---: | ---: | ---: |
+{_markdown_metric_rows(primary_rows)}
+
+## Quality outcomes
+
+{quality_outcomes_markdown}
+
+## Both-correct analysis
+
+{both_correct_markdown}
+
+## Case-level distribution
+
+Each case is compared using the mean of its trials. Negative median change means lower use with zvec-grep.
+
+| Metric | Improved | Tied | Regressed | Median case change (%) |
+| --- | ---: | ---: | ---: | ---: |
+{distribution_rows}
+
+## Retrieval diagnostics
+
+| Metric | Baseline | Treatment (zvec-grep) | Treatment - Baseline |
+| --- | ---: | ---: | ---: |
+{_markdown_metric_rows(_retrieval_rows(retrieval, interactions))}
+
+## Tool behavior
+
+| Metric | Value |
+| --- | ---: |
+| Treatment trials using zvec-grep | {behavior['treatment_trials_with_zvec_grep']} / {behavior['eligible_trials']} ({behavior['treatment_trial_adoption_percent']:.2f}%) |
+| Treatment zvec-grep calls | {behavior['treatment_zvec_grep_calls']} |
+| Successful zvec-grep calls | {behavior['treatment_successful_zvec_grep_calls']} |
+| Failed zvec-grep calls | {behavior['treatment_failed_zvec_grep_calls']} |
+| Successful calls with empty output | {behavior['treatment_empty_zvec_grep_calls']} |
+| Baseline direct `zg` commands | {behavior['baseline_direct_zg_commands']} |
+| Baseline zvec-grep MCP calls | {behavior['baseline_zvec_grep_mcp_calls']} |
+{usage_audit_markdown}
+
+## zvec-grep index preparation
+
+Index preparation is measured separately and excluded from Agent execution metrics.
+
+| Metric | Value |
+| --- | ---: |
+| Build time (seconds) | {index['build_wall_seconds']:.2f} |
+| Index size (bytes) | {index['bytes']:,} |
+| Index statistics | `{_markdown_cell(json.dumps(index['statistics'], sort_keys=True))}` |
+
+## Runtime preparation
+
+| Phase | Wall seconds |
+| --- | ---: |
+| End-to-end preparation | {runtime_preparation['total_wall_seconds']:.2f} |
+| Server startup | {runtime_preparation['server_start_wall_seconds']:.2f} |
+| Profile preparation | {runtime_preparation['profile_preparation_wall_seconds']:.2f} |
+| `zg install` | {runtime_preparation['profile_install_wall_seconds']:.2f} |
+| Runtime verification and index warmup | {runtime_preparation['warmup_wall_seconds']:.2f} |
+
+## Environment
+
+| Setting | Value |
+| --- | --- |
+{_environment_rows(summary['environment'])}
+"""
+    if evaluator:
+        markdown += "\n## Evaluator\n\n"
+        markdown += (
+            f"- Model: `{evaluator['model']}`\n"
+            f"- Reasoning: `{evaluator['reasoning_effort']}`\n"
+            "- Evaluator usage and time are excluded from Agent execution metrics.\n"
+        )
+        markdown += """
+
+| Workload | Calls | Input tokens | Cached input tokens | Output tokens | Reasoning output tokens | Wall seconds |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+"""
+        for label, key in (
+            ("Answer judgements", "answer_judgements"),
+            ("zvec-grep usage audits", "zvec_grep_usage_audits"),
+            ("Total", "total"),
+        ):
+            cost = evaluator["cost"][key]
+            markdown += (
+                f"| {label} | {cost['completed_calls']} | "
+                f"{cost['input_tokens']} | {cost['cached_input_tokens']} | "
+                f"{cost['output_tokens']} | {cost['reasoning_output_tokens']} | "
+                f"{cost['wall_seconds']:.2f} |\n"
+            )
+    atomic_write_text(report_dir / "summary.md", markdown)
+    _write_trial_csv(report_dir, run_root, trials)
+    _write_case_csv(report_dir, trials)
+    return report_dir

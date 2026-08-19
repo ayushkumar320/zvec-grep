@@ -43,6 +43,7 @@ class ZvecGrepConfig:
 class RunConfig:
     model: str
     reasoning_effort: str
+    trials_per_case: int
     infrastructure_retries: int
     idle_timeout_seconds: int
 
@@ -97,6 +98,8 @@ def _validate(config: BenchmarkConfig) -> None:
             raise ConfigError("dataset revisions must be pinned 40-character SHAs")
     if config.zvec_grep.embedding_concurrency < 1:
         raise ConfigError("embedding_concurrency must be positive")
+    if config.zvec_grep.mcp_tool_timeout_seconds < 1:
+        raise ConfigError("mcp_tool_timeout_seconds must be positive")
     if not 1 <= config.zvec_grep.server_port <= 65_535:
         raise ConfigError("server_port must be between 1 and 65535")
     if (
@@ -106,6 +109,10 @@ def _validate(config: BenchmarkConfig) -> None:
         raise ConfigError("expected dataset counts must be positive")
     if config.run.infrastructure_retries < 0:
         raise ConfigError("infrastructure_retries cannot be negative")
+    if config.run.trials_per_case < 1:
+        raise ConfigError("trials_per_case must be positive")
+    if config.run.idle_timeout_seconds < 1:
+        raise ConfigError("idle_timeout_seconds must be positive")
     if not config.run.model.strip():
         raise ConfigError("run model cannot be empty")
     if not config.run.reasoning_effort.strip():

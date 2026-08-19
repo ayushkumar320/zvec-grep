@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -95,3 +96,13 @@ def fingerprint(parts: Iterable[str]) -> str:
         digest.update(part.encode("utf-8"))
         digest.update(b"\0")
     return digest.hexdigest()
+
+
+def next_attempt_number(root: Path) -> int:
+    pattern = re.compile(r"attempt-(\d+)")
+    numbers = [
+        int(match.group(1))
+        for path in root.glob("attempt-*")
+        if path.is_dir() and (match := pattern.fullmatch(path.name))
+    ]
+    return max(numbers, default=0) + 1

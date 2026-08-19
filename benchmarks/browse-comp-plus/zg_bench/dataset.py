@@ -55,7 +55,10 @@ def prepared_dataset(config: BenchmarkConfig, artifacts: Path) -> Path | None:
         )
     source = (artifacts / "source").resolve()
     decrypted = source / "browsecomp_plus_decrypted.jsonl"
-    if not decrypted.is_file():
+    if (
+        not decrypted.is_file()
+        or sha256_file(decrypted) != queries.get("sha256")
+    ):
         return None
     try:
         entries = [*queries["parquet_files"], *corpus["parquet_files"]]
@@ -65,12 +68,14 @@ def prepared_dataset(config: BenchmarkConfig, artifacts: Path) -> Path | None:
         try:
             path = (source / entry["path"]).resolve()
             size = int(entry["bytes"])
+            digest = str(entry["sha256"])
         except (KeyError, TypeError, ValueError):
             return None
         if (
             not path.is_relative_to(source)
             or not path.is_file()
             or path.stat().st_size != size
+            or sha256_file(path) != digest
         ):
             return None
     return state_path
@@ -267,6 +272,7 @@ def _docids(value: Any) -> list[str]:
 
 def load_queries(path: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
     with path.open(encoding="utf-8") as source:
         for number, line in enumerate(source, 1):
             if not line.strip():
@@ -274,9 +280,21 @@ def load_queries(path: Path) -> list[dict[str, Any]]:
             row = json.loads(line)
             if not isinstance(row, dict) or "query_id" not in row or "query" not in row:
                 raise ValueError(f"{path}:{number}: invalid BrowseComp-Plus row")
+            query_id = str(row["query_id"])
+            if (
+                not query_id
+                or query_id in {".", ".."}
+                or "/" in query_id
+                or "\\" in query_id
+                or "\0" in query_id
+            ):
+                raise ValueError(f"{path}:{number}: unsafe query ID {query_id!r}")
+            if query_id in seen:
+                raise ValueError(f"{path}:{number}: duplicate query ID {query_id!r}")
+            seen.add(query_id)
             rows.append(
                 {
-                    "query_id": str(row["query_id"]),
+                    "query_id": query_id,
                     "query": str(row["query"]),
                     "answer": str(row.get("answer", "")),
                     "evidence_docs": _docids(row.get("evidence_docs")),

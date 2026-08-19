@@ -173,6 +173,7 @@ def run_attempt(
     artifacts: Path,
     *,
     query_id: str,
+    trial_index: int,
     prompt: str,
     profile: Profile,
     model: str,
@@ -286,7 +287,8 @@ def run_attempt(
     activity = [started]
     next_heartbeat = started + HEARTBEAT_SECONDS
     progress_width = _progress(
-        f"→ case {query_id} · {profile} · attempt {attempt}", 0
+        f"→ case {query_id} · trial {trial_index} · {profile} · attempt {attempt}",
+        0,
     )
     with events_path.open("wb") as events, stderr_path.open("wb") as errors:
         process = subprocess.Popen(
@@ -318,7 +320,8 @@ def run_attempt(
                 now = time.monotonic()
                 if now >= next_heartbeat:
                     progress_width = _progress(
-                        f"· case {query_id} · {profile} · attempt {attempt} · "
+                        f"· case {query_id} · trial {trial_index} · {profile} · "
+                        f"attempt {attempt} · "
                         f"elapsed {_elapsed(now - started)} · "
                         f"last activity {_elapsed(now - activity[0])} ago",
                         progress_width,
@@ -353,14 +356,17 @@ def run_attempt(
     )
 
     server_trace_path = output_dir / "zvec-server.jsonl"
+    server_trace_written = False
     if profile == "zvec-grep" and server_log.is_file():
         with server_log.open("rb") as source:
             source.seek(min(server_log_offset, server_log.stat().st_size))
             server_trace = source.read().decode("utf-8", errors="replace")
         atomic_write_text(server_trace_path, server_trace)
+        server_trace_written = True
     result = AttemptResult(
         query_id=query_id,
         profile=profile,
+        trial_index=trial_index,
         status=status,
         attempt=attempt,
         started_at=started_at,
@@ -375,7 +381,7 @@ def run_attempt(
             "response": str(final_path.resolve()),
             **(
                 {"zvec_server": str(server_trace_path.resolve())}
-                if profile == "zvec-grep"
+                if server_trace_written
                 else {}
             ),
         },

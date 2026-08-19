@@ -53,7 +53,9 @@ def build_parser() -> argparse.ArgumentParser:
     status = subparsers.add_parser("status", help="show paired run progress")
     status.add_argument("run_id", nargs="?")
 
-    inspect = subparsers.add_parser("inspect", help="print one persisted trial")
+    inspect = subparsers.add_parser(
+        "inspect", help="print persisted trials for one case and profile"
+    )
     inspect.add_argument("run_id")
     inspect.add_argument("--case", required=True)
     inspect.add_argument("--profile", choices=("baseline", "zvec-grep"), required=True)
@@ -115,25 +117,40 @@ def _status(artifacts: Path, run_id: str | None) -> int:
     root = _selected_run(artifacts, run_id)
     metadata = json.loads((root / "run.json").read_text(encoding="utf-8"))
     profiles = {"baseline": {}, "zvec-grep": {}}
-    persisted_pairs = 0
-    completed_pairs = 0
+    persisted_cases = 0
+    completed_cases = 0
+    persisted_trials = 0
+    completed_trials = 0
     for query_id in metadata["query_ids"]:
         case = root / "cases" / str(query_id)
         pair_path = case / "pair.json"
         if pair_path.is_file():
-            persisted_pairs += 1
+            persisted_cases += 1
             pair = json.loads(pair_path.read_text(encoding="utf-8"))
             if pair["eligible"] is True:
-                completed_pairs += 1
-        for profile in profiles:
-            path = case / profile / "result.json"
-            if path.is_file():
-                status = json.loads(path.read_text(encoding="utf-8"))["status"]
-                profiles[profile][status] = profiles[profile].get(status, 0) + 1
+                completed_cases += 1
+            persisted_trials += int(pair["persisted_trials"])
+            completed_trials += int(pair["eligible_trials"])
+        for trial_index in range(1, int(metadata["trials_per_case"]) + 1):
+            for profile in profiles:
+                path = (
+                    case
+                    / profile
+                    / "trials"
+                    / f"trial-{trial_index:03d}"
+                    / "result.json"
+                )
+                if path.is_file():
+                    status = json.loads(path.read_text(encoding="utf-8"))["status"]
+                    profiles[profile][status] = profiles[profile].get(status, 0) + 1
     print(f"Run: {metadata['run_id']}")
-    print(f"Completed pairs: {completed_pairs} / {len(metadata['query_ids'])}")
-    if persisted_pairs != completed_pairs:
-        print(f"Persisted pair records: {persisted_pairs}")
+    print(f"Completed cases: {completed_cases} / {len(metadata['query_ids'])}")
+    if persisted_cases != completed_cases:
+        print(f"Persisted case records: {persisted_cases}")
+    planned_trials = len(metadata["query_ids"]) * int(metadata["trials_per_case"])
+    print(f"Completed trials: {completed_trials} / {planned_trials}")
+    if persisted_trials != completed_trials:
+        print(f"Persisted trial records: {persisted_trials}")
     for profile, counts in profiles.items():
         rendered = (
             ", ".join(f"{name}={count}" for name, count in sorted(counts.items()))
@@ -196,14 +213,32 @@ def _resource_change(
     difference = 100 * abs(treatment - baseline) / baseline
     direction = "less" if treatment < baseline else "more"
     rendered = f"{difference:.1f}% {direction}"
-    if speedup and treatment > 0:
+    if speedup and treatment > 0 and treatment < baseline:
         rendered += f" · {baseline / treatment:.2f}× speedup"
+    elif speedup and treatment > baseline:
+        rendered += f" · {treatment / baseline:.2f}× slower"
     return rendered, treatment < baseline
+
+
+def _show_run_result(console: Console, root: Path) -> int:
+    metadata = read_json(root / "run.json")
+    completed = int(metadata.get("completed_cases", 0))
+    planned = len(metadata["query_ids"])
+    console.blank()
+    if completed == planned:
+        console.success("Run complete")
+    else:
+        console.warning(
+            f"Run finished with incomplete cases: {completed} / {planned} completed"
+        )
+    console.identifier("Run", root.name)
+    console.detail("Artifacts", root)
+    return 0 if completed == planned else 1
 
 
 def _show_report(console: Console, report: Path) -> None:
     summary = json.loads((report / "summary.json").read_text(encoding="utf-8"))
-    answer = summary["quality"]["answer"]
+    answer = summary["quality"]
     baseline = summary["profiles"]["baseline"]
     treatment = summary["profiles"]["zvec-grep"]
     console.success("Report generated")
@@ -213,7 +248,12 @@ def _show_report(console: Console, report: Path) -> None:
         f"reasoning {summary['reasoning_effort']}",
     )
     console.detail(
-        "Pairs", f"{summary['completed_pairs']} / {summary['planned_pairs']} completed"
+        "Cases",
+        f"{summary['cases']['completed']} / {summary['cases']['planned']} completed",
+    )
+    console.detail(
+        "Trials",
+        f"{summary['trials']['completed']} / {summary['trials']['planned']} completed",
     )
     if answer.get("status") in {"scored", "partial"}:
         baseline_quality = float(answer["baseline_accuracy_percent"])
@@ -223,40 +263,47 @@ def _show_report(console: Console, report: Path) -> None:
             "Quality",
             f"baseline {baseline_quality:.2f}% · "
             f"zvec-grep {treatment_quality:.2f}% · "
-            f"{answer['scored_pairs']} / {summary['completed_pairs']} scored"
+            f"{answer['scored_trials']} / {summary['trials']['completed']} scored"
             + (" (partial)" if answer["status"] == "partial" else ""),
             change,
             favorable=favorable,
         )
     else:
         console.detail("Quality", "pending evaluation")
-    usage_quality = summary["quality"]["zvec_grep_usage"]
+    usage_quality = summary["zvec_grep_usage_audit"]
     if usage_quality.get("status") in {"scored", "partial"}:
         console.detail(
             "zvec-grep usage",
-            f"{usage_quality['correct_cases']} / "
-            f"{usage_quality['evaluated_cases']} correct",
+            f"{usage_quality['correct_trials']} / "
+            f"{usage_quality['evaluated_trials']} correct",
         )
-    baseline_tokens = (
-        baseline["tokens"]["input_total"] + baseline["tokens"]["output_total"]
-    )
-    treatment_tokens = (
-        treatment["tokens"]["input_total"] + treatment["tokens"]["output_total"]
-    )
-    change, favorable = _resource_change(baseline_tokens, treatment_tokens)
-    console.metric(
-        "Tokens",
-        f"baseline {baseline_tokens:,} · zvec-grep {treatment_tokens:,}",
-        change,
-        favorable=favorable,
-    )
+    elif usage_quality.get("status") == "pending":
+        console.detail("zvec-grep usage", "pending smoke-test audit")
+    baseline_token_summary = baseline["tokens"]["input"]
+    treatment_token_summary = treatment["tokens"]["input"]
+    if (
+        baseline_token_summary["available"]
+        and treatment_token_summary["available"]
+    ):
+        baseline_tokens = float(baseline_token_summary["total"])
+        treatment_tokens = float(treatment_token_summary["total"])
+        change, favorable = _resource_change(baseline_tokens, treatment_tokens)
+        console.metric(
+            "Input tokens",
+            f"baseline {baseline_tokens:,.0f} · "
+            f"zvec-grep {treatment_tokens:,.0f}",
+            change,
+            favorable=favorable,
+        )
+    else:
+        console.detail("Input tokens", "unavailable")
     change, favorable = _resource_change(
-        baseline["wall_seconds"]["total"],
-        treatment["wall_seconds"]["total"],
+        float(baseline["wall_seconds"]["total"]),
+        float(treatment["wall_seconds"]["total"]),
         speedup=True,
     )
     console.metric(
-        "Wall time",
+        "Agent time",
         f"baseline {baseline['wall_seconds']['total']:,.1f}s · "
         f"zvec-grep {treatment['wall_seconds']['total']:,.1f}s",
         change,
@@ -432,11 +479,7 @@ def main(argv: list[str] | None = None) -> int:
                 "Run interrupted; use 'zg-bench resume <run-id>' to continue"
             )
             return 130
-        console.blank()
-        console.success("Run complete")
-        console.identifier("Run", root.name)
-        console.detail("Artifacts", root)
-        return 0
+        return _show_run_result(console, root)
     if args.command == "resume":
         console = Console()
         console.heading("BrowseComp-Plus resume")
@@ -456,11 +499,7 @@ def main(argv: list[str] | None = None) -> int:
         except KeyboardInterrupt:
             console.warning("Run interrupted; use the same resume command to continue")
             return 130
-        console.blank()
-        console.success("Run complete")
-        console.identifier("Run", root.name)
-        console.detail("Artifacts", root)
-        return 0
+        return _show_run_result(console, root)
     if args.command == "status":
         try:
             return _status(artifacts, args.run_id)
@@ -473,13 +512,46 @@ def main(argv: list[str] | None = None) -> int:
         except (OSError, RuntimeError, ValueError) as error:
             Console().error(str(error))
             return 1
-        result = run_root / "cases" / args.case / args.profile / "result.json"
-        if not result.is_file():
-            raise SystemExit(f"error: trial not found: {result}")
-        print(result.read_text(encoding="utf-8"), end="")
+        metadata = read_json(run_root / "run.json")
+        results = []
+        planned_trials = int(metadata["trials_per_case"])
+        for trial_index in range(1, planned_trials + 1):
+            result = (
+                run_root
+                / "cases"
+                / args.case
+                / args.profile
+                / "trials"
+                / f"trial-{trial_index:03d}"
+                / "result.json"
+            )
+            if result.is_file():
+                results.append(read_json(result))
+        if not results:
+            raise SystemExit(
+                "error: no persisted trials found for "
+                f"case {args.case}, profile {args.profile}"
+            )
+        print(
+            json.dumps(
+                {
+                    "case": args.case,
+                    "profile": args.profile,
+                    "planned_trials": planned_trials,
+                    "persisted_trials": len(results),
+                    "trials": results,
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
         if args.events:
-            raw = json.loads(result.read_text(encoding="utf-8"))
-            print(Path(raw["paths"]["events"]).read_text(encoding="utf-8"), end="")
+            for raw in results:
+                print(f"\n--- trial {raw['trial_index']} events ---")
+                print(
+                    Path(raw["paths"]["events"]).read_text(encoding="utf-8"),
+                    end="",
+                )
         return 0
     if args.command == "evaluate":
         console = Console()
