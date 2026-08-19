@@ -136,9 +136,7 @@ Each benchmark follows a **controlled, reproducible paired A/B protocol**: the
 same agent runs the same pinned tasks with identical model, prompt, environment,
 and limits; **only `zg` access and usage guidance differ**.
 
-<p align="center">
-  <img src="./.github/assets/benchmark-comparison.svg" alt="Paired baseline and zvec-grep comparison for SWE-QA-Bench and BrowseComp-Plus" width="900" />
-</p>
+<img src="./.github/assets/benchmark-comparison.svg" alt="Paired baseline and zvec-grep comparison for SWE-QA-Bench and BrowseComp-Plus" width="900" />
 
 | Benchmark | Answer&nbsp;quality&nbsp;↑ | Input&nbsp;tokens&nbsp;↓ | Tool&nbsp;calls&nbsp;↓ | Agent&nbsp;time&nbsp;↓ |
 | --- | ---: | ---: | ---: | ---: |
