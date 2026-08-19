@@ -132,7 +132,7 @@ zg 通过**缩小有效搜索空间**，帮助 Agent 更快找到相关证据 �
 
 每项测试均采用**受控、可复现的配对 A/B 评测**：同一个 Agent 在完全相同的模型、Prompt、环境和资源限制下执行同一组预先固定的任务；**实验组仅额外提供 `zg` 工具及其使用说明**。
 
-<img src="./.github/assets/benchmark-comparison-cn.svg?v=2" alt="SWE-QA-Bench 和 BrowseComp-Plus 中 Baseline 与 zvec-grep 的配对对比" width="900" />
+<img src="./.github/assets/benchmark-comparison-cn-v2.svg" alt="SWE-QA-Bench 和 BrowseComp-Plus 中 Baseline 与 zvec-grep 的配对对比" width="900" />
 
 | 测试 | 回答质量&nbsp;↑ | 输入&nbsp;Token&nbsp;↓ | 工具调用&nbsp;↓ | Agent&nbsp;耗时&nbsp;↓ |
 | --- | ---: | ---: | ---: | ---: |
