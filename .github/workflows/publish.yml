@@ -19,6 +19,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Setup Node.js
@@ -26,6 +27,47 @@ jobs:
         with:
           node-version: 24
           cache: npm
+
+      - name: Validate release source and version
+        env:
+          RELEASE_REF: ${{ github.ref }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          if [[ "$RELEASE_REF" != "refs/heads/main" ]]; then
+            echo "::error::npm releases must run from main, not $RELEASE_REF"
+            exit 1
+          fi
+
+          PACKAGE_NAME="$(node -p "require('./package.json').name")"
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          export PACKAGE_VERSION
+          LOCK_VERSION="$(node -p "require('./package-lock.json').version")"
+          LOCK_ROOT_VERSION="$(node -p "require('./package-lock.json').packages[''].version")"
+          EXPECTED_TAG="v$PACKAGE_VERSION"
+
+          if [[ "$LOCK_VERSION" != "$PACKAGE_VERSION" || "$LOCK_ROOT_VERSION" != "$PACKAGE_VERSION" ]]; then
+            echo "::error::package.json and package-lock.json versions must match"
+            exit 1
+          fi
+
+          TAG_SHA="$(git rev-parse --verify "refs/tags/$EXPECTED_TAG^{commit}" 2>/dev/null)" || true
+          if [[ -z "$TAG_SHA" || "$TAG_SHA" != "$RELEASE_SHA" ]]; then
+            echo "::error::$EXPECTED_TAG must point to the main commit being released ($RELEASE_SHA)"
+            exit 1
+          fi
+
+          npm view "$PACKAGE_NAME" versions --json | node --input-type=module -e '
+            let input = "";
+            for await (const chunk of process.stdin) input += chunk;
+            const published = JSON.parse(input);
+            const versions = Array.isArray(published) ? published : [published];
+            const version = process.env.PACKAGE_VERSION;
+            if (versions.includes(version)) {
+              console.error(`::error::${version} is already published to npm`);
+              process.exit(1);
+            }
+            console.log(`Release validation passed: ${version} is tagged and unpublished.`);
+          '
 
       - name: Install dependencies
         run: npm ci
