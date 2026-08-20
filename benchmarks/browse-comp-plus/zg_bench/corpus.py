@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
@@ -45,12 +46,68 @@ def _safe_docid(value: Any) -> str:
     return docid
 
 
-def _workspace_snapshot(root: Path) -> dict[str, int | str]:
+@lru_cache(maxsize=4)
+def _manifest_state_cached(
+    manifest_path: str,
+    mtime_ns: int,
+    size: int,
+    source_revision: str,
+) -> tuple[frozenset[str], str]:
+    del mtime_ns, size
+    files: set[str] = set()
+    digest = hashlib.sha256()
+    digest.update(source_revision.encode("utf-8"))
+    digest.update(b"\0")
+    with Path(manifest_path).open(encoding="utf-8") as manifest:
+        for line in manifest:
+            entry = json.loads(line)
+            docid = _safe_docid(entry["docid"])
+            relative = Path(str(entry["path"]))
+            if (
+                relative.name != relative.as_posix()
+                or relative.suffix != ".md"
+                or relative.name != f"{docid}.md"
+            ):
+                raise RuntimeError(
+                    f"invalid corpus path in manifest: {relative}"
+                )
+            files.add(relative.name)
+            for value in (docid, entry["sha256"]):
+                digest.update(str(value).encode("utf-8"))
+                digest.update(b"\0")
+    return frozenset(files), digest.hexdigest()
+
+
+def _manifest_files(manifest: Path, state: dict[str, Any]) -> frozenset[str]:
+    metadata = manifest.stat()
+    files, actual_fingerprint = _manifest_state_cached(
+        str(manifest.resolve()),
+        metadata.st_mtime_ns,
+        metadata.st_size,
+        str(state["source_revision"]),
+    )
+    if (
+        len(files) != int(state["count"])
+        or actual_fingerprint != state["fingerprint"]
+    ):
+        raise RuntimeError("corpus manifest does not match its prepared state")
+    return files
+
+
+def _workspace_state(
+    root: Path,
+    corpus_files: frozenset[str] | set[str],
+    *,
+    retained: frozenset[str] = frozenset(),
+) -> tuple[dict[str, int | str], list[Path]]:
     digest = hashlib.sha256()
     entries = 0
     total_bytes = 0
+    residuals: list[Path] = []
     for path in sorted(root.iterdir(), key=lambda item: item.name):
-        if path.name == ".zvec-grep":
+        if path.name not in corpus_files:
+            if path.name not in retained:
+                residuals.append(path)
             continue
         metadata = path.lstat()
         kind = (
@@ -65,11 +122,27 @@ def _workspace_snapshot(root: Path) -> dict[str, int | str]:
         )
         entries += 1
         total_bytes += metadata.st_size
-    return {
-        "entries": entries,
-        "total_bytes": total_bytes,
-        "metadata_fingerprint": digest.hexdigest(),
-    }
+    return (
+        {
+            "entries": entries,
+            "total_bytes": total_bytes,
+            "metadata_fingerprint": digest.hexdigest(),
+        },
+        residuals,
+    )
+
+
+def _remove_residuals(paths: list[Path]) -> None:
+    for path in paths:
+        try:
+            if path.is_symlink() or not path.is_dir():
+                path.unlink(missing_ok=True)
+            else:
+                shutil.rmtree(path)
+        except OSError as error:
+            raise RuntimeError(
+                f"could not remove workspace residue {path}: {error}"
+            ) from error
 
 
 def prepared_corpus(config: BenchmarkConfig, artifacts: Path) -> Path | None:
@@ -104,6 +177,20 @@ def prepared_corpus(config: BenchmarkConfig, artifacts: Path) -> Path | None:
         or not manifest.is_file()
     ):
         return None
+    try:
+        corpus_files = _manifest_files(manifest, state)
+    except (KeyError, OSError, TypeError, ValueError, RuntimeError):
+        return None
+    baseline_snapshot, baseline_residuals = _workspace_state(
+        baseline, corpus_files
+    )
+    treatment_snapshot, treatment_residuals = _workspace_state(
+        treatment,
+        corpus_files,
+        retained=frozenset({".zvec-grep"}),
+    )
+    _remove_residuals(baseline_residuals)
+    _remove_residuals(treatment_residuals)
     snapshots = state.get("workspace_snapshots")
     if (
         not isinstance(snapshots, dict)
@@ -115,8 +202,8 @@ def prepared_corpus(config: BenchmarkConfig, artifacts: Path) -> Path | None:
         )
         or snapshots
         != {
-            "baseline": _workspace_snapshot(baseline),
-            "zvec-grep": _workspace_snapshot(treatment),
+            "baseline": baseline_snapshot,
+            "zvec-grep": treatment_snapshot,
         }
     ):
         return None
@@ -134,9 +221,25 @@ def validate_workspace(artifacts: Path, profile: str) -> None:
     ):
         raise RuntimeError(f"corpus state is missing the {profile} snapshot")
     root = workspace_root(artifacts, profile)
-    if not root.is_dir() or _workspace_snapshot(root) != snapshots[profile]:
+    if not root.is_dir():
+        raise RuntimeError(f"{profile} workspace is missing")
+    manifest = artifacts / "state" / "corpus-manifest.jsonl"
+    try:
+        corpus_files = _manifest_files(manifest, state)
+    except (KeyError, OSError, TypeError, ValueError) as error:
+        raise RuntimeError("corpus manifest is invalid") from error
+    retained = (
+        frozenset({".zvec-grep"})
+        if profile == "zvec-grep"
+        else frozenset()
+    )
+    snapshot, residuals = _workspace_state(
+        root, corpus_files, retained=retained
+    )
+    _remove_residuals(residuals)
+    if snapshot != snapshots[profile]:
         raise RuntimeError(
-            f"{profile} workspace changed during benchmark execution; "
+            f"{profile} Markdown corpus changed during benchmark execution; "
             "restore the prepared corpus before continuing"
         )
 
@@ -163,6 +266,7 @@ def materialize(
     count = 0
     total_bytes = 0
     maximum_bytes = 0
+    corpus_files: set[str] = set()
     aggregate_parts: list[str] = [config.dataset.corpus_revision]
     expected_count = config.dataset.expected_corpus_documents
     if progress:
@@ -186,6 +290,7 @@ def materialize(
                 "sha256": digest,
             }
             manifest.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            corpus_files.add(relative.name)
             count += 1
             total_bytes += len(encoded)
             maximum_bytes = max(maximum_bytes, len(encoded))
@@ -265,8 +370,12 @@ def materialize(
         "maximum_file_bytes": maximum_bytes,
         "fingerprint": fingerprint(aggregate_parts),
         "workspace_snapshots": {
-            "baseline": _workspace_snapshot(baseline),
-            "zvec-grep": _workspace_snapshot(treatment),
+            "baseline": _workspace_state(baseline, corpus_files)[0],
+            "zvec-grep": _workspace_state(
+                treatment,
+                corpus_files,
+                retained=frozenset({".zvec-grep"}),
+            )[0],
         },
         "content_policy": "Parquet text fields are written byte-for-byte as UTF-8",
     }

@@ -318,22 +318,26 @@ def _run_profile(
     for offset in range(_remaining_attempts(config, selected_path)):
         number = first_attempt + offset
         output = attempts_root / f"attempt-{number:03d}"
-        final = run_attempt(
-            config,
-            artifacts,
-            query_id=query_id,
-            trial_index=trial_index,
-            prompt=_prompt(str(query["query"])),
-            profile=profile,
-            model=model,
-            reasoning_effort=reasoning_effort,
-            attempt=number,
-            output_dir=output,
-            profiles_root=profiles_root,
-            codex_bin=codex_bin,
-            idle_timeout_seconds=config.run.idle_timeout_seconds,
-        )
-        validate_workspace(artifacts, profile)
+        try:
+            final = run_attempt(
+                config,
+                artifacts,
+                query_id=query_id,
+                trial_index=trial_index,
+                prompt=_prompt(str(query["query"])),
+                profile=profile,
+                model=model,
+                reasoning_effort=reasoning_effort,
+                attempt=number,
+                output_dir=output,
+                profiles_root=profiles_root,
+                codex_bin=codex_bin,
+                idle_timeout_seconds=config.run.idle_timeout_seconds,
+            )
+        finally:
+            # Validate corpus metadata and remove all non-whitelisted files,
+            # including residue left by failed or interrupted attempts.
+            validate_workspace(artifacts, profile)
         if (
             final.status == "completed"
             or not final.infrastructure_failure
