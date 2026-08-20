@@ -560,73 +560,102 @@ def _runtime_preparation(metadata: dict[str, Any]) -> dict[str, int | float]:
 
 def _primary_rows(
     quality: dict[str, Any], profiles: dict[str, dict[str, Any]]
-) -> list[tuple[str, float | None, float | None]]:
+) -> list[tuple[str, float | None, float | None, bool]]:
     rows = [
         (
-            "Accuracy",
+            "Accuracy (%)",
             quality.get("baseline_accuracy_percent"),
             quality.get("treatment_accuracy_percent"),
+            True,
         )
     ]
     baseline_rows = _resource_rows(profiles["baseline"])
     treatment_rows = dict(_resource_rows(profiles["zvec-grep"]))
-    rows.extend((label, value, treatment_rows[label]) for label, value in baseline_rows)
+    rows.extend(
+        (label, value, treatment_rows[label], False)
+        for label, value in baseline_rows
+    )
     return rows
 
 
+def _relative_change(baseline: float, treatment: float) -> str:
+    if baseline == 0:
+        return "N/A"
+    value = 100 * (treatment - baseline) / baseline
+    if value > 0:
+        return f"+{value:,.2f}%"
+    if value < 0:
+        return f"−{abs(value):,.2f}%"
+    return "0.00%"
+
+
 def _markdown_metric_rows(
-    rows: Iterable[tuple[str, float | None, float | None]]
+    rows: Iterable[tuple[str, float | None, float | None, bool]]
 ) -> str:
     output = []
-    for label, baseline, treatment in rows:
+    for label, baseline, treatment, percentage_points in rows:
         difference = None
         if baseline is not None and treatment is not None:
             difference = treatment - baseline
+        absolute_change = _display(difference)
+        relative_change = "-"
+        if difference is not None:
+            if percentage_points:
+                absolute_change += " pp"
+            else:
+                relative_change = _relative_change(baseline, treatment)
         output.append(
             f"| {label} | {_display(baseline)} | {_display(treatment)} | "
-            f"{_display(difference)} |"
+            f"{absolute_change} | {relative_change} |"
         )
     return "\n".join(output)
 
 
 def _retrieval_rows(
     retrieval: dict[str, Any], interactions: dict[str, Any]
-) -> list[tuple[str, float | None, float | None]]:
+) -> list[tuple[str, float | None, float | None, bool]]:
     return [
         (
             "Evidence recall (%)",
             retrieval["evidence"]["baseline"]["mean_recall_percent"],
             retrieval["evidence"]["zvec-grep"]["mean_recall_percent"],
+            True,
         ),
         (
             "Evidence hit rate (%)",
             retrieval["evidence"]["baseline"]["hit_rate_percent"],
             retrieval["evidence"]["zvec-grep"]["hit_rate_percent"],
+            True,
         ),
         (
             "Gold recall (%)",
             retrieval["gold"]["baseline"]["mean_recall_percent"],
             retrieval["gold"]["zvec-grep"]["mean_recall_percent"],
+            True,
         ),
         (
             "Gold hit rate (%)",
             retrieval["gold"]["baseline"]["hit_rate_percent"],
             retrieval["gold"]["zvec-grep"]["hit_rate_percent"],
+            True,
         ),
         (
             "Average tool-interaction batches",
             interactions["baseline"]["batches"]["mean"],
             interactions["zvec-grep"]["batches"]["mean"],
+            False,
         ),
         (
             "Average batch to first evidence",
             interactions["baseline"]["first_evidence_batch"]["mean"],
             interactions["zvec-grep"]["first_evidence_batch"]["mean"],
+            False,
         ),
         (
             "Average batch to first gold",
             interactions["baseline"]["first_gold_batch"]["mean"],
             interactions["zvec-grep"]["first_gold_batch"]["mean"],
+            False,
         ),
     ]
 
@@ -929,8 +958,8 @@ A model reviews each Treatment trace to determine whether the Agent used zvec-gr
 """
         both_correct_markdown = f"""This secondary view isolates resource and retrieval behavior on the {len(both_correct_trials)} trials where both profiles answered correctly. It does not replace the all-trial primary results.
 
-| Metric | Baseline | Treatment (zvec-grep) | Treatment - Baseline |
-| --- | ---: | ---: | ---: |
+| Metric | Baseline | Treatment (zvec-grep) | Absolute change | Relative change |
+| --- | ---: | ---: | ---: | ---: |
 {_markdown_metric_rows(both_rows)}
 """
     else:
@@ -949,10 +978,10 @@ A model reviews each Treatment trace to determine whether the Agent used zvec-gr
 
 ## Primary results
 
-All completed trials contribute to these means, including regressions. Accuracy is scored independently for every profile and trial.
+All completed trials contribute to these means, including regressions. Accuracy is scored independently for every profile and trial. Relative changes compare Treatment with Baseline; negative resource changes mean lower use with zvec-grep.
 
-| Metric | Baseline | Treatment (zvec-grep) | Treatment - Baseline |
-| --- | ---: | ---: | ---: |
+| Metric | Baseline | Treatment (zvec-grep) | Absolute change | Relative change |
+| --- | ---: | ---: | ---: | ---: |
 {_markdown_metric_rows(primary_rows)}
 
 ## Quality outcomes
@@ -973,8 +1002,8 @@ Each case is compared using the mean of its trials. Negative median change means
 
 ## Retrieval diagnostics
 
-| Metric | Baseline | Treatment (zvec-grep) | Treatment - Baseline |
-| --- | ---: | ---: | ---: |
+| Metric | Baseline | Treatment (zvec-grep) | Absolute change | Relative change |
+| --- | ---: | ---: | ---: | ---: |
 {_markdown_metric_rows(_retrieval_rows(retrieval, interactions))}
 
 ## Tool behavior
