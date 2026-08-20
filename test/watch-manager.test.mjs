@@ -88,6 +88,193 @@ test("watch manager uses per-directory watchers on Linux Node 22.0", async () =>
   }
 });
 
+test("watch manager drops ignored file events before creating a change batch", async () => {
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-watch-ignore-"),
+  );
+  const root = join(temporaryDirectory, "repo");
+  const dependency = join(root, "node_modules", "pkg", "index.js");
+  await mkdir(join(root, "node_modules", "pkg"), { recursive: true });
+  await writeFile(join(root, ".gitignore"), "node_modules/\n");
+  await writeFile(dependency, "module.exports = true;\n");
+  let listener;
+  const watcher = new EventEmitter();
+  watcher.close = () => {};
+  const batches = [];
+  const pending = [];
+  const manager = new WatchManager({
+    root,
+    debounceMs: 5,
+    maxWaitMs: 20,
+    reconcileIntervalMs: 0,
+    getRootPaths: () => [{ absolutePath: root, recursive: true }],
+    watchFactory: (_root, _options, callback) => {
+      listener = callback;
+      return watcher;
+    },
+    onPendingChange: (value) => pending.push(value),
+    onChanges: (changes) => batches.push(changes),
+  });
+  try {
+    manager.start();
+    listener("change", "node_modules/pkg/index.js");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(batches.length, 0);
+    assert.deepEqual(pending, []);
+
+    listener("change", ".gitignore");
+    await waitFor(() => batches.length === 1);
+    assert.deepEqual(batches[0].rescanDirectories, [root]);
+  } finally {
+    await manager.close();
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("fallback watcher prunes ignored directories and restores newly included ones", async () => {
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-watch-ignore-fallback-"),
+  );
+  const root = join(temporaryDirectory, "repo");
+  const source = join(root, "src");
+  const dependencies = join(root, "node_modules");
+  await mkdir(source, { recursive: true });
+  await mkdir(join(dependencies, "pkg"), { recursive: true });
+  await writeFile(join(root, ".gitignore"), "node_modules/\n");
+  const listeners = new Map();
+  const manager = new WatchManager({
+    root,
+    platform: "linux",
+    nodeVersion: "22.0.0",
+    debounceMs: 5,
+    maxWaitMs: 20,
+    reconcileIntervalMs: 0,
+    getRootPaths: () => [{ absolutePath: root, recursive: true }],
+    watchFactory: (directory, options, callback) => {
+      assert.equal(options.recursive, false);
+      const watcher = new EventEmitter();
+      watcher.close = () => {};
+      listeners.set(directory, callback);
+      return watcher;
+    },
+    onChanges: () => {},
+  });
+  try {
+    manager.start();
+    await waitFor(() => listeners.has(source));
+    assert.equal(listeners.has(dependencies), false);
+
+    await writeFile(join(root, ".gitignore"), "!node_modules/\n");
+    listeners.get(root)("change", ".gitignore");
+    await waitFor(() => listeners.has(dependencies));
+  } finally {
+    await manager.close();
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("fallback watcher honors noIgnore when selecting directories", async () => {
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-watch-no-ignore-"),
+  );
+  const root = join(temporaryDirectory, "repo");
+  const dependencies = join(root, "node_modules");
+  await mkdir(dependencies, { recursive: true });
+  await writeFile(join(root, ".gitignore"), "node_modules/\n");
+  const watched = new Set();
+  const manager = new WatchManager({
+    root,
+    platform: "linux",
+    nodeVersion: "22.0.0",
+    reconcileIntervalMs: 0,
+    getRootPaths: () => [
+      { absolutePath: root, recursive: true, noIgnore: true },
+    ],
+    watchFactory: (directory, options) => {
+      assert.equal(options.recursive, false);
+      const watcher = new EventEmitter();
+      watcher.close = () => {};
+      watched.add(directory);
+      return watcher;
+    },
+    onChanges: () => {},
+  });
+  try {
+    manager.start();
+    await waitFor(() => watched.has(dependencies));
+  } finally {
+    await manager.close();
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("fallback watcher mirrors scanner hidden-directory selection", async () => {
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-watch-hidden-"),
+  );
+  const root = join(temporaryDirectory, "repo");
+  const source = join(root, "src");
+  const idea = join(root, ".idea");
+  const vscode = join(root, ".vscode");
+  const git = join(root, ".git");
+  const metadata = join(root, ".zvec-grep");
+  await Promise.all(
+    [source, idea, vscode, git, metadata].map((directory) =>
+      mkdir(directory, { recursive: true }),
+    ),
+  );
+
+  const run = async (rootPath) => {
+    const watched = new Set();
+    const manager = new WatchManager({
+      root,
+      platform: "linux",
+      nodeVersion: "22.0.0",
+      reconcileIntervalMs: 0,
+      getRootPaths: () => [rootPath],
+      watchFactory: (directory, options) => {
+        assert.equal(options.recursive, false);
+        const watcher = new EventEmitter();
+        watcher.close = () => {};
+        watched.add(directory);
+        return watcher;
+      },
+      onChanges: () => {},
+    });
+    manager.start();
+    await waitFor(() => watched.has(source));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await manager.close();
+    return watched;
+  };
+
+  try {
+    const defaults = await run({ absolutePath: root, recursive: true });
+    assert.equal(defaults.has(idea), false);
+    assert.equal(defaults.has(vscode), false);
+
+    const withHidden = await run({
+      absolutePath: root,
+      recursive: true,
+      hidden: true,
+    });
+    assert.equal(withHidden.has(idea), true);
+    assert.equal(withHidden.has(vscode), true);
+    assert.equal(withHidden.has(git), false);
+    assert.equal(withHidden.has(metadata), false);
+
+    const withInclude = await run({
+      absolutePath: root,
+      recursive: true,
+      include: [".vscode/settings.json"],
+    });
+    assert.equal(withInclude.has(idea), false);
+    assert.equal(withInclude.has(vscode), true);
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
 test("watch manager compacts an exact event storm into one directory scan", async () => {
   const temporaryDirectory = await mkdtemp(
     join(tmpdir(), "zvec-grep-watch-storm-"),

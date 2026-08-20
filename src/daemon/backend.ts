@@ -840,7 +840,10 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
       runtime.canonicalRoot,
       includeFinalStatus,
     );
-    if (includeFinalStatus) this.statusCache.set(runtime.canonicalRoot, after);
+    if (includeFinalStatus) {
+      this.statusCache.set(runtime.canonicalRoot, after);
+      await this.watchers.get(runtime.canonicalRoot)?.refreshPaths?.();
+    }
     if (!after.workspaceIndex?.embedding) {
       throw new DaemonError(
         "INDEX_MISSING",
@@ -992,6 +995,8 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
         coordinator.enqueue(changes, reason);
       },
       onPendingChange: (pending) => runtime.setWatcherPending(pending),
+      getRootPaths: () =>
+        this.statusCache.get(runtime.canonicalRoot)?.workspaceIndex?.rootPaths,
     });
     watcher.start();
     this.indexCoordinators.set(runtime.canonicalRoot, coordinator);

@@ -1,6 +1,8 @@
 import { watch, type FSWatcher } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
-import { basename, isAbsolute, join, relative, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
+import { pathCanAffectIndex } from "../engine/pipeline/indexing/scanner/index.js";
+import type { RootPath } from "../engine/types.js";
 import { ChangeSet, type ChangeSetSnapshot } from "./change-set.js";
 
 export type WatchManagerOptions = {
@@ -19,6 +21,7 @@ export type WatchManagerOptions = {
   resumeThresholdMs?: number;
   platform?: NodeJS.Platform;
   nodeVersion?: string;
+  getRootPaths?: () => readonly RootPath[] | undefined;
 };
 
 type WatchRecoveryState = {
@@ -107,6 +110,16 @@ export class WatchManager {
     await this.startFlush();
   }
 
+  async refreshPaths(): Promise<void> {
+    if (this.closed || this.directoryWatchers.size === 0) {
+      return;
+    }
+    await this.refreshDirectoryTree(
+      this.options.root,
+      this.options.watchFactory ?? watch,
+    );
+  }
+
   checkForResume(now = Date.now()): void {
     const thresholdMs = this.options.resumeThresholdMs ?? 90_000;
     if (now - this.lastResumeCheckAt > thresholdMs) {
@@ -132,10 +145,17 @@ export class WatchManager {
     if (this.closed) {
       return;
     }
+    if (!info && eventType === "rename") {
+      this.removeDirectoryWatchers(path);
+    }
+    if (!(await this.shouldTrackPath(path, info?.isDirectory() === true))) {
+      return;
+    }
+    if (this.closed) {
+      return;
+    }
     if (info?.isDirectory() && eventType === "rename") {
       void this.watchDirectoryTree(path, factory);
-    } else if (!info && eventType === "rename") {
-      this.removeDirectoryWatchers(path);
     }
     this.changes.add(
       path,
@@ -143,6 +163,9 @@ export class WatchManager {
       info?.isDirectory(),
     );
     this.scheduleFlush();
+    if (basename(path) === ".gitignore") {
+      await this.refreshDirectoryTree(dirname(path), factory);
+    }
   }
 
   private queueRecord(
@@ -328,33 +351,37 @@ export class WatchManager {
   ): Promise<void> {
     if (
       this.closed ||
-      this.watchedDirectories.has(directory) ||
       basename(directory) === ".git" ||
       basename(directory) === ".zvec-grep"
     ) {
       return;
     }
-    this.watchedDirectories.add(directory);
-    try {
-      this.addWatcher(
-        factory(directory, { recursive: false }, (eventType, filename) => {
-          if (!filename || this.closed) {
-            this.queueFullReconcile();
-            return;
-          }
-          this.queueRecord(
-            join(directory, filename.toString()),
-            eventType,
-            factory,
-          );
-        }),
-        factory,
-        directory,
-      );
-    } catch {
-      this.watchedDirectories.delete(directory);
-      this.queueFullReconcile();
+    if (!(await this.shouldTrackPath(directory, true))) {
       return;
+    }
+    if (!this.watchedDirectories.has(directory)) {
+      this.watchedDirectories.add(directory);
+      try {
+        this.addWatcher(
+          factory(directory, { recursive: false }, (eventType, filename) => {
+            if (!filename || this.closed) {
+              this.queueFullReconcile();
+              return;
+            }
+            this.queueRecord(
+              join(directory, filename.toString()),
+              eventType,
+              factory,
+            );
+          }),
+          factory,
+          directory,
+        );
+      } catch {
+        this.watchedDirectories.delete(directory);
+        this.queueFullReconcile();
+        return;
+      }
     }
     const entries = await readdir(directory, { withFileTypes: true }).catch(
       () => [],
@@ -368,12 +395,43 @@ export class WatchManager {
     );
   }
 
-  private removeDirectoryWatchers(path: string): void {
+  private async shouldTrackPath(
+    path: string,
+    isDirectory: boolean,
+  ): Promise<boolean> {
+    if (basename(path) === ".gitignore") {
+      return true;
+    }
+    try {
+      const rootPaths = this.options.getRootPaths?.();
+      return rootPaths
+        ? await pathCanAffectIndex(rootPaths, path, isDirectory)
+        : true;
+    } catch {
+      // Filtering must fail open so an unreadable rule file cannot hide a
+      // change that the indexer still needs to reconcile.
+      return true;
+    }
+  }
+
+  private async refreshDirectoryTree(
+    directory: string,
+    factory: typeof watch,
+  ): Promise<void> {
+    if (this.directoryWatchers.size === 0) {
+      return;
+    }
+    this.removeDirectoryWatchers(directory, false);
+    await this.watchDirectoryTree(directory, factory);
+  }
+
+  private removeDirectoryWatchers(path: string, includePath = true): void {
     for (const [directory, watcher] of this.directoryWatchers) {
       const pathFromDeleted = relative(path, directory);
       if (
-        pathFromDeleted === "" ||
+        (includePath && pathFromDeleted === "") ||
         (!isAbsolute(pathFromDeleted) &&
+          pathFromDeleted !== "" &&
           !pathFromDeleted.startsWith(`..${sep}`) &&
           pathFromDeleted !== "..")
       ) {

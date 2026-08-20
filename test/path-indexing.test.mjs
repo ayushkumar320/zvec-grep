@@ -8,10 +8,11 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { BaseEmbeddingModel } from "../dist/engine/models/embeddings.js";
 import {
+  pathCanAffectIndex,
   scanDirectoryPath,
   scanFilePath,
 } from "../dist/engine/pipeline/indexing/scanner/index.js";
@@ -50,6 +51,53 @@ test("path scanners rebuild gitignore rules and stay inside the requested subtre
       join(src, "ignored.ts"),
     );
     assert.equal(included.files[0].relativePath, "src/ignored.ts");
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("watch path selection stays aligned with scanner filtering", async () => {
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "zvec-grep-path-selection-"),
+  );
+  const root = join(temporaryDirectory, "repo");
+  const paths = [
+    join(root, "src", "index.ts"),
+    join(root, ".idea", "settings.ts"),
+    join(root, ".vscode", "settings.ts"),
+    join(root, "node_modules", "pkg", "index.ts"),
+    join(root, ".git", "config.ts"),
+    join(root, ".zvec-grep", "metadata.ts"),
+  ];
+  for (const path of paths) {
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, "export const value = true;\n");
+  }
+  await writeFile(join(root, ".gitignore"), "node_modules/\n");
+
+  const selections = [
+    { absolutePath: root, recursive: true },
+    { absolutePath: root, recursive: true, hidden: true },
+    {
+      absolutePath: root,
+      recursive: true,
+      include: [".vscode/settings.ts"],
+    },
+    {
+      absolutePath: root,
+      recursive: true,
+      hidden: true,
+      noIgnore: true,
+    },
+  ];
+  try {
+    for (const rootPath of selections) {
+      for (const path of paths) {
+        const selected = await pathCanAffectIndex([rootPath], path, false);
+        const scanned = await scanFilePath("workspace-index", [rootPath], path);
+        assert.equal(selected, scanned.files.length > 0, path);
+      }
+    }
   } finally {
     await rm(temporaryDirectory, { recursive: true, force: true });
   }

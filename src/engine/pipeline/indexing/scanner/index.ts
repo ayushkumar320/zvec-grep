@@ -257,6 +257,64 @@ export async function scanFilePath(
   return { files: dedupeFiles(files), diagnostics };
 }
 
+export async function pathCanAffectIndex(
+  rootPaths: readonly RootPath[],
+  absolutePath: string,
+  isDirectory: boolean,
+): Promise<boolean> {
+  for (const configuredRoot of rootPaths) {
+    const root = normalizeRootPath(configuredRoot);
+    const pathFromRoot = relative(root.absolutePath, absolutePath);
+    if (
+      isAbsolute(pathFromRoot) ||
+      pathFromRoot === ".." ||
+      pathFromRoot.startsWith(`..${sep}`)
+    ) {
+      continue;
+    }
+    if (pathFromRoot.length === 0) {
+      return true;
+    }
+
+    const depth = pathFromRoot.split(sep).filter(Boolean).length;
+    if (
+      (!root.recursive &&
+        (isDirectory || dirname(absolutePath) !== root.absolutePath)) ||
+      (root.maxDepth !== undefined &&
+        (isDirectory ? depth >= root.maxDepth : depth > root.maxDepth))
+    ) {
+      continue;
+    }
+
+    const relativePath = toDisplayPath(pathFromRoot);
+    const rules = await ignoreRulesForDirectory(root, dirname(absolutePath));
+    if (
+      !pathCanBeScanned(
+        root,
+        relativePath,
+        basename(absolutePath),
+        isDirectory,
+        rules,
+      ) ||
+      (await hasExcludedNestedGitAncestor(root, absolutePath, isDirectory))
+    ) {
+      continue;
+    }
+    if (isDirectory) {
+      return true;
+    }
+
+    const fileTypes = await resolveFileTypePatterns(
+      root.fileTypes,
+      root.excludedFileTypes,
+    );
+    if (matchesFileSelection(relativePath, root, fileTypes)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export async function scanDirectoryPath(
   workspaceIndexId: string,
   rootPaths: readonly RootPath[],
