@@ -65,6 +65,13 @@ test("npm package contains and exposes the supported public surface", async (t) 
     ),
     false,
   );
+  if (process.platform !== "win32") {
+    assert.equal(
+      paths.get("dist/cli/index.js").mode & 0o111,
+      0o111,
+      "packed zg CLI must be executable before installation",
+    );
+  }
 
   const tarball = join(packDirectory, metadata.filename);
   await writeFile(
