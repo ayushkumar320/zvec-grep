@@ -956,7 +956,7 @@ A model reviews each Treatment trace to determine whether the Agent used zvec-gr
 | Treatment only correct | {quality['treatment_only_correct']} |
 | Neither correct | {quality['neither_correct']} |
 """
-        both_correct_markdown = f"""This secondary view isolates resource and retrieval behavior on the {len(both_correct_trials)} trials where both profiles answered correctly. It does not replace the all-trial primary results.
+        both_correct_markdown = f"""Resource use is most directly comparable when both conditions answer correctly; otherwise, it may reflect an unsuccessful trajectory—for example, premature stopping or prolonged, unfocused searching when the model cannot resolve the task—rather than retrieval efficiency. This secondary view therefore compares resource and retrieval behavior on the {len(both_correct_trials)} paired trials where both Baseline and Treatment answered correctly. The primary results above still include all completed trials.
 
 | Metric | Baseline | Treatment (zvec-grep) | Absolute change | Relative change |
 | --- | ---: | ---: | ---: | ---: |
@@ -978,7 +978,7 @@ A model reviews each Treatment trace to determine whether the Agent used zvec-gr
 
 ## Primary results
 
-All completed trials contribute to these means, including regressions. Accuracy is scored independently for every profile and trial. Relative changes compare Treatment with Baseline; negative resource changes mean lower use with zvec-grep.
+Every completed Baseline and Treatment trial is included in the averages. Changes are calculated as Treatment relative to Baseline.
 
 | Metric | Baseline | Treatment (zvec-grep) | Absolute change | Relative change |
 | --- | ---: | ---: | ---: | ---: |
