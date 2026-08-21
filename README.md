@@ -128,25 +128,64 @@ zg returns the relevant passages from `sherlock-holmes.txt`, ranked ahead of
 
 ## 📊 Benchmarks
 
-zg helps agents find relevant evidence faster by **narrowing the effective
-search space** — using **fewer tokens, tool calls, and less time** while
-preserving answer quality.
-
-Each benchmark follows a **controlled, reproducible paired A/B protocol**: the
-same agent runs the same pinned tasks with identical model, prompt, environment,
-and limits; **only `zg` access and usage guidance differ**.
-
-<img src="./.github/assets/benchmark-comparison-v2.svg" alt="Paired baseline and zvec-grep comparison for SWE-QA-Bench and BrowseComp-Plus" width="900" />
-
-| Benchmark | Answer&nbsp;quality&nbsp;↑ | Avg.&nbsp;input&nbsp;tokens&nbsp;↓ | Avg.&nbsp;tool&nbsp;calls&nbsp;↓ | Avg.&nbsp;agent&nbsp;time&nbsp;↓ |
-| --- | ---: | ---: | ---: | ---: |
-| [**SWE-QA-Bench**](./benchmarks/swe-qa-bench/README.md)<br>20 tasks · Codebase QA | Judge Score<br>80.42&nbsp;→&nbsp;81.92 | 558,651&nbsp;→&nbsp;294,262 | 23.42&nbsp;→&nbsp;9.70 | 127.5s&nbsp;→&nbsp;79.7s |
-| [**BrowseComp-Plus**](./benchmarks/browse-comp-plus/README.md)<br>80 cases · Deep-research QA | Accuracy<br>90.00%&nbsp;→&nbsp;90.00% | 2.04M&nbsp;→&nbsp;1.19M | 22.70&nbsp;→&nbsp;14.24 | 284.8s&nbsp;→&nbsp;199.3s |
-
-Values show **Baseline → zg**.
+Each benchmark uses paired A/B runs with tasks, agent/model, prompt,
+environment, and limits held constant; only zg access and usage guidance
+differ.
 
 See the [benchmark documentation](./benchmarks/README.md) for full results and
 reproduction details.
+
+### 1. Cross-Domain Agent Benchmark
+
+[SWE-QA-Bench](./benchmarks/swe-qa-bench/README.md) uses Claude Code with
+Claude Opus 5 at high reasoning effort;
+[BrowseComp-Plus](./benchmarks/browse-comp-plus/README.md) uses Codex
+gpt-5.6-sol at medium reasoning effort. Both zg profiles use Qwen3.7 Text
+Embedding.
+
+<p align="center">
+  <img src="./.github/assets/benchmark-overall-retrieval-indexed-v3.png" alt="Overall zg benchmark results for Coding and general text retrieval, comparing answer quality, input tokens, tool calls, and time against Baseline" width="1200" />
+</p>
+
+- **Why it helps:** semantic discovery narrows the search space, ranked lexical
+  retrieval anchors exact identifiers, and compact evidence reduces broad
+  scans, repeated tool calls, and model context.
+- **Why it generalizes:** the same retrieval loop works across domains—code is
+  indexed with symbols, signatures, and breadcrumbs, while prose is retrieved
+  as focused sections and chunks.
+
+### 2. Real-World Case Studies
+
+<p align="center">
+  <img src="./.github/assets/benchmark-repository-top3-v2.png" alt="Baseline to zg comparison across three repository-comprehension tasks: Judge score, input tokens, tool calls, and wall time" width="980" />
+</p>
+
+- **[Pylint](https://github.com/pylint-dev/pylint) — Python static analysis:** the task asks how AST node handling
+  separates annotated and non-annotated attribute initialization. Symbol-aware
+  retrieval is useful because the architectural entry point is not known in
+  advance.
+- **[Matplotlib](https://github.com/matplotlib/matplotlib) — plotting and rendering:** the task traces `FontInfo` and font
+  selection through multiple math-text rendering stages. Ranked semantic and
+  lexical evidence helps reconstruct the cross-file data and control flow.
+- **[Django](https://github.com/django/django) — web framework:** the task connects username uniqueness, ORM
+  transactions, and formset bulk operations. Compact ranked evidence brings
+  the distributed design rationale together.
+
+<details>
+<summary><strong>Repository questions</strong></summary>
+
+| Repository | Question type | Question |
+| --- | --- | --- |
+| **`pylint-dev/pylint`** | What<br>Architecture exploration | What is the architectural pattern that distinguishes type-annotated from non-annotated instance attribute initialization using AST node type separation? |
+| **`matplotlib/matplotlib`** | Where<br>Data / Control-flow | Where does the `FontInfo` NamedTuple propagate font metrics and glyph data through the mathematical text rendering pipeline, and what control flow determines whether the `postscript_name` or the `FT2Font` object is used at different stages of character rendering? |
+| **`django/django`** | Why<br>Design rationale | Why does the User model's unique constraint on the username field interact with Django's ORM transaction handling, and what cascading effects would occur if this constraint were removed on an existing database with formset-based bulk operations? |
+
+</details>
+
+> zg works best when evidence spans files or modules and the target location is
+> unknown, especially for call-chain, data-flow, and architectural questions.
+> Since agents decide when and how to use it, results vary by model and run;
+> repeated-run averages are more reliable.
 
 ## 📚 Documentation
 

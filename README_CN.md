@@ -128,20 +128,55 @@ zg 会将 `sherlock-holmes.txt` 中的相关段落排在
 
 ## 📊 性能测试
 
-zg 通过**缩小有效搜索空间**，帮助 Agent 更快找到相关证据 —— 在保持回答质量的同时，使用**更少的 Token、工具调用和时间**。
-
-每项测试均采用**受控、可复现的配对 A/B 评测**：同一个 Agent 在完全相同的模型、Prompt、环境和资源限制下执行同一组预先固定的任务；**实验组仅额外提供 `zg` 工具及其使用说明**。
-
-<img src="./.github/assets/benchmark-comparison-cn-v2.svg" alt="SWE-QA-Bench 和 BrowseComp-Plus 中 Baseline 与 zvec-grep 的配对对比" width="900" />
-
-| 测试 | 回答质量&nbsp;↑ | 平均输入&nbsp;Token&nbsp;↓ | 平均工具调用&nbsp;↓ | 平均&nbsp;Agent&nbsp;耗时&nbsp;↓ |
-| --- | ---: | ---: | ---: | ---: |
-| [**SWE-QA-Bench**](./benchmarks/swe-qa-bench/README_CN.md)<br>20 个任务 · 代码库 QA | 评审得分<br>80.42&nbsp;→&nbsp;81.92 | 558,651&nbsp;→&nbsp;294,262 | 23.42&nbsp;→&nbsp;9.70 | 127.5s&nbsp;→&nbsp;79.7s |
-| [**BrowseComp-Plus**](./benchmarks/browse-comp-plus/README_CN.md)<br>80 个样例 · 深度研究 QA | 准确率<br>90.00%&nbsp;→&nbsp;90.00% | 2.04M&nbsp;→&nbsp;1.19M | 22.70&nbsp;→&nbsp;14.24 | 284.8s&nbsp;→&nbsp;199.3s |
-
-表中数值均按 **Baseline → zg** 展示。
+每项测试均采用配对 A/B 评测：任务、Agent/模型、Prompt、环境和
+资源限制保持一致，仅 zg 访问权限及使用说明不同。
 
 完整结果和复现细节参见[性能测试文档](./benchmarks/README_CN.md)。
+
+### 1. 跨领域 Agent Benchmark
+
+[SWE-QA-Bench](./benchmarks/swe-qa-bench/README_CN.md) 使用 Claude Code 与
+Claude Opus 5（high 推理强度）；
+[BrowseComp-Plus](./benchmarks/browse-comp-plus/README_CN.md) 使用 Codex
+gpt-5.6-sol 与 medium 推理强度。两项测试中的 zg
+Profile 均使用 Qwen3.7 Text Embedding。
+
+<p align="center">
+  <img src="./.github/assets/benchmark-overall-retrieval-indexed-v3.png" alt="zg 在 Coding 和通用文本检索场景中的整体测试结果，对比 Baseline 的答案质量、输入 Token、工具调用和耗时" width="1200" />
+</p>
+
+- **为何有效：** 语义发现先收窄搜索范围，排序后的词法检索再锚定精确标识符；
+  紧凑的证据结果减少了大范围扫描、重复工具调用和模型上下文。
+- **为何通用：** 同一检索流程可以适配不同内容：代码索引保留符号、签名和
+  层级路径，通用文本则按相关 section 与 chunk 返回证据。
+
+### 2. 真实案例分析
+
+<p align="center">
+  <img src="./.github/assets/benchmark-repository-top3-v2.png" alt="三个代码库理解任务中 Baseline 与 zg 的 Judge、输入 Token、工具调用和耗时对比" width="980" />
+</p>
+
+- **[Pylint](https://github.com/pylint-dev/pylint) — Python 静态分析器：** 任务需要理解 AST 节点处理如何区分带标注与
+  不带标注的属性初始化；由于架构入口事先未知，保留符号与层级路径的检索
+  更适合定位相关实现。
+- **[Matplotlib](https://github.com/matplotlib/matplotlib) — 绘图与渲染库：** 任务需要沿数学文本渲染的多个阶段追踪
+  `FontInfo` 与字体选择；语义与词法联合排序有助于还原跨文件的数据流和控制流。
+- **[Django](https://github.com/django/django) — Web 框架：** 任务关联 username 唯一约束、ORM 事务和 formset
+  批量操作；紧凑的排序证据便于汇集分散在多处的设计依据。
+
+<details>
+<summary><strong>测试仓库与具体问题</strong></summary>
+
+| 仓库 | 问题类型 | 具体问题 |
+| --- | --- | --- |
+| **`pylint-dev/pylint`** | What<br>架构探索 | 使用 AST 节点类型区分带类型标注和不带类型标注的实例属性初始化时，采用了什么架构模式？ |
+| **`matplotlib/matplotlib`** | Where<br>数据 / 控制流 | `FontInfo` NamedTuple 在数学文本渲染 Pipeline 中如何传递字体度量和字形数据？控制流如何决定在字符渲染的不同阶段使用 `postscript_name` 还是 `FT2Font` 对象？ |
+| **`django/django`** | Why<br>设计原理 | User 模型中 username 字段的唯一约束为什么会与 Django ORM 事务处理产生关联？如果在已有数据库中移除该约束，会对基于 formset 的批量操作产生哪些级联影响？ |
+
+</details>
+
+> zg 最适合目标位置未知、证据跨文件或模块分布的调用链、数据流和架构问题。
+> Agent 会自主决定何时及如何调用，结果因此会随模型和运行波动；多次运行均值更可靠。
 
 ## 📚 文档
 
