@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
+import { BaseEmbeddingModel } from "../dist/engine/models/embeddings.js";
+import { createZvecGrep } from "../dist/index.js";
 
 const execFileAsync = promisify(execFile);
 const cliPath = resolve("dist/cli/index.js");
@@ -31,6 +33,38 @@ test("managed rg runs locally when indexed operations use server mode", async (t
 
   assert.match(result.stdout, /src[\\/]answer\.ts\n {2}1:/);
   assert.match(result.stdout, /exactNeedle/);
+});
+
+test("managed rg ignores stale index status in direct and server modes", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "zvec-grep-rg-stale-index-"));
+  const source = join(root, "deleted.ts");
+  await writeFile(source, "export const deletedNeedle = 42;\n");
+  t.after(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const service = await createZvecGrep({
+    root,
+    embeddingModel: new TestEmbeddingModel(),
+  });
+  try {
+    await service.index();
+  } finally {
+    await service.close();
+  }
+  await rm(source);
+
+  for (const mode of ["direct", "server"]) {
+    const result = await execFileAsync(
+      process.execPath,
+      [cliPath, "query", "--mode", mode, "--rg", "deletedNeedle"],
+      { cwd: root, env: { ...process.env, NO_COLOR: "1" } },
+    );
+
+    assert.match(result.stdout, /^No matches\.$/m);
+    assert.doesNotMatch(result.stderr, /status: possibly_stale/);
+    assert.doesNotMatch(result.stderr, /results: served_from_current_index/);
+  }
 });
 
 test("managed rg emits a compact file and adaptive symbol hierarchy", async (t) => {
@@ -80,3 +114,22 @@ test("managed rg emits a compact file and adaptive symbol hierarchy", async (t) 
   );
   assert.doesNotMatch(result.stdout, /^symbol:/mu);
 });
+
+class TestEmbeddingModel extends BaseEmbeddingModel {
+  info = {
+    reference: "test/deterministic",
+    provider: "test",
+    name: "deterministic",
+    dimension: 8,
+    metric: "cosine",
+    inputKinds: ["text"],
+    limits: { maxBatchSize: 64 },
+  };
+
+  async doEmbed(contents) {
+    return {
+      vectors: contents.map(() => [1, 0, 0, 0, 0, 0, 0, 0]),
+      truncated: [],
+    };
+  }
+}

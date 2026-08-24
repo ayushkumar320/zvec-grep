@@ -668,6 +668,7 @@ async function runDirectQuery(
       console.error(line);
     }
     if (
+      result.source === "index" &&
       effectiveContextRequest.autoUpdate !== true &&
       indexStatusNeedsRefresh(info.status)
     ) {
