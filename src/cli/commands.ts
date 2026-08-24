@@ -591,19 +591,44 @@ async function runQuery(parsed: ParsedArgs): Promise<void> {
         : "zg query requires text or --hybrid/--fts/--vector routes. Use zg help query for examples.",
     );
   }
-  if (!commandOptions.rg) {
-    const mode = resolveClientMode(commandOptions.mode);
-    if (mode !== "direct") {
-      await routeByMode({
-        mode,
-        serverAvailable: () => daemonIsReady(commandOptions.home),
-        server: () => runServerQuery(commandOptions, queries, routes),
-        direct: () => runDirectQuery(commandOptions, queries),
-      });
-      return;
-    }
+  if (commandOptions.rg) {
+    await runDirectRgQuery(commandOptions, queries);
+    return;
+  }
+  const mode = resolveClientMode(commandOptions.mode);
+  if (mode !== "direct") {
+    await routeByMode({
+      mode,
+      serverAvailable: () => daemonIsReady(commandOptions.home),
+      server: () => runServerQuery(commandOptions, queries, routes),
+      direct: () => runDirectQuery(commandOptions, queries),
+    });
+    return;
   }
   await runDirectQuery(commandOptions, queries);
+}
+
+async function runDirectRgQuery(
+  commandOptions: CliOptions,
+  queries: readonly string[],
+): Promise<void> {
+  const zvecGrep = await createZvecGrep(
+    createServiceOptions(commandOptions, undefined),
+  );
+  try {
+    const result = await zvecGrep.context(
+      contextOptions(commandOptions, queries),
+    );
+    printCliContextResult(result, commandOptions);
+    for (const line of contextWarningLines(result)) {
+      console.error(line);
+    }
+    if (commandOptions.debug) {
+      printDebug(result, { trace: false });
+    }
+  } finally {
+    await zvecGrep.close();
+  }
 }
 
 async function runDirectQuery(

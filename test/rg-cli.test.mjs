@@ -35,6 +35,31 @@ test("managed rg runs locally when indexed operations use server mode", async (t
   assert.match(result.stdout, /exactNeedle/);
 });
 
+test("managed rg bypasses workspace index state in direct and server modes", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "zvec-grep-rg-fast-path-"));
+  await mkdir(join(root, "src"), { recursive: true });
+  await mkdir(join(root, ".zvec-grep"));
+  await writeFile(
+    join(root, "src", "answer.ts"),
+    "export const fastPathNeedle = 42;\n",
+  );
+  await writeFile(join(root, ".zvec-grep", "manifest.json"), "{}\n");
+  t.after(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  for (const mode of ["direct", "server"]) {
+    const result = await execFileAsync(
+      process.execPath,
+      [cliPath, "query", "--mode", mode, "--rg", "fastPathNeedle", "src"],
+      { cwd: root, env: { ...process.env, NO_COLOR: "1" } },
+    );
+
+    assert.match(result.stdout, /src[\\/]answer\.ts/);
+    assert.match(result.stdout, /fastPathNeedle/);
+  }
+});
+
 test("managed rg ignores stale index status in direct and server modes", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "zvec-grep-rg-stale-index-"));
   const source = join(root, "deleted.ts");
