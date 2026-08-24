@@ -551,11 +551,13 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
       }
       const job = updateJob ?? this.scheduler.getByRoot(runtime.canonicalRoot);
       const runtimeSnapshot = runtime.snapshot();
+      const activeKnownChangeJob =
+        job?.reason !== "background_reconcile" &&
+        (job?.state === "queued" || job?.state === "running");
       const freshness =
-        runtime.needsReconciliation() ||
+        runtime.hasKnownChanges() ||
         runtimeSnapshot.watcherPending ||
-        job?.state === "queued" ||
-        job?.state === "running"
+        activeKnownChangeJob
           ? "possibly_stale"
           : "fresh";
       const response: ZvecGrepSearchResult = {
@@ -878,9 +880,12 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
     const createsWork =
       !this.scheduler.hasActiveRoot(runtime.canonicalRoot) ||
       input.rebuild === true;
-    const targetRevision = createsWork
-      ? runtime.markDirty()
-      : runtime.snapshot().dirtyRevision;
+    const probeBeforeUpdate =
+      reason === "background_reconcile" && runtime.canProbeFullReconciliation();
+    let targetRevision =
+      createsWork && !probeBeforeUpdate
+        ? runtime.markDirty()
+        : runtime.snapshot().dirtyRevision;
     const followsNarrowWatch =
       this.scheduler.getByRoot(runtime.canonicalRoot)?.reason === "watch";
     const submitted = this.scheduler.submit({
@@ -888,12 +893,13 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
       reason,
       followupIfRunning: followsNarrowWatch,
       run: async (report, signal) => {
-        if (
-          reason === "background_reconcile" &&
-          runtime.canProbeFullReconciliation() &&
-          (await this.probeCurrentFreshness(runtime)) === "fresh"
-        ) {
-          return;
+        if (probeBeforeUpdate) {
+          if ((await this.probeCurrentFreshness(runtime)) === "fresh") {
+            return;
+          }
+          if (createsWork) {
+            targetRevision = runtime.markDirty();
+          }
         }
         const proof = await this.runIndex(
           runtime,

@@ -138,9 +138,10 @@ The execution mode changes the default indexed-search refresh policy:
 | `--refresh wait` | Wait for a fresh index | Update and wait in the current process |
 | `--refresh off` | Search without updating | Search without updating |
 
-Server searches may return useful results with `freshness: possibly_stale`
-while an update continues. Use the result immediately when it answers the
-question; use `--refresh wait` only when the latest file state is required.
+Server searches return `freshness: possibly_stale` only with evidence of index
+drift. The first refresh after activation may use this conservative status; an
+hourly reconciliation remains `fresh` until its probe finds a mismatch. Use
+`--refresh wait` only when the latest file state is required.
 
 Watcher-reported path updates skip workspace-wide status scans. Because
 file-system watchers can silently miss events, the Server schedules an hourly

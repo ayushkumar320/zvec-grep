@@ -199,8 +199,8 @@ rejected. Use `-A`, `-B`, or `-C` to add context.
 
 ## Freshness
 
-Indexed results report `fresh` or `possibly_stale`. A possibly stale result can
-remain immediately useful while an update is pending. See
+Indexed results report `fresh` or `possibly_stale`. Routine reconciliation stays
+`fresh` until there is evidence of index drift. See
 [Server and execution modes](./06-server.md#refresh-behavior) for the interaction
 between `auto`, `server`, `direct`, and `--refresh`.
 

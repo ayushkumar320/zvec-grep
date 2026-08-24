@@ -252,6 +252,13 @@ export class RootRuntime {
     );
   }
 
+  hasKnownChanges(): boolean {
+    return (
+      this.indexedRevision < this.dirtyRevision ||
+      (this.requiresFullReconciliation() && !this.canProbeFullReconciliation())
+    );
+  }
+
   probeInitialFreshness(
     probe: () => Promise<boolean>,
     onResult?: (result: "fresh" | "stale") => void,

@@ -918,13 +918,14 @@ test("eventual searches do not wait for full watcher writer preparation", async 
   }
 });
 
-test("background search schedules an unknown watcher reconciliation without waiting for its probe", async () => {
+test("routine watcher reconciliation stays fresh until its probe finds evidence", async () => {
   const temporaryDirectory = await mkdtemp(
     join(tmpdir(), "zvec-grep-background-reconciliation-probe-"),
   );
   const root = join(temporaryDirectory, "repo");
   await mkdir(root);
-  await writeFile(join(root, "answer.ts"), "export const answer = 42;\n");
+  const source = join(root, "answer.ts");
+  await writeFile(source, "export const answer = 42;\n");
   const service = await createZvecGrep({
     root,
     embeddingModel: new TestEmbeddingModel(),
@@ -942,9 +943,33 @@ test("background search schedules an unknown watcher reconciliation without wait
   const probeReleased = new Promise((resolve) => {
     releaseProbe = resolve;
   });
+  let blockBackgroundEmbedding = false;
+  let markBackgroundStarted;
+  let releaseBackground = () => {};
+  const backgroundStarted = new Promise((resolve) => {
+    markBackgroundStarted = resolve;
+  });
+  const backgroundReleased = new Promise((resolve) => {
+    releaseBackground = resolve;
+  });
   const backend = new DaemonBackend({
     version: "1.0.0",
-    modelPoolOptions: { createModel: () => new TestEmbeddingModel() },
+    modelPoolOptions: {
+      createModel: () =>
+        new TestEmbeddingModel(async (contents) => {
+          if (
+            blockBackgroundEmbedding &&
+            contents.some(
+              (content) =>
+                content.kind === "text" &&
+                content.text.includes("changedAnswer"),
+            )
+          ) {
+            markBackgroundStarted();
+            await backgroundReleased;
+          }
+        }),
+    },
     inspectRoot: async (...args) => {
       if (blockProbe && (args[2] ?? true)) {
         markProbeStarted();
@@ -978,7 +1003,7 @@ test("background search schedules an unknown watcher reconciliation without wait
       ...searchInput(root, "answer", "eventual"),
       autoUpdate: false,
     });
-    assert.equal(offResult.freshness, "possibly_stale");
+    assert.equal(offResult.freshness, "fresh");
     assert.equal(backend.scheduler.getByRoot(await realpath(root)), undefined);
 
     blockProbe = true;
@@ -996,7 +1021,7 @@ test("background search schedules an unknown watcher reconciliation without wait
     ]);
     assert.equal(backgroundSettled, true);
     const backgroundResult = await backgroundSearch;
-    assert.equal(backgroundResult.freshness, "possibly_stale");
+    assert.equal(backgroundResult.freshness, "fresh");
 
     let waitSettled = false;
     const waitSearch = backend
@@ -1010,8 +1035,31 @@ test("background search schedules an unknown watcher reconciliation without wait
     blockProbe = false;
     releaseProbe();
     assert.equal((await waitSearch).freshness, "fresh");
+
+    await writeFile(source, "export const changedAnswer = 43;\n");
+    await watcherOptions.onChanges(
+      {
+        touchedFiles: [],
+        rescanDirectories: [],
+        deletedPrefixes: [],
+        forceFullReconcile: true,
+      },
+      "reconcile",
+    );
+    blockBackgroundEmbedding = true;
+    await backend.search(searchInput(root, "answer", "eventual"));
+    await backgroundStarted;
+
+    const evidenceResult = await backend.search({
+      ...searchInput(root, "answer", "eventual"),
+      autoUpdate: false,
+    });
+    assert.equal(evidenceResult.freshness, "possibly_stale");
   } finally {
     releaseProbe();
+    blockBackgroundEmbedding = false;
+    releaseBackground();
+    await backend.scheduler.waitForRootIdle(await realpath(root));
     await backend.close();
     await rm(temporaryDirectory, { recursive: true, force: true });
   }

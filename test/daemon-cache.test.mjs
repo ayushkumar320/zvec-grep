@@ -390,6 +390,27 @@ test("root runtime initial probe marks a clean index reconciled", async () => {
   await pool.close();
 });
 
+test("root runtime distinguishes routine probes from known stale evidence", async () => {
+  const pool = new EmbeddingModelPool({
+    createModel: () => ({ dispose: async () => {} }),
+  });
+  const runtime = new RootRuntime({
+    canonicalRoot: "/tmp/repo",
+    modelPool: pool,
+    modelLoadRequest: modelLoadRequest("model-a"),
+  });
+
+  await runtime.probeInitialFreshness(async () => true);
+  runtime.requireFullReconciliation(true);
+  assert.equal(runtime.needsReconciliation(), true);
+  assert.equal(runtime.hasKnownChanges(), false);
+
+  runtime.markDirty();
+  assert.equal(runtime.hasKnownChanges(), true);
+  await runtime.close();
+  await pool.close();
+});
+
 test("root runtime initial probe does not hide pending watcher changes", async () => {
   const pool = new EmbeddingModelPool({
     createModel: () => ({ dispose: async () => {} }),
