@@ -178,21 +178,25 @@ def _randomized_profile_orders(
     query_ids: list[str], trials_per_case: int
 ) -> dict[str, dict[int, tuple[Profile, Profile]]]:
     rng = random.SystemRandom()
-    blocks = [
-        (query_id, trial_index)
-        for query_id in query_ids
-        for trial_index in range(1, trials_per_case + 1)
-    ]
-    orders: list[tuple[Profile, Profile]] = [PROFILES] * (len(blocks) // 2)
-    orders.extend([("zvec-grep", "baseline")] * (len(blocks) // 2))
-    if len(blocks) % 2:
-        orders.append(rng.choice((PROFILES, ("zvec-grep", "baseline"))))
-    rng.shuffle(orders)
     output: dict[str, dict[int, tuple[Profile, Profile]]] = {
         query_id: {} for query_id in query_ids
     }
-    for (query_id, trial_index), order in zip(blocks, orders, strict=True):
-        output[query_id][trial_index] = order
+    for trial_index in range(1, trials_per_case + 1):
+        orders: list[tuple[Profile, Profile]] = [PROFILES] * (
+            len(query_ids) // 2
+        )
+        orders.extend(
+            [("zvec-grep", "baseline")] * (len(query_ids) // 2)
+        )
+        if len(query_ids) % 2:
+            orders.append(
+                PROFILES
+                if trial_index % 2
+                else ("zvec-grep", "baseline")
+            )
+        rng.shuffle(orders)
+        for query_id, order in zip(query_ids, orders, strict=True):
+            output[query_id][trial_index] = order
     return output
 
 
@@ -390,7 +394,8 @@ def _run_protocol(
     corpus_state = read_json(artifacts / "state" / "corpus.json")
     index_state = read_json(artifacts / "state" / "index.json")
     return {
-        "execution": "sequential",
+        "execution": "sequential_trial_rounds",
+        "execution_order": "trial_query_profile",
         "execution_source_sha256": _execution_source_fingerprint(),
         "runner_path": str(BENCHMARK_ROOT),
         "task_prompt_sha256": sha256_file(PROMPT_PATH),
@@ -681,14 +686,24 @@ def run_benchmark(
     for query_id in query_ids:
         _write_pair(run_root, query_id, config.run.trials_per_case)
     tasks: list[tuple[dict[str, Any], int, Profile]] = []
-    for query_id in query_ids:
-        for trial_index in range(1, config.run.trials_per_case + 1):
+    pending_profiles: dict[tuple[str, int], int] = {}
+    for trial_index in range(1, config.run.trials_per_case + 1):
+        for query_id in query_ids:
+            pending = 0
             for profile in profile_orders[query_id][trial_index]:
                 if _needs_run(
                     config,
                     _result_path(run_root, query_id, profile, trial_index),
                 ):
                     tasks.append((by_id[query_id], trial_index, profile))
+                    pending += 1
+            pending_profiles[(query_id, trial_index)] = pending
+    total_paired_trials = len(query_ids) * config.run.trials_per_case
+    total_profile_runs = total_paired_trials * len(PROFILES)
+    finished_paired_trials = sum(
+        pending == 0 for pending in pending_profiles.values()
+    )
+    finished_profile_runs = total_profile_runs - len(tasks)
     server_required = new_run or any(
         profile == "zvec-grep" for _, _, profile in tasks
     )
@@ -824,6 +839,11 @@ def run_benchmark(
                 _write_pair(
                     run_root, query_id, config.run.trials_per_case
                 )
+                finished_profile_runs += 1
+                pair_key = (query_id, trial_index)
+                pending_profiles[pair_key] -= 1
+                if pending_profiles[pair_key] == 0:
+                    finished_paired_trials += 1
                 done = completed_cases(run_root, query_ids)
                 print(
                     json.dumps(
@@ -832,7 +852,13 @@ def run_benchmark(
                             "query_id": query_id,
                             "profile": profile,
                             "trial_index": trial_index,
+                            "trial_round": trial_index,
+                            "total_trial_rounds": config.run.trials_per_case,
                             "status": result.status,
+                            "finished_paired_trials": finished_paired_trials,
+                            "total_paired_trials": total_paired_trials,
+                            "finished_profile_runs": finished_profile_runs,
+                            "total_profile_runs": total_profile_runs,
                             "completed_cases": done,
                             "total_cases": len(query_ids),
                             "input_tokens": (

@@ -6,7 +6,9 @@
 
 此 benchmark 使用固定的 [BrowseComp-Plus](https://github.com/texttron/BrowseComp-Plus) 语料库，对 Codex 进行原生配对评测。
 
-每个问题在相同的模型、prompt、语料库、Codex 配置和限制下运行两次：
+整体原则与原论文一致，但在语料处理和评测流程上略有调整，以更贴近用户实际使用通用 Agent 的场景。
+
+每个问题会进行次独立的配对评测；每次评测均使用相同的模型、prompt、语料库、Codex 配置和限制：
 
 - **Baseline：** Codex 使用其标准工具集。
 - **zvec-grep：** 保持相同的 Codex 配置，仅通过 `zg install` 增加 zvec-grep MCP 工具和使用指引。

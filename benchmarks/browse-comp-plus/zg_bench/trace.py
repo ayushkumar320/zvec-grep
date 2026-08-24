@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -44,12 +45,38 @@ def extract_docids(*values: Any) -> set[str]:
     }
 
 
+def _tool_call(item: dict[str, Any], *, completed: bool) -> ToolCall | None:
+    item_type = str(item.get("type", "unknown"))
+    status = item.get("status") if completed else "in_progress"
+    if item_type == "command_execution":
+        output = str(item.get("aggregated_output", "")) if completed else None
+        return ToolCall(
+            kind="command",
+            name="command_execution",
+            arguments=item.get("command"),
+            output=output[:MAX_SUMMARY_OUTPUT] if output is not None else None,
+            status=status,
+        )
+    if item_type == "mcp_tool_call":
+        output = mcp_result_text(item.get("result")) if completed else None
+        return ToolCall(
+            kind="mcp",
+            name=str(item.get("tool", "unknown")),
+            arguments=item.get("arguments"),
+            output=output[:MAX_SUMMARY_OUTPUT] if output is not None else None,
+            status=status,
+        )
+    return None
+
+
 def parse_trace(path: Path, final_path: Path | None = None) -> TraceSummary:
     thread_id: str | None = None
     last_agent_message = ""
     turn_completed = False
     usage: Usage | None = None
-    calls: list[ToolCall] = []
+    calls: dict[str, ToolCall] = {}
+    call_order: list[str] = []
+    completed_calls: set[str] = set()
     docids: set[str] = set()
     errors: list[str] = []
 
@@ -78,6 +105,15 @@ def parse_trace(path: Path, final_path: Path | None = None) -> TraceSummary:
                 errors.append(
                     _text(event.get("message") or event.get("error") or event)
                 )
+            if event_type == "item.started":
+                item = event.get("item") or {}
+                call = _tool_call(item, completed=False)
+                if call is not None:
+                    call_id = str(item.get("id") or f"started:{number}")
+                    if call_id not in calls:
+                        calls[call_id] = call
+                        call_order.append(call_id)
+                continue
             if event_type != "item.completed":
                 continue
             item = event.get("item") or {}
@@ -88,27 +124,18 @@ def parse_trace(path: Path, final_path: Path | None = None) -> TraceSummary:
             if item_type == "command_execution":
                 output = str(item.get("aggregated_output", ""))
                 docids.update(extract_docids(item.get("command"), output))
-                calls.append(
-                    ToolCall(
-                        kind="command",
-                        name="command_execution",
-                        arguments=item.get("command"),
-                        output=output[:MAX_SUMMARY_OUTPUT],
-                        status=item.get("status"),
-                    )
-                )
             elif item_type == "mcp_tool_call":
                 output = mcp_result_text(item.get("result"))
                 docids.update(extract_docids(output))
-                calls.append(
-                    ToolCall(
-                        kind="mcp",
-                        name=str(item.get("tool", "unknown")),
-                        arguments=item.get("arguments"),
-                        output=output[:MAX_SUMMARY_OUTPUT],
-                        status=item.get("status"),
-                    )
-                )
+            else:
+                continue
+            call = _tool_call(item, completed=True)
+            assert call is not None
+            call_id = str(item.get("id") or f"completed:{number}")
+            if call_id not in calls:
+                call_order.append(call_id)
+            calls[call_id] = call
+            completed_calls.add(call_id)
 
     final_response = last_agent_message if turn_completed else ""
     if turn_completed and final_path and final_path.is_file():
@@ -121,7 +148,12 @@ def parse_trace(path: Path, final_path: Path | None = None) -> TraceSummary:
         last_agent_message=last_agent_message,
         turn_completed=turn_completed,
         usage=usage,
-        tool_calls=tuple(calls),
+        tool_calls=tuple(
+            calls[call_id]
+            if call_id in completed_calls
+            else replace(calls[call_id], status="unclosed")
+            for call_id in call_order
+        ),
         observed_docids=tuple(sorted(docids)),
         errors=tuple(errors),
     )

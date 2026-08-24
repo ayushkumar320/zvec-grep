@@ -7,8 +7,12 @@
 This benchmark runs a native paired evaluation of Codex on the fixed
 [BrowseComp-Plus](https://github.com/texttron/BrowseComp-Plus) corpus.
 
-Each query is run twice with the same model, prompt, corpus, Codex settings, and
-limits:
+It follows the original paper's core principles, with small differences in
+corpus processing and evaluation protocol to better reflect real-world use of a
+general-purpose agent.
+
+Each query is evaluated in independent paired trials with the same model,
+prompt, corpus, Codex settings, and limits:
 
 - **Baseline:** Codex with its standard set of tools.
 - **zvec-grep:** the same Codex setup, with only the zvec-grep MCP tools and

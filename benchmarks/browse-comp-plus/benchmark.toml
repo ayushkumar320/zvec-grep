@@ -19,6 +19,6 @@ server_port = 7999
 [run]
 model = "gpt-5.6-sol"
 reasoning_effort = "medium"
-trials_per_case = 2
+trials_per_case = 3
 infrastructure_retries = 2
 idle_timeout_seconds = 1800
