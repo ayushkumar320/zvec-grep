@@ -37,12 +37,14 @@ reference isolation before starting model-backed jobs.
 
 ## CI scopes
 
-- Same-repository pull requests and pushes to `main` run these five curated
-  tasks: `reflex:6`, `pylint:9`, `matplotlib:37`, `streamlink:14`, and
-  `xarray:32`.
+- Same-repository pull requests and pushes to `main` run these three smoke
+  tasks: `pylint:10`, `matplotlib:37`, and `django:32`.
+- Model-backed CI uses the `opencode` agent with
+  `custom-openai/glm-5.2` for both profiles.
 - Fork and Dependabot pull requests run locked-asset validation, unit tests, and
   a dry-run preflight only, without model credentials.
-- Manual `workflow_dispatch` with `scope=smoke` runs `reflex:6`.
+- Manual `workflow_dispatch` with `scope=smoke` runs the same three smoke
+  tasks.
 - Manual `workflow_dispatch` with `scope=all-full` runs all 20 pinned tasks.
 
 From the repository root, maintainers can trigger the manual scopes with the
@@ -131,12 +133,11 @@ zg-bench list tasks swe-qa-bench --tier smoke
 zg-bench list tasks swe-qa-bench --tier ci
 ```
 
-Start with a dry run of the one-task, three-trial-per-profile configuration:
+Start with a dry run of the three-task, three-trial-per-profile configuration:
 
 ```sh
 zg-bench run swe-qa-bench \
   --tier smoke \
-  --task reflex-6 \
   --agent opencode \
   --model custom-openai/glm-5.2 \
   --profile all \
