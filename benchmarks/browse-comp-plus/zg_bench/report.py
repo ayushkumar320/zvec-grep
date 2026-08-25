@@ -863,7 +863,6 @@ def generate_report(run_root: Path) -> Path:
     trials_per_case = int(metadata["trials_per_case"])
     planned_trials = planned_cases * trials_per_case
     summary = {
-        "schema_version": 2,
         "generated_at": utc_now(),
         "run_id": metadata["run_id"],
         "suite": metadata["suite"],

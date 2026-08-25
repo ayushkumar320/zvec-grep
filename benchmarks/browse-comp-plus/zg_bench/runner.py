@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import platform
@@ -8,6 +9,7 @@ import signal
 import sys
 import time
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -145,33 +147,163 @@ def _environment_metadata(
     }
 
 
-def load_suite(name: str, queries: list[dict[str, Any]]) -> list[str]:
+@dataclass(frozen=True)
+class SuiteSelection:
+    path: Path
+    definition_sha256: str
+    mode: str
+    target_count: int | None
+    dataset_query_count: int
+    scanned_query_count: int | None
+    excluded_query_ids: tuple[str, ...]
+    query_ids: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        resolved = self.path.resolve()
+        try:
+            definition = str(resolved.relative_to(BENCHMARK_ROOT.resolve()))
+        except ValueError:
+            definition = str(resolved)
+        return {
+            "definition": definition,
+            "definition_sha256": self.definition_sha256,
+            "mode": self.mode,
+            "target_count": self.target_count,
+            "dataset_query_count": self.dataset_query_count,
+            "scanned_query_count": self.scanned_query_count,
+            "excluded_query_ids": list(self.excluded_query_ids),
+            "selected_query_count": len(self.query_ids),
+        }
+
+
+def _select_suite(
+    path: Path,
+    lines: list[str],
+    all_ids: list[str],
+    definition_sha256: str,
+) -> SuiteSelection:
+    selector: tuple[str, int | None] | None = None
+    explicit_ids: list[str] = []
+    excluded_ids: list[str] = []
+
+    for line in lines:
+        parts = line.split()
+        directive = parts[0] if parts and parts[0].startswith("@") else None
+        if directive == "@all":
+            if len(parts) != 1:
+                raise ValueError(f"invalid @all directive: {line}")
+            if selector is not None:
+                raise ValueError(f"suite contains multiple selectors: {path}")
+            selector = ("all", None)
+        elif directive == "@first":
+            if len(parts) != 2:
+                raise ValueError(f"invalid @first directive: {line}")
+            try:
+                count = int(parts[1])
+            except ValueError as error:
+                raise ValueError(f"invalid @first count: {parts[1]}") from error
+            if count < 1:
+                raise ValueError(f"invalid @first count: {count}")
+            if selector is not None:
+                raise ValueError(f"suite contains multiple selectors: {path}")
+            selector = ("first", count)
+        elif directive == "@exclude":
+            if len(parts) != 2:
+                raise ValueError(f"invalid @exclude directive: {line}")
+            excluded_ids.append(parts[1])
+        elif directive is not None:
+            raise ValueError(f"unknown suite directive: {line}")
+        else:
+            explicit_ids.append(line)
+
+    if selector is not None and explicit_ids:
+        raise ValueError(
+            f"suite cannot combine a selector with explicit query IDs: {path}"
+        )
+    if selector is None and excluded_ids:
+        raise ValueError(f"@exclude requires @first or @all: {path}")
+    if len(set(excluded_ids)) != len(excluded_ids):
+        raise ValueError("suite contains duplicate excluded query IDs")
+
+    known_ids = set(all_ids)
+    unknown_exclusions = sorted(set(excluded_ids) - known_ids)
+    if unknown_exclusions:
+        raise ValueError(
+            "suite excludes unknown query IDs: " + ", ".join(unknown_exclusions)
+        )
+
+    excluded = set(excluded_ids)
+    if selector is None:
+        missing = sorted(set(explicit_ids) - known_ids)
+        if missing:
+            raise ValueError(
+                f"suite contains unknown query IDs: {', '.join(missing)}"
+            )
+        if len(set(explicit_ids)) != len(explicit_ids):
+            raise ValueError("suite contains duplicate query IDs")
+        selected_ids = explicit_ids
+        mode = "explicit"
+        target_count: int | None = len(explicit_ids)
+        scanned_query_count: int | None = None
+    elif selector[0] == "all":
+        selected_ids = [query_id for query_id in all_ids if query_id not in excluded]
+        mode = "all"
+        target_count = None
+        scanned_query_count = len(all_ids)
+    else:
+        count = selector[1]
+        assert count is not None
+        eligible_ids = [query_id for query_id in all_ids if query_id not in excluded]
+        if count > len(eligible_ids):
+            raise ValueError(
+                f"@first {count} cannot be satisfied after exclusions; "
+                f"only {len(eligible_ids)} query IDs remain"
+            )
+        selected_ids = eligible_ids[:count]
+        last_selected = all_ids.index(selected_ids[-1])
+        scanned_query_count = last_selected + 1
+        scanned_ids = set(all_ids[:scanned_query_count])
+        ineffective = [
+            query_id for query_id in excluded_ids if query_id not in scanned_ids
+        ]
+        if ineffective:
+            raise ValueError(
+                "suite exclusions do not affect @first selection: "
+                + ", ".join(ineffective)
+            )
+        mode = "first"
+        target_count = count
+
+    if not selected_ids:
+        raise ValueError(f"suite contains no selected query IDs: {path}")
+    return SuiteSelection(
+        path=path,
+        definition_sha256=definition_sha256,
+        mode=mode,
+        target_count=target_count,
+        dataset_query_count=len(all_ids),
+        scanned_query_count=scanned_query_count,
+        excluded_query_ids=tuple(excluded_ids),
+        query_ids=tuple(selected_ids),
+    )
+
+
+def load_suite(name: str, queries: list[dict[str, Any]]) -> SuiteSelection:
     path = Path(name)
     if path.suffix != ".txt":
         path = SUITES_DIR / f"{name}.txt"
     if not path.is_file():
         raise ValueError(f"suite not found: {path}")
+    definition = path.read_bytes()
     lines = [
         line.strip()
-        for line in path.read_text(encoding="utf-8").splitlines()
+        for line in definition.decode("utf-8").splitlines()
         if line.strip() and not line.lstrip().startswith("#")
     ]
     if not lines:
         raise ValueError(f"suite contains no query IDs: {path}")
     all_ids = [str(row["query_id"]) for row in queries]
-    if lines == ["@all"]:
-        return all_ids
-    if len(lines) == 1 and lines[0].startswith("@first "):
-        count = int(lines[0].split()[1])
-        if count < 1 or count > len(all_ids):
-            raise ValueError(f"invalid @first count: {count}")
-        return all_ids[:count]
-    missing = sorted(set(lines) - set(all_ids))
-    if missing:
-        raise ValueError(f"suite contains unknown query IDs: {', '.join(missing)}")
-    if len(set(lines)) != len(lines):
-        raise ValueError("suite contains duplicate query IDs")
-    return lines
+    return _select_suite(path, lines, all_ids, hashlib.sha256(definition).hexdigest())
 
 
 def _randomized_profile_orders(
@@ -381,6 +513,7 @@ def _run_protocol(
     artifacts: Path,
     *,
     suite: str,
+    suite_selection: dict[str, Any],
     query_ids: list[str],
     queries: dict[str, dict[str, Any]],
     profile_orders: dict[str, dict[int, tuple[Profile, Profile]]],
@@ -401,6 +534,10 @@ def _run_protocol(
         "task_prompt_sha256": sha256_file(PROMPT_PATH),
         "query_set_sha256": dataset_state["queries"]["sha256"],
         "suite": suite,
+        "suite_definition_sha256": suite_selection["definition_sha256"],
+        "suite_selection_sha256": fingerprint(
+            [json.dumps(suite_selection, sort_keys=True, separators=(",", ":"))]
+        ),
         "query_ids_sha256": fingerprint(query_ids),
         "selected_queries_sha256": fingerprint(
             json.dumps(queries[query_id], sort_keys=True, ensure_ascii=False)
@@ -624,7 +761,23 @@ def run_benchmark(
     new_run = not metadata_path.is_file()
     if not new_run:
         metadata = read_json(metadata_path)
+        suite = str(metadata["suite"])
+        suite_metadata = dict(metadata["suite_selection"])
         query_ids = [str(value) for value in metadata["query_ids"]]
+        if suite_metadata["selected_query_count"] != len(query_ids):
+            raise RuntimeError("recorded suite selection count is invalid")
+        suite_path = Path(str(suite_metadata["definition"]))
+        if not suite_path.is_absolute():
+            suite_path = BENCHMARK_ROOT / suite_path
+        current_suite = load_suite(str(suite_path), queries)
+        if (
+            current_suite.to_dict() != suite_metadata
+            or list(current_suite.query_ids) != query_ids
+        ):
+            raise RuntimeError(
+                "suite definition or selection changed after this run was created; "
+                "restore the recorded suite or start a new run"
+            )
         profile_orders = {
             str(query_id): {
                 int(trial_index): tuple(order)
@@ -642,7 +795,6 @@ def run_benchmark(
             raise RuntimeError(
                 "cannot resume a run after changing [run].trials_per_case"
             )
-        suite = str(metadata["suite"])
         recorded_manifest = Path(metadata["profiles_manifest"])
         if recorded_manifest.resolve() != profiles_manifest_path.resolve():
             raise RuntimeError("run profile manifest path does not match its run")
@@ -654,6 +806,7 @@ def run_benchmark(
             config,
             artifacts,
             suite=suite,
+            suite_selection=suite_metadata,
             query_ids=query_ids,
             queries=by_id,
             profile_orders=profile_orders,
@@ -673,7 +826,9 @@ def run_benchmark(
             name: artifacts / "state" / f"{name}.json"
             for name in ("corpus", "index")
         }
-        query_ids = load_suite(suite, queries)
+        suite_selection = load_suite(suite, queries)
+        suite_metadata = suite_selection.to_dict()
+        query_ids = list(suite_selection.query_ids)
         profile_orders = _randomized_profile_orders(
             query_ids, config.run.trials_per_case
         )
@@ -743,6 +898,7 @@ def run_benchmark(
                     config,
                     artifacts,
                     suite=suite,
+                    suite_selection=suite_metadata,
                     query_ids=query_ids,
                     queries=by_id,
                     profile_orders=profile_orders,
@@ -756,6 +912,7 @@ def run_benchmark(
                     "run_id": run_id,
                     "created_at": utc_now(),
                     "suite": suite,
+                    "suite_selection": suite_metadata,
                     "query_ids": query_ids,
                     "model": model,
                     "reasoning_effort": reasoning_effort,

@@ -12,7 +12,7 @@
 
 | Benchmark | 说明 | Agent | 评测规模 |
 | --- | --- | --- | --- |
-| [BrowseComp-Plus](browse-comp-plus/README_CN.md) | 在固定的大规模语料库上评测多文档证据检索和回答准确率 | Codex | 80 个样例 |
+| [BrowseComp-Plus](browse-comp-plus/README_CN.md) | 在固定的大规模语料库上评测多文档证据检索和回答准确率 | Codex | 100 个样例 |
 | [SWE-QA-Bench](swe-qa-bench/README_CN.md) | 评测代码仓库级、跨文件、多跳的软件工程问答 | OpenCode | 20 个任务 |
 
 ## 评测协议

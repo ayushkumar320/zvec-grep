@@ -8,12 +8,64 @@
 
 整体原则与原论文一致，但在语料处理和评测流程上略有调整，以更贴近用户实际使用通用 Agent 的场景。
 
-每个问题会进行次独立的配对评测；每次评测均使用相同的模型、prompt、语料库、Codex 配置和限制：
+每个问题均通过相互独立的配对 trial 进行评测；每次评测都使用相同的模型、prompt、语料库、Codex 配置和限制：
 
 - **Baseline：** Codex 使用其标准工具集。
 - **zvec-grep：** 保持相同的 Codex 配置，仅通过 `zg install` 增加 zvec-grep MCP 工具和使用指引。
 
 Benchmark 记录回答质量、Token 用量、Agent 执行耗时、工具调用次数和完整的 Codex 轨迹。
+
+## 评测结果
+
+### 评测配置
+
+Study 选取 100 个 case，以兼顾覆盖范围、运行时间和成本。样本并非随机抽取，而是按照锁定的 Hugging Face `test` split 原始顺序选择。我们没有在这部分数据中发现明显的顺序偏置。采用公开且固定的顺序，也能尽量减少人为选择空间，避免挑选更有利于 zvec-grep 的 case。
+
+对于确认存在错误，或语料不足以支持确定答案的 case，我们会将其排除。所有排除项均记录在 [`suites/study.txt`](./suites/study.txt) 中。
+
+| 配置项 | 值 |
+| --- | --- |
+| Suite | TBD |
+| 数据集版本 | TBD |
+| 模型 | TBD |
+| Reasoning effort | TBD |
+| Case 数 | TBD |
+| 每个 case 的 trial 数 | TBD |
+| zvec-grep 版本 | TBD |
+| Embedding 模型 | TBD |
+| FTS tokenizer | TBD |
+
+### 主要结果
+
+计算均值时会纳入 Baseline 和 Treatment 中所有已完成的 trial。变化量均以 Baseline 为基准，表示 Treatment 相对 Baseline 的变化。
+
+| 指标 | Baseline | Treatment（zvec-grep） | 绝对变化 | 相对变化 |
+| --- | ---: | ---: | ---: | ---: |
+| 准确率 | TBD | TBD | TBD | TBD |
+| Input Token | TBD | TBD | TBD | TBD |
+| 工具调用次数 | TBD | TBD | TBD | TBD |
+| Agent 执行时间 | TBD | TBD | TBD | TBD |
+
+### 回答结果分布
+
+| 结果 | 配对 trial 数 |
+| --- | ---: |
+| 两组均正确 | TBD |
+| 仅 Baseline 正确 | TBD |
+| 仅 Treatment 正确 | TBD |
+| 两组均错误 | TBD |
+
+### 两组均正确时的分析
+
+这一视角只比较 Baseline 和 Treatment 均正确的配对 trial，用于观察两组都能完成任务时的资源使用情况，是对上述主要结果的补充，不会取代主要结果。
+
+| 指标 | Baseline | Treatment（zvec-grep） | 绝对变化 | 相对变化 |
+| --- | ---: | ---: | ---: | ---: |
+| Input Token | TBD | TBD | TBD | TBD |
+| 工具调用次数 | TBD | TBD | TBD | TBD |
+| Agent 执行时间 | TBD | TBD | TBD | TBD |
+
+zvec-grep 索引准备过程与 Agent 执行过程分开测量和报告。完整的 case 级结果与诊断信息可在对应 run 生成的报告中查看。
 
 ## 前置条件
 
@@ -60,13 +112,13 @@ Codex 模型和 reasoning effort 在 `benchmark.toml` 中配置。Runner 会在�
 zg-bench run --suite ci
 ```
 
-按照锁定的官方数据集顺序，运行研究所用的前 80 个样例：
+运行固定的 Study 子集：
 
 ```sh
 zg-bench run --suite study
 ```
 
-运行锁定的官方数据集中的全部 830 个样例：
+运行锁定的官方数据集中的全部个样例：
 
 ```sh
 zg-bench run --suite full
