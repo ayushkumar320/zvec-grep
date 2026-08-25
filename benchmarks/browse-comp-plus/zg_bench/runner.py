@@ -707,6 +707,16 @@ def completed_cases(run_root: Path, query_ids: list[str]) -> int:
     return count
 
 
+def _compact_tokens(value: int | None) -> str:
+    if value is None:
+        return "-"
+    if abs(value) >= 1_000_000:
+        return f"{value / 1_000_000:.1f}M"
+    if abs(value) >= 1_000:
+        return f"{value / 1_000:.1f}k"
+    return str(value)
+
+
 def run_benchmark(
     config: BenchmarkConfig,
     artifacts: Path,
@@ -854,11 +864,9 @@ def run_benchmark(
                     pending += 1
             pending_profiles[(query_id, trial_index)] = pending
     total_paired_trials = len(query_ids) * config.run.trials_per_case
-    total_profile_runs = total_paired_trials * len(PROFILES)
     finished_paired_trials = sum(
         pending == 0 for pending in pending_profiles.values()
     )
-    finished_profile_runs = total_profile_runs - len(tasks)
     server_required = new_run or any(
         profile == "zvec-grep" for _, _, profile in tasks
     )
@@ -996,41 +1004,29 @@ def run_benchmark(
                 _write_pair(
                     run_root, query_id, config.run.trials_per_case
                 )
-                finished_profile_runs += 1
                 pair_key = (query_id, trial_index)
                 pending_profiles[pair_key] -= 1
                 if pending_profiles[pair_key] == 0:
                     finished_paired_trials += 1
-                done = completed_cases(run_root, query_ids)
+                input_tokens = (
+                    result.trace.usage.input_tokens
+                    if result.trace.usage
+                    else None
+                )
+                output_tokens = (
+                    result.trace.usage.output_tokens
+                    if result.trace.usage
+                    else None
+                )
                 print(
-                    json.dumps(
-                        {
-                            "run_id": run_id,
-                            "query_id": query_id,
-                            "profile": profile,
-                            "trial_index": trial_index,
-                            "trial_round": trial_index,
-                            "total_trial_rounds": config.run.trials_per_case,
-                            "status": result.status,
-                            "finished_paired_trials": finished_paired_trials,
-                            "total_paired_trials": total_paired_trials,
-                            "finished_profile_runs": finished_profile_runs,
-                            "total_profile_runs": total_profile_runs,
-                            "completed_cases": done,
-                            "total_cases": len(query_ids),
-                            "input_tokens": (
-                                result.trace.usage.input_tokens
-                                if result.trace.usage
-                                else None
-                            ),
-                            "output_tokens": (
-                                result.trace.usage.output_tokens
-                                if result.trace.usage
-                                else None
-                            ),
-                            "wall_seconds": round(result.wall_seconds, 3),
-                        }
-                    ),
+                    f"run {run_id} · query {query_id} · "
+                    f"repeat {trial_index}/{config.run.trials_per_case} · "
+                    f"A/B comparisons {finished_paired_trials}/"
+                    f"{total_paired_trials} · "
+                    f"profile {profile}: {result.status} · "
+                    f"tokens {_compact_tokens(input_tokens)} in / "
+                    f"{_compact_tokens(output_tokens)} out · "
+                    f"{result.wall_seconds:.1f}s",
                     flush=True,
                 )
 

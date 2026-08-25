@@ -118,7 +118,7 @@ zg-bench run --suite ci
 zg-bench run --suite study
 ```
 
-运行锁定的官方数据集中的全部个样例：
+运行锁定的官方数据集中的全部样例：
 
 ```sh
 zg-bench run --suite full
