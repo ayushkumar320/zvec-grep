@@ -1,3 +1,10 @@
+import {
+  applyEdits,
+  modify,
+  parse as parseJsonWithComments,
+  type FormattingOptions,
+  type ParseError,
+} from "jsonc-parser";
 import { randomUUID } from "node:crypto";
 import { constants as fileSystemConstants } from "node:fs";
 import {
@@ -15,6 +22,7 @@ import {
 import { homedir } from "node:os";
 import { delimiter, dirname, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
+import { parseEnv } from "node:util";
 import { resolveServerUrl } from "../client/mode-router.js";
 import type { DaemonControlStatus } from "../daemon/server-controller.js";
 import type { McpToolset } from "../mcp/toolset.js";
@@ -26,6 +34,7 @@ import type { McpInstallTransport, ParsedArgs } from "./types.js";
 
 type AgentInstaller = {
   id: string;
+  aliases?: readonly string[];
   label: string;
   executable: string;
   install: (options: InstallAgentOptions) => Promise<InstallAgentResult>;
@@ -47,6 +56,7 @@ type InstallAgentResult = {
 const AGENT_INSTALLERS: readonly AgentInstaller[] = [
   {
     id: "claude",
+    aliases: ["cc", "claude-code"],
     label: "Claude Code",
     executable: "claude",
     install: installClaudeIntegration,
@@ -73,6 +83,14 @@ const AGENT_INSTALLERS: readonly AgentInstaller[] = [
     install: installCursorIntegration,
     uninstall: uninstallCursorIntegration,
   },
+  {
+    id: "qwen",
+    aliases: ["qwen-code", "qwencode"],
+    label: "Qwen Code",
+    executable: "qwen",
+    install: installQwenIntegration,
+    uninstall: uninstallQwenIntegration,
+  },
 ];
 
 const ZVEC_GREP_CONFIG_START = "# ZVEC_GREP_START";
@@ -80,6 +98,12 @@ const ZVEC_GREP_CONFIG_END = "# ZVEC_GREP_END";
 const ZVEC_GREP_AGENTS_START = "<!-- ZVEC_GREP_START -->";
 const ZVEC_GREP_AGENTS_END = "<!-- ZVEC_GREP_END -->";
 const CLAUDE_MCP_PERMISSION = "mcp__zvec_grep__*";
+const QWEN_SEARCH_PERMISSION = "mcp__zvec_grep__zvec_grep_search";
+const QWEN_RG_PERMISSION = "mcp__zvec_grep__zvec_grep_rg";
+const QWEN_MANAGED_PERMISSIONS = new Set([
+  QWEN_SEARCH_PERMISSION,
+  QWEN_RG_PERMISSION,
+]);
 const DEFAULT_MCP_TOOL_TIMEOUT_SECONDS = 600;
 
 export async function runInstall(parsed: ParsedArgs): Promise<void> {
@@ -253,25 +277,25 @@ async function installOpenCodeIntegration(
     server:
       options.transport === "stdio"
         ? {
-            type: "local",
-            command: stdioCommand(options.mcpToolset),
-            enabled: true,
-            timeout: options.mcpToolTimeoutSeconds * 1_000,
-          }
+          type: "local",
+          command: stdioCommand(options.mcpToolset),
+          enabled: true,
+          timeout: options.mcpToolTimeoutSeconds * 1_000,
+        }
         : {
-            type: "remote",
-            url: resolveServerUrl(),
-            enabled: true,
-            timeout: options.mcpToolTimeoutSeconds * 1_000,
-            oauth: false,
-            ...(options.mcpTokenEnv
-              ? {
-                  headers: {
-                    Authorization: `Bearer {env:${options.mcpTokenEnv}}`,
-                  },
-                }
-              : {}),
-          },
+          type: "remote",
+          url: resolveServerUrl(),
+          enabled: true,
+          timeout: options.mcpToolTimeoutSeconds * 1_000,
+          oauth: false,
+          ...(options.mcpTokenEnv
+            ? {
+              headers: {
+                Authorization: `Bearer {env:${options.mcpTokenEnv}}`,
+              },
+            }
+            : {}),
+        },
     force: options.force,
     label: "OpenCode",
   });
@@ -311,15 +335,15 @@ async function installCursorIntegration(
       options.transport === "stdio"
         ? { command: "zg", args: stdioArgs(options.mcpToolset) }
         : {
-            url: resolveServerUrl(),
-            ...(options.mcpTokenEnv
-              ? {
-                  headers: {
-                    Authorization: `Bearer \${${options.mcpTokenEnv}}`,
-                  },
-                }
-              : {}),
-          },
+          url: resolveServerUrl(),
+          ...(options.mcpTokenEnv
+            ? {
+              headers: {
+                Authorization: `Bearer \${${options.mcpTokenEnv}}`,
+              },
+            }
+            : {}),
+        },
     force: options.force,
     label: "Cursor",
   });
@@ -330,6 +354,54 @@ async function uninstallCursorIntegration(): Promise<InstallAgentResult> {
   const configPath = resolveCursorConfigPath();
   await uninstallJsonMcpServer(configPath, "mcpServers");
   return { files: [configPath] };
+}
+
+async function installQwenIntegration(
+  options: InstallAgentOptions,
+): Promise<InstallAgentResult> {
+  const qwenHome = await resolveQwenHome();
+  const settingsPath = resolve(qwenHome, "settings.json");
+  const guidancePath = resolve(qwenHome, "QWEN.md");
+
+  const warnings = await updateQwenSettings({
+    ...options,
+    path: settingsPath,
+  });
+  await writeMarkedFile({
+    path: guidancePath,
+    startMarker: ZVEC_GREP_AGENTS_START,
+    endMarker: ZVEC_GREP_AGENTS_END,
+    block: agentGuidanceBlock({
+      search: QWEN_SEARCH_PERMISSION,
+      rg: QWEN_RG_PERMISSION,
+    }),
+    force: true,
+  });
+
+  for (const warning of warnings) {
+    console.warn(`    warning   ${warning}`);
+  }
+
+  return { files: [settingsPath, guidancePath] };
+}
+
+async function uninstallQwenIntegration(): Promise<InstallAgentResult> {
+  const qwenHome = await resolveQwenHome();
+  const settingsPath = resolve(qwenHome, "settings.json");
+  const guidancePath = resolve(qwenHome, "QWEN.md");
+  const guidance = await readTextFileIfExists(guidancePath);
+
+  await removeQwenSettings(
+    settingsPath,
+    hasMarkedBlock(guidance, ZVEC_GREP_AGENTS_START, ZVEC_GREP_AGENTS_END),
+  );
+  await removeMarkedFile({
+    path: guidancePath,
+    startMarker: ZVEC_GREP_AGENTS_START,
+    endMarker: ZVEC_GREP_AGENTS_END,
+  });
+
+  return { files: [settingsPath, guidancePath] };
 }
 
 async function resolveInstallers(
@@ -412,8 +484,7 @@ function installersFromTokens(
 
   const selected = new Map<string, AgentInstaller>();
   for (const token of normalized) {
-    const input = token.toLowerCase();
-    const lower = input === "cc" || input === "claude-code" ? "claude" : input;
+    const lower = token.toLowerCase();
     if (lower === "none") {
       return [];
     }
@@ -447,7 +518,9 @@ function installersFromTokens(
 
     const installer = AGENT_INSTALLERS.find(
       (candidate) =>
-        candidate.id === lower || candidate.label.toLowerCase() === lower,
+        candidate.id === lower ||
+        candidate.aliases?.includes(lower) ||
+        candidate.label.toLowerCase() === lower,
     );
     if (!installer) {
       throw new Error(`Unknown install target: ${token}`);
@@ -676,7 +749,7 @@ function resolveClaudeMcpConfigPath(): string {
 function resolveOpenCodeConfigPath(): string {
   return resolve(
     process.env.OPENCODE_CONFIG ??
-      resolve(homedir(), ".config", "opencode", "opencode.json"),
+    resolve(homedir(), ".config", "opencode", "opencode.json"),
   );
 }
 
@@ -685,6 +758,51 @@ function resolveCursorConfigPath(): string {
     process.env.CURSOR_CONFIG_DIR ?? resolve(homedir(), ".cursor"),
     "mcp.json",
   );
+}
+
+async function resolveQwenHome(): Promise<string> {
+  const defaultQwenHome = resolve(homedir(), ".qwen");
+  const configured = process.env.QWEN_HOME;
+  if (configured) {
+    return resolveQwenHomeValue(configured);
+  }
+
+  // Qwen Code treats an explicitly exported empty QWEN_HOME as the default
+  // directory and does not replace it from a user .env file.
+  if (Object.hasOwn(process.env, "QWEN_HOME")) {
+    return defaultQwenHome;
+  }
+
+  const discovered =
+    (await readQwenHomeFromEnv(resolve(defaultQwenHome, ".env"))) ??
+    (await readQwenHomeFromEnv(resolve(homedir(), ".env")));
+  return discovered ? resolveQwenHomeValue(discovered) : defaultQwenHome;
+}
+
+async function readQwenHomeFromEnv(path: string): Promise<string | undefined> {
+  const source = await readTextFileIfExists(path);
+  if (!source) return undefined;
+
+  try {
+    return parseEnv(source).QWEN_HOME || undefined;
+  } catch {
+    // Match Qwen Code's quiet dotenv bootstrap behavior.
+    return undefined;
+  }
+}
+
+function resolveQwenHomeValue(value: string): string {
+  if (value === "~") return homedir();
+  if (value.startsWith("~/") || value.startsWith("~\\")) {
+    return resolve(
+      homedir(),
+      ...value
+        .slice(2)
+        .split(/[/\\]+/)
+        .filter(Boolean),
+    );
+  }
+  return resolve(value);
 }
 
 async function installJsonMcpServer(options: {
@@ -788,23 +906,23 @@ async function updateClaudeMcpConfig(options: {
   mcpServers.zvec_grep =
     options.transport === "stdio"
       ? {
-          ...retained,
-          type: "stdio",
-          command: "zg",
-          args: stdioArgs(options.mcpToolset),
-        }
+        ...retained,
+        type: "stdio",
+        command: "zg",
+        args: stdioArgs(options.mcpToolset),
+      }
       : {
-          ...retained,
-          type: "http",
-          url: resolveServerUrl(),
-          ...(options.tokenEnv
-            ? {
-                headers: {
-                  Authorization: `Bearer \${${options.tokenEnv}}`,
-                },
-              }
-            : {}),
-        };
+        ...retained,
+        type: "http",
+        url: resolveServerUrl(),
+        ...(options.tokenEnv
+          ? {
+            headers: {
+              Authorization: `Bearer \${${options.tokenEnv}}`,
+            },
+          }
+          : {}),
+      };
   root.mcpServers = mcpServers;
   await writeJsonObject(options.path, root);
 }
@@ -867,6 +985,222 @@ async function updateClaudePermissionSettings(
   }
 
   await writeJsonObject(path, root);
+}
+
+async function updateQwenSettings(
+  options: InstallAgentOptions & { path: string; },
+): Promise<string[]> {
+  const existing = await readTextFileIfExists(options.path);
+  let source = existing.trim() ? existing : "{}\n";
+  const root = parseQwenSettings(options.path, source);
+  validateQwenSettingsContainers(options.path, root);
+
+  const mcpServers = isJsonObject(root.mcpServers) ? root.mcpServers : {};
+  const current = mcpServers.zvec_grep;
+  const managed = isManagedQwenMcpServer(current);
+  if (current !== undefined && !managed && !options.force) {
+    throw new Error(
+      `Existing unmanaged zvec_grep MCP server found in ${options.path}. Re-run with --force to replace it for Qwen Code.`,
+    );
+  }
+
+  source = editJsonWithComments(
+    source,
+    ["mcpServers", "zvec_grep"],
+    qwenMcpServer(options),
+  );
+
+  source = updateQwenPermissions(
+    source,
+    root,
+    qwenPermissionRules(options.mcpToolset),
+  );
+  await writeTextFileAtomic(options.path, ensureTrailingNewline(source));
+  return qwenSettingsWarnings(root);
+}
+
+async function removeQwenSettings(
+  path: string,
+  hasManagedGuidance: boolean,
+): Promise<void> {
+  const existing = await readTextFileIfExists(path);
+  if (!existing.trim()) return;
+
+  let source = existing;
+  const root = parseQwenSettings(path, source);
+  validateQwenSettingsContainers(path, root);
+  const mcpServers = isJsonObject(root.mcpServers) ? root.mcpServers : {};
+  const managed = isManagedQwenMcpServer(mcpServers.zvec_grep);
+
+  if (managed) {
+    source = editJsonWithComments(
+      source,
+      Object.keys(mcpServers).length === 1
+        ? ["mcpServers"]
+        : ["mcpServers", "zvec_grep"],
+      undefined,
+    );
+  }
+  if (managed || hasManagedGuidance) {
+    source = updateQwenPermissions(source, root, []);
+  }
+  if (source !== existing) {
+    await writeTextFileAtomic(path, ensureTrailingNewline(source));
+  }
+}
+
+function qwenMcpServer(options: InstallAgentOptions): Record<string, unknown> {
+  const timeout = options.mcpToolTimeoutSeconds * 1_000;
+  if (options.transport === "stdio") {
+    return {
+      command: "zg",
+      args: stdioArgs(options.mcpToolset),
+      timeout,
+    };
+  }
+
+  return {
+    httpUrl: resolveServerUrl(),
+    timeout,
+    ...(options.mcpTokenEnv
+      ? {
+        headers: {
+          Authorization: `Bearer \${${options.mcpTokenEnv}}`,
+        },
+      }
+      : {}),
+  };
+}
+
+function qwenPermissionRules(mcpToolset?: McpToolset): string[] {
+  return [
+    QWEN_SEARCH_PERMISSION,
+    ...(mcpToolset === "full" ? [QWEN_RG_PERMISSION] : []),
+  ];
+}
+
+function updateQwenPermissions(
+  source: string,
+  root: JsonObject,
+  desired: readonly string[],
+): string {
+  const permissions = isJsonObject(root.permissions) ? root.permissions : {};
+  const currentAllow = Array.isArray(permissions.allow)
+    ? (permissions.allow as string[])
+    : [];
+  const nextAllow = currentAllow.filter(
+    (rule) => !QWEN_MANAGED_PERMISSIONS.has(rule),
+  );
+  for (const rule of desired) {
+    if (!nextAllow.includes(rule)) nextAllow.push(rule);
+  }
+
+  if (arraysEqual(currentAllow, nextAllow)) return source;
+  if (nextAllow.length > 0) {
+    return editJsonWithComments(source, ["permissions", "allow"], nextAllow);
+  }
+
+  return editJsonWithComments(
+    source,
+    Object.keys(permissions).length === 1
+      ? ["permissions"]
+      : ["permissions", "allow"],
+    undefined,
+  );
+}
+
+function parseQwenSettings(path: string, source: string): JsonObject {
+  const errors: ParseError[] = [];
+  const parsed = parseJsonWithComments(source, errors, {
+    allowTrailingComma: false,
+    disallowComments: false,
+  });
+  if (errors.length > 0 || !isJsonObject(parsed)) {
+    throw new Error(`Invalid Qwen Code configuration in ${path}.`);
+  }
+  return parsed;
+}
+
+function validateQwenSettingsContainers(path: string, root: JsonObject): void {
+  if (root.mcpServers !== undefined && !isJsonObject(root.mcpServers)) {
+    throw new Error(`Invalid mcpServers configuration in ${path}.`);
+  }
+  if (root.permissions !== undefined && !isJsonObject(root.permissions)) {
+    throw new Error(`Invalid permissions configuration in ${path}.`);
+  }
+  if (!isJsonObject(root.permissions)) return;
+
+  const allow = root.permissions.allow;
+  if (allow !== undefined && !Array.isArray(allow)) {
+    throw new Error(`Invalid permissions.allow configuration in ${path}.`);
+  }
+  if (Array.isArray(allow) && allow.some((rule) => typeof rule !== "string")) {
+    throw new Error(`Invalid permissions.allow rule in ${path}.`);
+  }
+}
+
+function editJsonWithComments(
+  source: string,
+  path: readonly (string | number)[],
+  value: unknown,
+): string {
+  return applyEdits(
+    source,
+    modify(source, [...path], value, {
+      formattingOptions: jsonFormattingOptions(source),
+    }),
+  );
+}
+
+function jsonFormattingOptions(source: string): FormattingOptions {
+  const eol = source.includes("\r\n") ? "\r\n" : "\n";
+  const indentation = source.match(/^[ \t]+(?=")/m)?.[0];
+  if (indentation?.startsWith("\t")) {
+    return { insertSpaces: false, tabSize: 1, eol };
+  }
+  return {
+    insertSpaces: true,
+    tabSize: indentation?.length ?? 2,
+    eol,
+  };
+}
+
+function qwenSettingsWarnings(root: JsonObject): string[] {
+  if (!isJsonObject(root.context)) return [];
+  const configured = root.context.fileName;
+  const fileNames =
+    typeof configured === "string"
+      ? [configured]
+      : Array.isArray(configured) &&
+        configured.every((value) => typeof value === "string")
+        ? (configured as string[])
+        : undefined;
+  if (!fileNames || fileNames.includes("QWEN.md")) return [];
+  return [
+    "context.fileName does not include QWEN.md; the installed zvec-grep guidance may not be loaded.",
+  ];
+}
+
+function isManagedQwenMcpServer(value: unknown): boolean {
+  return (
+    isJsonObject(value) &&
+    (value.httpUrl === resolveServerUrl() ||
+      (value.command === "zg" && isStdioArgs(value.args)))
+  );
+}
+
+function arraysEqual(
+  left: readonly string[],
+  right: readonly string[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((value, index) => value === right[index])
+  );
+}
+
+function ensureTrailingNewline(source: string): string {
+  return source.endsWith("\n") ? source : `${source}\n`;
 }
 
 async function readJsonObject(path: string): Promise<JsonObject> {
@@ -970,7 +1304,7 @@ async function writeMarkedFile(options: {
     if (!options.force) {
       throw new Error(
         options.conflictMessage ??
-          `Existing unmanaged configuration found in ${options.path}`,
+        `Existing unmanaged configuration found in ${options.path}`,
       );
     }
     existing = options.removeConflict
@@ -982,6 +1316,14 @@ async function writeMarkedFile(options: {
     options.path,
     next ?? appendMarkedBlock(existing, options.block),
   );
+}
+
+function hasMarkedBlock(
+  existing: string,
+  startMarker: string,
+  endMarker: string,
+): boolean {
+  return replaceMarkedBlock(existing, startMarker, endMarker, "") !== null;
 }
 
 async function removeMarkedFile(options: {
@@ -1098,7 +1440,7 @@ function replaceMarkedBlock(
 ): string | null {
   const lines = existing.split(/\r?\n/);
   const markerLines = new Set<number>();
-  const ranges: Array<{ start: number; end: number }> = [];
+  const ranges: Array<{ start: number; end: number; }> = [];
   let pendingStart: number | undefined;
 
   for (const [index, line] of lines.entries()) {
@@ -1146,7 +1488,7 @@ function retainedMarkedLines(
   start: number,
   end: number,
   markerLines: ReadonlySet<number>,
-  removedRanges: readonly { start: number; end: number }[],
+  removedRanges: readonly { start: number; end: number; }[],
 ): string[] {
   const retained: string[] = [];
   for (let index = start; index < end; index += 1) {
@@ -1224,18 +1566,16 @@ function isCodexMcpServerTableName(tableName: string): boolean {
 function codexConfigBlock(options: InstallAgentOptions): string {
   return `${ZVEC_GREP_CONFIG_START}
 [mcp_servers.zvec_grep]
-${
-  options.transport === "stdio"
-    ? `command = "zg"
+${options.transport === "stdio"
+      ? `command = "zg"
 args = ${tomlStringArray(stdioArgs(options.mcpToolset))}`
-    : `url = "${resolveServerUrl()}"`
-}
-${
-  options.mcpTokenEnv
-    ? `bearer_token_env_var = "${options.mcpTokenEnv}"
+      : `url = "${resolveServerUrl()}"`
+    }
+${options.mcpTokenEnv
+      ? `bearer_token_env_var = "${options.mcpTokenEnv}"
 `
-    : ""
-}tool_timeout_sec = ${options.mcpToolTimeoutSeconds}
+      : ""
+    }tool_timeout_sec = ${options.mcpToolTimeoutSeconds}
 default_tools_approval_mode = "approve"
 ${ZVEC_GREP_CONFIG_END}`;
 }
@@ -1253,24 +1593,24 @@ function agentGuidanceBlock(toolNames?: {
 Choose the evidence source before the retrieval mode.
 
 ${formatPromptRules(
-  "### Workspace evidence",
-  ZVEC_GREP_WORKSPACE_EVIDENCE_RULES,
-)}
+    "### Workspace evidence",
+    ZVEC_GREP_WORKSPACE_EVIDENCE_RULES,
+  )}
 
 ${formatPromptRules("### Retrieval routing", [
-  `When an exact word, phrase, name, date, identifier, filename, path, configuration key, error message, source fragment, literal, or regex is known and locating its occurrences is sufficient, use ${exactLookupRoute}.`,
-  `Use \`${searchTool}\` when wording or location is unknown, or when the answer requires semantic, conceptual, fuzzy, or paraphrase discovery; relationships, chronology, causality, architecture, or data or control flow; or comparison or synthesis across files, sections, or documents.`,
-  `For a mixed task with exact anchors that still requires relationships or cross-file synthesis, call \`${searchTool}\` with the concept and anchors, then use ${exactLookupRoute} for focused follow-up.`,
-  `When no sufficient exact anchor is available and the user asks whether conceptually related material exists locally, make at most one focused \`${searchTool}\` probe using the question plus distinctive names, dates, or terms. This probe does not apply to exact quotations, configuration keys, filenames, regexes, or exhaustive occurrence requests. Continue only when results are relevant; otherwise stop and report that the indexed workspace did not establish the answer.`,
-  "Before broad file reads or delegating workspace discovery, use the appropriate search route. Do not delegate solely to locate material, and stop when the evidence is sufficient.",
-])}
+    `When an exact word, phrase, name, date, identifier, filename, path, configuration key, error message, source fragment, literal, or regex is known and locating its occurrences is sufficient, use ${exactLookupRoute}.`,
+    `Use \`${searchTool}\` when wording or location is unknown, or when the answer requires semantic, conceptual, fuzzy, or paraphrase discovery; relationships, chronology, causality, architecture, or data or control flow; or comparison or synthesis across files, sections, or documents.`,
+    `For a mixed task with exact anchors that still requires relationships or cross-file synthesis, call \`${searchTool}\` with the concept and anchors, then use ${exactLookupRoute} for focused follow-up.`,
+    `When no sufficient exact anchor is available and the user asks whether conceptually related material exists locally, make at most one focused \`${searchTool}\` probe using the question plus distinctive names, dates, or terms. This probe does not apply to exact quotations, configuration keys, filenames, regexes, or exhaustive occurrence requests. Continue only when results are relevant; otherwise stop and report that the indexed workspace did not establish the answer.`,
+    "Before broad file reads or delegating workspace discovery, use the appropriate search route. Do not delegate solely to locate material, and stop when the evidence is sufficient.",
+  ])}
 
 ${formatPromptRules("### Search arguments and evidence", [
-  "`query` creates one primary hybrid result group; `queries` creates one or more primary hybrid result groups.",
-  "`fts` and `vector` add supplemental lexical and semantic routes. `fts` is a retrieval route, not a hard filter or constraint.",
-  "Without `fuse`, search groups are evaluated separately and returned as one deduplicated, reranked list with query-group metadata. Set `fuse: true` to collapse the supplied primary and supplemental intents into one search plan.",
-  "Search results include bounded source snippets. Treat a sufficient snippet as already-read evidence, and read a cited file only when a required detail falls outside the snippet.",
-])}
+    "`query` creates one primary hybrid result group; `queries` creates one or more primary hybrid result groups.",
+    "`fts` and `vector` add supplemental lexical and semantic routes. `fts` is a retrieval route, not a hard filter or constraint.",
+    "Without `fuse`, search groups are evaluated separately and returned as one deduplicated, reranked list with query-group metadata. Set `fuse: true` to collapse the supplied primary and supplemental intents into one search plan.",
+    "Search results include bounded source snippets. Treat a sufficient snippet as already-read evidence, and read a cited file only when a required detail falls outside the snippet.",
+  ])}
 
 Example mixed search:
 
@@ -1284,11 +1624,11 @@ Example mixed search:
 \`\`\`
 
 ${formatPromptRules("### Freshness and index lifecycle", [
-  "Pass a daemon-visible absolute `root` on every zvec-grep workspace call.",
-  "Read `freshness` and `background_refresh` from search results without a status preflight.",
-  "When results are `served_from_current_index`, use them when sufficient instead of waiting for the background refresh.",
-  `If the index is missing but exact or regex lookup can answer the task, use ${exactLookupRoute}.`,
-  "Creating, rebuilding, or dropping a persistent index requires an explicit user request or authorization; never do so silently.",
-])}
+    "Pass a daemon-visible absolute `root` on every zvec-grep workspace call.",
+    "Read `freshness` and `background_refresh` from search results without a status preflight.",
+    "When results are `served_from_current_index`, use them when sufficient instead of waiting for the background refresh.",
+    `If the index is missing but exact or regex lookup can answer the task, use ${exactLookupRoute}.`,
+    "Creating, rebuilding, or dropping a persistent index requires an explicit user request or authorization; never do so silently.",
+  ])}
 ${ZVEC_GREP_AGENTS_END}`;
 }

@@ -16,11 +16,12 @@ managed-rg route.
 | --- | --- | --- |
 | Codex | `codex` | `~/.codex/config.toml` and `~/.codex/AGENTS.md` |
 | Claude Code | `claude` | `~/.claude.json`, `~/.claude/settings.json`, and `~/.claude/CLAUDE.md` |
+| Qwen Code | `qwen` | `~/.qwen/settings.json` and `~/.qwen/QWEN.md` |
 | OpenCode | `opencode` | `~/.config/opencode/opencode.json` and the adjacent `AGENTS.md` |
 | Cursor | `cursor` | `~/.cursor/mcp.json` |
 
 The standard environment overrides used by each agent are respected, including
-`CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `OPENCODE_CONFIG`, and
+`CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `QWEN_HOME`, `OPENCODE_CONFIG`, and
 `CURSOR_CONFIG_DIR`.
 
 ## Install an integration
@@ -36,6 +37,7 @@ For scripts or repeatable setup, select targets explicitly:
 ```bash
 zg install --target codex --yes
 zg install --target claude --target cursor --yes
+zg install --target qwen --yes
 zg install --target all --yes
 ```
 
@@ -43,7 +45,7 @@ The installer:
 
 1. adds a managed `zvec_grep` MCP entry;
 2. adds search guidance where the agent supports it;
-3. adds local MCP tool approval for Codex and Claude Code;
+3. adds local MCP tool approval for Codex, Claude Code, and Qwen Code;
 4. starts the local zvec-grep server when possible.
 
 The [Server guide](./06-server.md) explains when the daemon is useful and how its
@@ -99,9 +101,12 @@ Check the server first:
 zg server status --check-ready
 ```
 
-Then start a new agent session and confirm that `zvec_grep_search` is available.
-If the MCP connection is unavailable, the same indexed search and optional
-managed-rg route remain available from the shell:
+Then start a new agent session and confirm that the client-specific search tool
+is available. It is `zvec_grep_search` in Codex and Claude Code,
+`mcp__zvec_grep__zvec_grep_search` in Qwen Code, and
+`zvec_grep_zvec_grep_search` in OpenCode. If the MCP connection is unavailable,
+the same indexed search and optional managed-rg route remain available from the
+shell:
 
 ```bash
 zg query "where theme preferences are restored"
@@ -125,8 +130,12 @@ Use the same target names to remove only zvec-grep-managed entries:
 
 ```bash
 zg uninstall --target codex --yes
+zg uninstall --target qwen --yes
 zg uninstall --target all --yes
 ```
 
 Restart the agent or open a new session to apply the change. Uninstalling an
-agent integration does not delete repository indexes or the npm package.
+agent integration does not delete repository indexes or the npm package. For
+Qwen Code, uninstall removes the managed MCP entry, exact permission rules, and
+marked `QWEN.md` block while preserving other settings, permissions, comments,
+and MCP servers.

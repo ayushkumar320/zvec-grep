@@ -146,15 +146,17 @@ scripts.
 ## `zg install` and `zg uninstall`
 
 ```text
-zg install [--target codex|claude|opencode|cursor|all|auto] [--yes] [--force]
-zg uninstall [--target codex|claude|opencode|cursor|all|auto] [--yes]
+zg install [--target codex|claude|qwen|opencode|cursor|all|auto] [--mcp-transport stdio|http] [--mcp-toolset agent|full] [--yes] [--force]
+zg uninstall [--target codex|claude|qwen|opencode|cursor|all|auto] [--yes]
 ```
 
 `--target` is repeatable. `zg install` also accepts:
 
 | Option | Meaning |
 | --- | --- |
-| `--mcp-tool-timeout <seconds>` | Codex/OpenCode MCP timeout; default 600 seconds |
+| `--mcp-transport <stdio\|http>` | MCP connection mode; default `stdio` |
+| `--mcp-toolset <agent\|full>` | Daemon MCP surface; default `agent` |
+| `--mcp-tool-timeout <seconds>` | Codex, Qwen Code, and OpenCode MCP timeout; default 600 seconds |
 | `--mcp-token-env <name>` | Environment variable containing the server token |
 | `--force` | Replace a conflicting unmanaged `zvec_grep` entry |
 
@@ -226,6 +228,7 @@ refresh, authentication, and logs. See [MCP](./03-mcp.md) for the tool contract.
 | `ZVEC_GREP_DEVICE` | Local model device |
 | `DASHSCOPE_API_KEY` | Qwen API-key fallback after `ZVEC_GREP_API_KEY` |
 | `QWEN_API_KEY` | Qwen API-key fallback after `DASHSCOPE_API_KEY` |
+| `QWEN_HOME` | Qwen Code configuration directory used by `zg install` |
 
 Run `zg help environment` for advanced variables, agent integration paths,
 scope, and detailed precedence. A new index selects its model in this order:

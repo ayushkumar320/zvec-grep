@@ -2,12 +2,12 @@ import {
   COMPONENT_CODE_FORMATS,
   STRUCTURED_CODE_FORMATS,
 } from "../engine/code-formats.js";
+import { resolveMaxFileSizeBytes } from "../engine/file-size-policy.js";
 import {
   listKnownBinaryExtensionGroups,
   listRecognizedFileTypes,
   type RecognizedFileType,
 } from "../engine/file-type.js";
-import { resolveMaxFileSizeBytes } from "../engine/file-size-policy.js";
 import { listEmbeddingModels } from "../engine/models/index.js";
 
 type EmbeddingCatalogEntry = ReturnType<typeof listEmbeddingModels>[number];
@@ -49,6 +49,7 @@ const ENVIRONMENT_VARIABLES = {
   NO_COLOR: "Disable terminal colors",
   CODEX_HOME: "Codex configuration directory used by zg install",
   CLAUDE_CONFIG_DIR: "Claude configuration directory used by zg install",
+  QWEN_HOME: "Qwen Code configuration directory used by zg install",
   OPENCODE_CONFIG: "OpenCode configuration file used by zg install",
   CURSOR_CONFIG_DIR: "Cursor configuration directory used by zg install",
 } as const;
@@ -296,13 +297,13 @@ ${formatEnvironmentVariables([
 See zg help environment for daemon startup scope.`;
     case "install":
       return `Usage:
-  zg install [--target codex|claude|opencode|cursor|all|auto] [--mcp-transport stdio|http] [--mcp-toolset agent|full] [--yes] [--force]
+  zg install [--target codex|claude|qwen|opencode|cursor|all|auto] [--mcp-transport stdio|http] [--mcp-toolset agent|full] [--yes] [--force]
 
 Options:
-  --target <agent>                  codex, claude, opencode, cursor, auto, or all; repeatable
+  --target <agent>                  codex, claude, qwen, opencode, cursor, auto, or all; repeatable
   --mcp-transport <stdio|http>      MCP connection mode (default: stdio)
   --mcp-toolset <agent|full>        Daemon MCP toolset (default: agent)
-  --mcp-tool-timeout <seconds>      Codex MCP tool timeout (default: 600)
+  --mcp-tool-timeout <seconds>      MCP tool timeout where supported (default: 600)
   --mcp-token-env <name>            HTTP mode Bearer token environment variable
   --yes                             Install detected agents without prompting
   --force                           Replace conflicting unmanaged configuration
@@ -310,15 +311,17 @@ Options:
 Interactive setup detects supported agents, configures stdio by default, and
 starts the shared daemon. In stdio mode an agent reconnect also starts the
 daemon automatically after a reboot. HTTP users manage later daemon restarts.
-Codex, Claude Code, and OpenCode also receive managed guidance;
-Codex and Claude Code receive local tool pre-approval. Remote Embedding
-authorization remains separate and is requested by zvec-grep on first remote
-use. This does not install the npm package.`;
+Codex, Claude Code, Qwen Code, and OpenCode also receive managed guidance.
+Codex and Claude Code receive local tool pre-approval. Qwen Code receives exact
+approval for search and, with the full toolset, managed rg; the installer does
+not add server-wide trust. Remote Embedding authorization remains separate and
+is requested by zvec-grep on first remote use. Restart the agent or open a new
+session after installation. This does not install the npm package.`;
     case "uninstall":
       return `Usage:
-  zg uninstall [--target codex|claude|opencode|cursor|all|auto] [--yes]
+  zg uninstall [--target codex|claude|qwen|opencode|cursor|all|auto] [--yes]
 
-Removes zvec-grep-managed MCP configuration, trust, and guidance.`;
+Removes zvec-grep-managed MCP configuration, permissions, and guidance.`;
     case "help":
       return `Usage:
   zg help [command|topic]
@@ -545,6 +548,7 @@ Agent integration paths:
 ${formatEnvironmentVariables([
   "CODEX_HOME",
   "CLAUDE_CONFIG_DIR",
+  "QWEN_HOME",
   "OPENCODE_CONFIG",
   "CURSOR_CONFIG_DIR",
 ])}
