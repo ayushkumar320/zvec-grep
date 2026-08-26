@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev/rust]
+    paths-ignore:
+      - "**/*.md"
+      - LICENSE
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+    paths-ignore:
+      - "**/*.md"
+      - LICENSE
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  quality:
+    name: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        run: rustup show active-toolchain
+      - name: Restore Cargo cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-cargo-
+      - name: Check formatting
+        run: cargo fmt --all --check
+      - name: Check packages independently
+        shell: bash
+        run: |
+          for package in zg-engine zg-cli zg-lexical-rg zg-testkit zg; do
+            cargo check --locked --package "${package}" --all-targets
+          done
+      - name: Run Clippy
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Validate Cargo metadata
+        run: cargo metadata --locked --no-deps --format-version 1 > /dev/null
+
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        run: rustup show active-toolchain
+      - name: Restore Cargo cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-cargo-
+      - name: Run workspace tests
+        run: cargo test --locked --workspace --all-targets
+      - name: Verify the ripgrep dependency
+        run: rg --version
+      - name: Smoke test the CLI
+        run: cargo run --locked -p zg -- query --rg "standalone clean-room Rust implementation" README.md
