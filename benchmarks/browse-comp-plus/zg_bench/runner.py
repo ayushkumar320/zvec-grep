@@ -9,7 +9,7 @@ import signal
 import sys
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -717,6 +717,48 @@ def _compact_tokens(value: int | None) -> str:
     return str(value)
 
 
+@dataclass
+class _RunTokenCounter:
+    total_tokens: dict[Profile, int] = field(
+        default_factory=lambda: {profile: 0 for profile in PROFILES}
+    )
+    counted_attempts: set[Path] = field(default_factory=set)
+
+    def add_attempts(self, attempts_root: Path, profile: Profile) -> None:
+        for attempt_root in sorted(attempts_root.glob("attempt-*")):
+            if (
+                not attempt_root.is_dir()
+                or not attempt_root.name.removeprefix("attempt-").isdigit()
+                or attempt_root in self.counted_attempts
+            ):
+                continue
+            usage_path = attempt_root / "usage.json"
+            result_path = attempt_root / "result.json"
+            if usage_path.is_file():
+                usage = read_json(usage_path)
+            elif result_path.is_file():
+                result = read_json(result_path)
+                usage = result.get("trace", {}).get("usage")
+            else:
+                continue
+            if usage is not None and not isinstance(usage, dict):
+                raise RuntimeError(f"invalid attempt usage in {attempt_root}")
+            self.counted_attempts.add(attempt_root)
+            if usage is None:
+                continue
+            self.total_tokens[profile] += int(usage.get("input_tokens", 0))
+            self.total_tokens[profile] += int(usage.get("output_tokens", 0))
+
+    def add_run(self, run_root: Path) -> None:
+        for profile in PROFILES:
+            for attempts_root in sorted(
+                run_root.glob(
+                    f"cases/*/{profile}/trials/trial-*/attempts"
+                )
+            ):
+                self.add_attempts(attempts_root, profile)
+
+
 def run_benchmark(
     config: BenchmarkConfig,
     artifacts: Path,
@@ -850,6 +892,8 @@ def run_benchmark(
         raise RuntimeError(f"run references missing queries: {', '.join(missing)}")
     for query_id in query_ids:
         _write_pair(run_root, query_id, config.run.trials_per_case)
+    run_tokens = _RunTokenCounter()
+    run_tokens.add_run(run_root)
     tasks: list[tuple[dict[str, Any], int, Profile]] = []
     pending_profiles: dict[tuple[str, int], int] = {}
     for trial_index in range(1, config.run.trials_per_case + 1):
@@ -1018,6 +1062,13 @@ def run_benchmark(
                     if result.trace.usage
                     else None
                 )
+                run_tokens.add_attempts(
+                    _result_path(
+                        run_root, query_id, profile, trial_index
+                    ).parent
+                    / "attempts",
+                    profile,
+                )
                 print(
                     f"run {run_id} · query {query_id} · "
                     f"repeat {trial_index}/{config.run.trials_per_case} · "
@@ -1026,6 +1077,10 @@ def run_benchmark(
                     f"profile {profile}: {result.status} · "
                     f"tokens {_compact_tokens(input_tokens)} in / "
                     f"{_compact_tokens(output_tokens)} out · "
+                    "run tokens Baseline "
+                    f"{_compact_tokens(run_tokens.total_tokens['baseline'])} / "
+                    "zvec-grep "
+                    f"{_compact_tokens(run_tokens.total_tokens['zvec-grep'])} · "
                     f"{result.wall_seconds:.1f}s",
                     flush=True,
                 )

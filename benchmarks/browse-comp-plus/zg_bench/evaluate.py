@@ -493,7 +493,12 @@ def _run_judge(
         )
     )
     blind_id = fingerprint([run_id, query_id, str(trial_index), profile])[:12]
-    console.item(position, total, f"Evaluating {run_id} · item {blind_id}")
+    console.item(
+        position,
+        total,
+        f"Evaluating · run {run_id} · query {query_id} · "
+        f"profile {profile} · trial {trial_index}",
+    )
     completed, trace, wall_seconds, paths = _execute_evaluator(
         codex=codex,
         codex_home=codex_home,
@@ -633,7 +638,8 @@ def _run_usage_audit(
     console.item(
         position,
         total,
-        f"Auditing zvec-grep usage · case {query_id} · trial {trial_index}",
+        f"Auditing zvec-grep usage · query {query_id} · "
+        f"profile zvec-grep · trial {trial_index}",
     )
     completed, audit_trace, wall_seconds, paths = _execute_evaluator(
         codex=codex,

@@ -312,16 +312,16 @@ Interactive setup detects supported agents, configures stdio by default, and
 starts the shared daemon. In stdio mode an agent reconnect also starts the
 daemon automatically after a reboot. HTTP users manage later daemon restarts.
 Codex, Claude Code, Qwen Code, and OpenCode also receive managed guidance.
-Codex and Claude Code receive local tool pre-approval. Qwen Code receives exact
-approval for search and, with the full toolset, managed rg; the installer does
-not add server-wide trust. Remote Embedding authorization remains separate and
-is requested by zvec-grep on first remote use. Restart the agent or open a new
-session after installation. This does not install the npm package.`;
+Codex and Claude Code receive local tool pre-approval. Remote Embedding
+authorization remains separate and is requested by zvec-grep on first remote
+use. Restart the agent or open a new session after installation. This does not
+install the npm package.`;
     case "uninstall":
       return `Usage:
   zg uninstall [--target codex|claude|qwen|opencode|cursor|all|auto] [--yes]
 
-Removes zvec-grep-managed MCP configuration, permissions, and guidance.`;
+Removes zvec-grep-managed MCP configuration, agent-specific approval, and
+guidance.`;
     case "help":
       return `Usage:
   zg help [command|topic]

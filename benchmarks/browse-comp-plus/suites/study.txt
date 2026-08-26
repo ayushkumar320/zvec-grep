@@ -24,3 +24,12 @@
 
 # The pinned corpus identifies Norman Mapeza but never provides the middle name required by the full-name reference answer.
 @exclude 253
+
+# The missing-person clues combine unrelated children from different locations and years into one identity.
+@exclude 773
+
+# The evidence uses both "Sadiq Malkani" and "Muhammad Sadiq Malkani," making the requested first name ambiguous.
+@exclude 809
+
+# The reference subject's documented film debut falls outside the query's date range, and the final-U.S.-shows clue is unsupported.
+@exclude 856

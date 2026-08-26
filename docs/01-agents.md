@@ -45,7 +45,8 @@ The installer:
 
 1. adds a managed `zvec_grep` MCP entry;
 2. adds search guidance where the agent supports it;
-3. adds local MCP tool approval for Codex, Claude Code, and Qwen Code;
+3. adds local MCP tool approval for Codex and Claude Code, and managed server
+   trust for Qwen Code;
 4. starts the local zvec-grep server when possible.
 
 The [Server guide](./06-server.md) explains when the daemon is useful and how its
@@ -135,7 +136,4 @@ zg uninstall --target all --yes
 ```
 
 Restart the agent or open a new session to apply the change. Uninstalling an
-agent integration does not delete repository indexes or the npm package. For
-Qwen Code, uninstall removes the managed MCP entry, exact permission rules, and
-marked `QWEN.md` block while preserving other settings, permissions, comments,
-and MCP servers.
+agent integration does not delete repository indexes or the npm package.

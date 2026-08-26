@@ -22,8 +22,6 @@ import { ZVEC_GREP_WORKSPACE_EVIDENCE_RULES } from "../dist/prompts/zvec-grep-gu
 
 const execFileAsync = promisify(execFile);
 const cliPath = resolve("dist/cli/index.js");
-const qwenSearchPermission = "mcp__zvec_grep__zvec_grep_search";
-const qwenRgPermission = "mcp__zvec_grep__zvec_grep_rg";
 
 test("interactive installer marker follows the active agent", () => {
   const detected = new Set(["claude", "codex"]);
@@ -713,7 +711,7 @@ test("Qwen Code installer accepts qwen aliases and numeric target 5", async (t) 
   }
 });
 
-test("Qwen Code installer configures full stdio tools, timeout, permissions, and guidance", async (t) => {
+test("Qwen Code installer configures full stdio tools, trust, timeout, and guidance", async (t) => {
   const temporaryDirectory = await mkdtemp(
     join(tmpdir(), "zvec-grep-install-qwen-stdio-"),
   );
@@ -734,17 +732,14 @@ test("Qwen Code installer configures full stdio tools, timeout, permissions, and
     command: "zg",
     args: ["server", "--stdio", "--mcp-toolset", "full"],
     timeout: 900000,
+    alwaysLoadTools: true,
+    trust: true,
   });
-  assert.deepEqual(config.permissions.allow, [
-    qwenSearchPermission,
-    qwenRgPermission,
-  ]);
-  assert.equal(config.mcpServers.zvec_grep.trust, undefined);
-  assert.equal(config.permissions.allow.includes("mcp__zvec_grep__*"), false);
+  assert.equal(config.permissions, undefined);
 
   const guidance = await readFile(join(qwenHome, "QWEN.md"), "utf8");
-  assert.match(guidance, new RegExp("`" + qwenSearchPermission + "`"));
-  assert.match(guidance, new RegExp("`" + qwenRgPermission + "`"));
+  assert.match(guidance, /`mcp__zvec_grep__zvec_grep_search`/);
+  assert.match(guidance, /`mcp__zvec_grep__zvec_grep_rg`/);
   assert.equal(countOccurrences(guidance, "<!-- ZVEC_GREP_START -->"), 1);
   assert.equal(countOccurrences(guidance, "<!-- ZVEC_GREP_END -->"), 1);
 });
@@ -770,13 +765,15 @@ test("Qwen Code installer writes Streamable HTTP configuration and token expansi
   assert.deepEqual(config.mcpServers.zvec_grep, {
     httpUrl: "http://127.0.0.1:7999/mcp",
     timeout: 42000,
+    alwaysLoadTools: true,
+    trust: true,
     headers: {
       Authorization: "Bearer ${ZVEC_GREP_SERVER_TOKEN}",
     },
   });
   assert.equal(config.mcpServers.zvec_grep.url, undefined);
   assert.equal(config.mcpServers.zvec_grep.command, undefined);
-  assert.deepEqual(config.permissions.allow, [qwenSearchPermission]);
+  assert.equal(config.permissions, undefined);
 });
 
 test("Qwen Code installer preserves comments and rejects trailing commas", async (t) => {
@@ -841,7 +838,7 @@ test("Qwen Code installer requires force for unmanaged servers and force replace
       mcpServers: {
         zvec_grep: {
           httpUrl: "https://example.test/foreign-mcp",
-          trust: true,
+          trust: false,
           description: "user-owned server",
         },
       },
@@ -869,8 +866,9 @@ test("Qwen Code installer requires force for unmanaged servers and force replace
     command: "zg",
     args: ["server", "--stdio"],
     timeout: 600000,
+    alwaysLoadTools: true,
+    trust: true,
   });
-  assert.equal(config.mcpServers.zvec_grep.trust, undefined);
   assert.equal(config.mcpServers.zvec_grep.description, undefined);
 });
 
@@ -895,11 +893,12 @@ test("Qwen Code installer replaces its managed server entry cleanly", async (t) 
             args: ["server", "--stdio"],
             timeout: 1000,
             headers: { "X-Old": "remove me" },
-            trust: true,
+            trust: false,
             description: "Keep this policy",
             includeTools: ["zvec_grep_search"],
             excludeTools: ["zvec_grep_drop"],
             discoveryTimeoutMs: 3210,
+            alwaysLoadTools: false,
           },
         },
         permissions: { allow: ["Bash(git status)"] },
@@ -919,15 +918,13 @@ test("Qwen Code installer replaces its managed server entry cleanly", async (t) 
   assert.deepEqual(config.mcpServers.zvec_grep, {
     httpUrl: "http://127.0.0.1:7999/mcp",
     timeout: 600000,
+    alwaysLoadTools: true,
+    trust: true,
     headers: {
       Authorization: "Bearer ${ZVEC_GREP_SERVER_TOKEN}",
     },
   });
-  assert.deepEqual(config.permissions.allow, [
-    "Bash(git status)",
-    qwenSearchPermission,
-    qwenRgPermission,
-  ]);
+  assert.deepEqual(config.permissions, { allow: ["Bash(git status)"] });
 });
 
 test("Qwen Code install and uninstall are idempotent and preserve user content", async (t) => {
@@ -964,6 +961,10 @@ test("Qwen Code install and uninstall are idempotent and preserve user content",
   await installTarget("qwen", { QWEN_HOME: qwenHome }, ["--mcp-toolset=full"]);
   const firstInstallConfig = await readFile(configPath, "utf8");
   const firstInstallGuidance = await readFile(guidancePath, "utf8");
+  assert.deepEqual(JSON.parse(firstInstallConfig).permissions, {
+    allow: ["Bash(git status)"],
+    deny: ["Bash(rm *)"],
+  });
   await installTarget("qwen", { QWEN_HOME: qwenHome }, ["--mcp-toolset=full"]);
   assert.equal(await readFile(configPath, "utf8"), firstInstallConfig);
   assert.equal(await readFile(guidancePath, "utf8"), firstInstallGuidance);
@@ -987,61 +988,38 @@ test("Qwen Code install and uninstall are idempotent and preserve user content",
   assert.doesNotMatch(firstUninstallGuidance, /ZVEC_GREP|## zvec-grep/);
 });
 
-test("Qwen Code uninstaller cleans permissions only when managed installation evidence exists", async (t) => {
+test("Qwen Code installer and uninstaller preserve arbitrary permissions", async (t) => {
   const temporaryDirectory = await mkdtemp(
-    join(tmpdir(), "zvec-grep-uninstall-qwen-evidence-"),
+    join(tmpdir(), "zvec-grep-install-qwen-permissions-"),
   );
+  const qwenHome = join(temporaryDirectory, ".qwen");
+  const configPath = join(qwenHome, "settings.json");
+  const permissions = {
+    allow: ["Bash(git status)", "mcp__zvec_grep__zvec_grep_search"],
+    ask: ["mcp__zvec_grep__zvec_grep_drop"],
+    deny: ["Bash(rm *)"],
+    customPolicy: { nested: ["keep", "unchanged"] },
+  };
   t.after(async () => {
     await rm(temporaryDirectory, { recursive: true, force: true });
   });
 
-  const untouchedHome = join(temporaryDirectory, "untouched");
-  const untouchedConfigPath = join(untouchedHome, "settings.json");
-  const untouchedGuidancePath = join(untouchedHome, "QWEN.md");
-  const untouchedConfig = `${JSON.stringify(
-    {
-      permissions: {
-        allow: ["Bash(git status)", qwenSearchPermission, qwenRgPermission],
-      },
-    },
-    null,
-    2,
-  )}\n`;
-  await mkdir(untouchedHome, { recursive: true });
-  await writeFile(untouchedConfigPath, untouchedConfig);
-  await writeFile(untouchedGuidancePath, "# User-owned guidance\n");
-
-  await uninstallTarget("qwen", { QWEN_HOME: untouchedHome });
-  assert.equal(await readFile(untouchedConfigPath, "utf8"), untouchedConfig);
-  assert.equal(
-    await readFile(untouchedGuidancePath, "utf8"),
-    "# User-owned guidance\n",
-  );
-
-  const markerHome = join(temporaryDirectory, "marker-evidence");
-  const markerConfigPath = join(markerHome, "settings.json");
-  const markerGuidancePath = join(markerHome, "QWEN.md");
-  await mkdir(markerHome, { recursive: true });
-  await writeFile(markerConfigPath, untouchedConfig);
+  await mkdir(qwenHome, { recursive: true });
   await writeFile(
-    markerGuidancePath,
-    [
-      "# Keep me",
-      "<!-- ZVEC_GREP_START -->",
-      "managed guidance",
-      "<!-- ZVEC_GREP_END -->",
-      "",
-    ].join("\n"),
+    configPath,
+    `${JSON.stringify({ theme: "dark", permissions }, null, 2)}\n`,
   );
 
-  await uninstallTarget("qwen", { QWEN_HOME: markerHome });
-  const markerConfig = JSON.parse(await readFile(markerConfigPath, "utf8"));
-  assert.deepEqual(markerConfig.permissions, {
-    allow: ["Bash(git status)"],
-  });
-  const markerGuidance = await readFile(markerGuidancePath, "utf8");
-  assert.match(markerGuidance, /# Keep me/);
-  assert.doesNotMatch(markerGuidance, /ZVEC_GREP|managed guidance/);
+  await installTarget("qwen", { QWEN_HOME: qwenHome });
+  const installed = JSON.parse(await readFile(configPath, "utf8"));
+  assert.deepEqual(installed.permissions, permissions);
+  assert.equal(installed.mcpServers.zvec_grep.trust, true);
+
+  await uninstallTarget("qwen", { QWEN_HOME: qwenHome });
+  const uninstalled = JSON.parse(await readFile(configPath, "utf8"));
+  assert.deepEqual(uninstalled.permissions, permissions);
+  assert.equal(uninstalled.mcpServers, undefined);
+  assert.equal(uninstalled.theme, "dark");
 });
 
 test("Qwen Code installer warns when context.fileName excludes QWEN.md", async (t) => {
