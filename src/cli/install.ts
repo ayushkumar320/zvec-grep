@@ -1527,23 +1527,9 @@ ${formatPromptRules("### Retrieval routing", [
   "Before broad file reads or delegating workspace discovery, use the appropriate search route. Do not delegate solely to locate material, and stop when the evidence is sufficient.",
 ])}
 
-${formatPromptRules("### Search arguments and evidence", [
-  "`query` creates one primary hybrid result group; `queries` creates one or more primary hybrid result groups.",
-  "`fts` and `vector` add supplemental lexical and semantic routes. `fts` is a retrieval route, not a hard filter or constraint.",
-  "Without `fuse`, search groups are evaluated separately and returned as one deduplicated, reranked list with query-group metadata. Set `fuse: true` to collapse the supplied primary and supplemental intents into one search plan.",
+${formatPromptRules("### Search evidence", [
   "Search results include bounded source snippets. Treat a sufficient snippet as already-read evidence, and read a cited file only when a required detail falls outside the snippet.",
 ])}
-
-Example mixed search:
-
-\`\`\`json
-{
-  "root": "/absolute/workspace",
-  "query": "how are search results ranked and fused",
-  "fts": ["RRF", "score"],
-  "fuse": true
-}
-\`\`\`
 
 ${formatPromptRules("### Freshness and index lifecycle", [
   "Pass a daemon-visible absolute `root` on every zvec-grep workspace call.",

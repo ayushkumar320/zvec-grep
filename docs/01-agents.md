@@ -62,9 +62,8 @@ Restart the selected agent, or open a new session, after installation.
 
 The agent routes in two stages: first it decides whether the answer should be
 grounded in the current indexed workspace, then it chooses exact or semantic
-retrieval. Code versus non-code is not the boundary; a workspace may contain
-source code, documentation, books, research material, meeting notes,
-knowledge-base exports, manuals, configuration, data, or mixed content.
+retrieval. Code versus non-code is not the boundary; a workspace may contain any
+mix of code, documents, configuration, and data.
 
 Workspace content is the intended evidence source when the user asks to inspect,
 search, or ground the answer in local files, the workspace, or its index; prior

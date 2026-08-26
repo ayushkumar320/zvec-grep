@@ -230,8 +230,8 @@ function searchRoutingRules(exactTool: string, focusedTools: string): string[] {
     "`query` creates one primary hybrid FTS-plus-vector group; `queries` creates one or more primary hybrid groups; `fts` and `vector` add supplemental lexical-only or semantic-only route groups. These are retrieval routes, not hard constraints. Without `fuse`, the response is one deduplicated and reranked list with query-group metadata; set `fuse: true` to collapse every group into one ranked search plan.",
     'For a fused mixed search, use arguments such as {"root":"/absolute/workspace","query":"how are results ranked and fused","fts":["RRF","score"],"fuse":true}.',
     "Search results include bounded source snippets. Treat a sufficient snippet as already-read evidence, and open only the cited file or range when a required detail falls outside it.",
-    "Evidence is sufficient when it matches the requested answer shape and resolves material ambiguity. A chain, flow, or lifecycle requires the relevant path and material transitions, not an isolated match. When a task requires one target and several candidates plausibly fit, compare them; if they remain indistinguishable, state the ambiguity.",
-    `Use the smallest focused follow-up needed to fill a material coverage gap or distinguish plausible candidates: refine zvec_grep_search, or verify with ${focusedTools}. If semantic retrieval remains irrelevant, fall back to ${exactTool}. Stop once the requested scope is supported; do not continue merely to reconfirm or broaden it.`,
+    `If semantic retrieval remains irrelevant, fall back to ${exactTool}.`,
+    "Stop searching once the available evidence is sufficient for the requested task. Continue only to resolve a material gap or ambiguity; do not repeat similar searches or broaden the investigation merely to reconfirm what is already established.",
     "Do not launch a sub-agent solely to locate workspace material.",
   ];
 }

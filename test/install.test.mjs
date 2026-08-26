@@ -484,7 +484,7 @@ test("Codex installer refreshes legacy managed guidance", async (t) => {
   );
   assert.match(
     agents,
-    /A workspace may contain source code, documentation, books/,
+    /A workspace may contain any mix of code, documents, configuration, and data/,
   );
   assert.match(agents, /one focused `zvec_grep_search` probe/);
   assert.match(agents, /When no sufficient exact anchor is available/);
@@ -494,10 +494,13 @@ test("Codex installer refreshes legacy managed guidance", async (t) => {
     /unrelated open-world questions, current external facts/,
   );
   assert.match(agents, /Do not delegate solely to locate material/);
-  assert.match(agents, /`query` creates one primary hybrid result group/);
-  assert.match(agents, /`fts` is a retrieval route, not a hard filter/);
-  assert.match(agents, /"root": "\/absolute\/workspace"/);
-  assert.match(agents, /"fuse": true/);
+  assert.match(agents, /### Search evidence/);
+  assert.doesNotMatch(agents, /### Search arguments and evidence/);
+  assert.doesNotMatch(
+    agents,
+    /`query` creates one primary hybrid result group/,
+  );
+  assert.doesNotMatch(agents, /"fuse": true/);
   assert.match(agents, /Treat a sufficient snippet as already-read evidence/);
   assert.match(agents, /Creating, rebuilding, or dropping a persistent index/);
   assert.doesNotMatch(agents, /managed-rg/);

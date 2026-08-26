@@ -230,19 +230,15 @@ test("default agent contract exposes only indexed search", async (t) => {
   );
   assert.match(instructions, /user request and established context/);
   assert.match(instructions, /supplemental hypotheses/);
-  assert.match(instructions, /resolves material ambiguity/);
-  assert.match(instructions, /requested answer shape/);
-  assert.match(instructions, /relevant path and material transitions/);
-  assert.match(instructions, /several candidates plausibly fit/);
   assert.match(
     instructions,
-    /if they remain indistinguishable, state the ambiguity/,
+    /available evidence is sufficient for the requested task/,
   );
-  assert.match(instructions, /smallest focused follow-up needed/);
-  assert.match(instructions, /refine zvec_grep_search/);
-  assert.match(instructions, /verify with Read, Grep, or rg/);
+  assert.match(instructions, /resolve a material gap or ambiguity/);
+  assert.match(instructions, /do not repeat similar searches/);
+  assert.match(instructions, /reconfirm what is already established/);
+  assert.match(instructions, /use Read, Grep, or rg for focused verification/);
   assert.match(instructions, /fall back to native Grep or rg/);
-  assert.match(instructions, /do not continue merely to reconfirm or broaden/);
   assert.doesNotMatch(instructions, /solely to locate code/);
   assert.ok(
     instructions.indexOf(
@@ -347,15 +343,18 @@ test("full server contract exposes all tools with stable annotations", async (t)
   assert.match(instructions, /retrieval routes, not hard constraints/);
   assert.match(instructions, /"root":"\/absolute\/workspace"/);
   assert.match(instructions, /bounded source snippets/);
-  assert.match(instructions, /resolves material ambiguity/);
-  assert.match(instructions, /requested answer shape/);
-  assert.match(instructions, /relevant path and material transitions/);
-  assert.match(instructions, /several candidates plausibly fit/);
-  assert.match(instructions, /smallest focused follow-up needed/);
-  assert.match(instructions, /refine zvec_grep_search/);
-  assert.match(instructions, /verify with Read or zvec_grep_rg/);
+  assert.match(
+    instructions,
+    /available evidence is sufficient for the requested task/,
+  );
+  assert.match(instructions, /resolve a material gap or ambiguity/);
+  assert.match(instructions, /do not repeat similar searches/);
+  assert.match(instructions, /reconfirm what is already established/);
+  assert.match(
+    instructions,
+    /use Read or zvec_grep_rg for focused verification/,
+  );
   assert.match(instructions, /fall back to zvec_grep_rg/);
-  assert.match(instructions, /do not continue merely to reconfirm or broaden/);
   assert.match(instructions, /solely to locate workspace material/);
   assert.match(instructions, /workspace search, status, indexing, deletion/);
   assert.match(instructions, /unrelated open-world questions/);
