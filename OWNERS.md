@@ -1,0 +1,44 @@
+# Parallel work ownership
+
+The purpose of ownership is locality: normal implementation work stays inside
+one workstream. Ownership is not permission to fork Core behavior.
+
+| Track | Exclusive write locality | Shared interface consumed | First production proof |
+| --- | --- | --- | --- |
+| Contract/quality | `compat/`, `benchmarks/`, `zg-testkit` | all Core and port interfaces | TypeScript oracle capture and differential runner |
+| Core integrator | `zg-engine`, `zg` composition policy | `open/run/shutdown`, command envelopes | in-memory end-to-end operation suites |
+| Lexical | `zg-lexical-rg` | `LexicalSearchPort` | managed-rg parity |
+| Extraction | new `zg-extract-native` | `ExtractionPort` | text plus one tree-sitter grammar |
+| Storage | new `zg-storage-zvec` | `IndexStoragePort`, `IndexWritePort` | read current index and atomic fixture generation |
+| Model base | new `zg-model-model2vec`, artifact implementation | embedding/artifact ports | default model golden vector |
+| ONNX | new `zg-model-onnx` | embedding/artifact ports | one ONNX model golden vector |
+| GGUF | new `zg-model-llama` | embedding/artifact ports | one GGUF model golden vector |
+| Runtime | new `zg-transport-http`, then `zg-transport-mcp` | typed `Operation/Outcome`, `OperationExecutor` | scripted-executor HTTP equivalence |
+| CLI/release | `zg-cli`, platform/npm packaging | typed `Operation/Outcome` | native CLI parity and package canary |
+
+## Change protocol
+
+1. A port or command-envelope change is a dedicated Core contract change. Do
+   not mix it into a production adapter implementation.
+2. Core integrator and contract/quality owner review that change before adapter
+   branches consume it.
+3. An adapter owner normally changes only its crate and adds a call to the
+   corresponding `zg-testkit::contracts::verify_*_contract` function.
+4. Transport owners use fake adapters. They do not wait for zvec or model
+   runtimes and do not reproduce Core policy in HTTP/MCP code.
+5. The `zg` composition root is updated by an integration change after the
+   adapter contract passes; adapter branches do not each invent composition.
+6. Direct/Server behavior differences require a machine-readable entry under
+   `compat/` before implementation.
+
+## Parallel-ready definition
+
+A workstream is ready to claim when:
+
+- its Core-owned request/reply or port types compile;
+- a fake adapter exists when the seam needs substitution;
+- a reusable contract suite exists or is added in the same interface change;
+- production work has an exclusive crate/path;
+- the owner can run `scripts/check.sh` without another workstream;
+- normal implementation does not require editing `zg-engine/src/domain/operation.rs`,
+  `zg-engine/src/config.rs`, or `zg/src/main.rs`.
