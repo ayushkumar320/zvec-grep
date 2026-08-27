@@ -24,8 +24,8 @@ a thin proxy:
 MCP stdio -> DaemonClient -> versioned local wire -> DaemonServer -> Core::run
 ```
 
-`zg-daemon-protocol` owns only the versioned wire envelopes. Local socket/HTTP
-framing, daemon process management and MCP framing remain transport adapters.
+`zg-daemon-protocol` owns only the versioned wire envelopes. Local IPC framing,
+daemon process management and MCP framing remain transport adapters.
 
 The current tracer bullet is executable:
 

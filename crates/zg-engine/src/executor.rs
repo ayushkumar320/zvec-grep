@@ -2,8 +2,8 @@ use async_trait::async_trait;
 
 use crate::{Core, ErrorReply, Operation, Outcome, RunControl};
 
-/// Transport-facing execution seam implemented by in-process Core, loopback
-/// HTTP clients and test fakes.
+/// Transport-facing execution seam implemented by in-process Core, daemon
+/// clients and test fakes.
 #[async_trait]
 pub trait OperationExecutor: Send + Sync {
     async fn execute(

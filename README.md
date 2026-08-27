@@ -21,8 +21,9 @@ zg query --rg
 ```
 
 Even when `--mode server` is selected, CLI `--rg` remains local for compatibility
-with the current implementation. Future Direct, HTTP and MCP entry points must
-all construct the same typed `Operation` and call the same Core.
+with the current implementation. Future Direct, daemon-backed and MCP entry
+points must all construct the same typed `Operation` and use the same Core
+execution contract.
 
 ## Workspace now
 

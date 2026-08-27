@@ -82,7 +82,7 @@ one of these localities:
 | Extraction | new `crates/zg-extract-native` | proving text extraction plus one real parser |
 | Storage | new `crates/zg-storage-zvec` | reading a fixture index and atomically publishing one generation |
 | Model runtime | one new `crates/zg-model-*` crate | producing a golden vector from one real model |
-| HTTP or MCP transport | new `crates/zg-transport-*` crate | completing a successful flow with `ScriptedExecutor` |
+| Daemon or MCP transport | new `crates/zg-daemon` or `crates/zg-transport-mcp` | completing a successful flow with `ScriptedExecutor` |
 | CLI and release | `crates/zg-cli`, packaging files | capturing one CLI case and matching its output and exit status |
 
 Do not create placeholder crates. A new crate starts with its first real native
@@ -97,7 +97,7 @@ adapter against it.
 
 ## 4. Rules that keep branches independent
 
-1. Keep policy in `zg-engine`. CLI, HTTP, MCP, and native adapters translate
+1. Keep policy in `zg-engine`. CLI, daemon, MCP, and native adapters translate
    data; they do not own normalization, ranking, freshness, authorization, or
    model-selection rules.
 2. Keep native dependency types inside their adapter crate. Convert them to
