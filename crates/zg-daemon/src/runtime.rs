@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 
 use axum::{
     Json, Router,
@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 use zg_engine::{OperationExecutor, WorkspaceWatcherFactoryPort};
-use zg_transport_mcp::AgentMcpServer;
+use zg_transport_mcp::{McpToolset, ServerStatusProvider, ServerStatusSnapshot, ZvecGrepMcpServer};
 
 use crate::{
     DaemonError, ServerConfig,
@@ -24,6 +24,27 @@ use crate::{
 #[derive(Clone)]
 struct ControlState {
     shutdown: CancellationToken,
+}
+
+struct RuntimeStatusProvider {
+    started: Instant,
+    shutdown: CancellationToken,
+    residents: ResidentWorkspaceManager,
+}
+
+impl ServerStatusProvider for RuntimeStatusProvider {
+    fn snapshot(&self) -> ServerStatusSnapshot {
+        ServerStatusSnapshot {
+            version: env!("CARGO_PKG_VERSION").to_owned(),
+            uptime_ms: u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            shutting_down: self.shutdown.is_cancelled(),
+            active_runtimes: self.residents.active_count(),
+            queued_jobs: 0,
+            running_jobs: 0,
+            loaded_models: 0,
+            active_model_leases: 0,
+        }
+    }
 }
 
 pub(crate) async fn run_server(
@@ -43,6 +64,15 @@ pub(crate) async fn run_server(
     let residents = ResidentWorkspaceManager::new(watcher_factory, Arc::clone(&executor));
     let executor: Arc<dyn OperationExecutor> =
         Arc::new(ResidentOperationExecutor::new(executor, residents.clone()));
+    let status: Arc<dyn ServerStatusProvider> = Arc::new(RuntimeStatusProvider {
+        started: Instant::now(),
+        shutdown: shutdown.clone(),
+        residents: residents.clone(),
+    });
+    let mcp_server = match config.mcp_toolset {
+        McpToolset::Agent => ZvecGrepMcpServer::agent(Arc::clone(&executor)),
+        McpToolset::Full => ZvecGrepMcpServer::full(Arc::clone(&executor), status),
+    };
     let mcp_config = StreamableHttpServerConfig::default()
         .with_cancellation_token(shutdown.child_token())
         .with_allowed_hosts([
@@ -52,9 +82,8 @@ pub(crate) async fn run_server(
             config.listen.socket_addr().to_string(),
         ])
         .with_max_request_body_bytes(1024 * 1024);
-    let handler_executor = Arc::clone(&executor);
     let mcp_service = StreamableHttpService::new(
-        move || Ok(AgentMcpServer::new(Arc::clone(&handler_executor))),
+        move || Ok(mcp_server.clone()),
         LocalSessionManager::default().into(),
         mcp_config,
     );

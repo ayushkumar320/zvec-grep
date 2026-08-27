@@ -127,7 +127,8 @@ pub async fn start_server(
 ) -> Result<DaemonStatus, DaemonError> {
     let current = server_status(&config.home).await?;
     if current.running {
-        if current.mcp_toolset.as_deref() != Some("agent") {
+        let requested_toolset = config.mcp_toolset.to_string();
+        if current.mcp_toolset.as_deref() != Some(requested_toolset.as_str()) {
             return Err(DaemonError::ToolsetMismatch {
                 active: current.mcp_toolset.unwrap_or_else(|| "unknown".to_owned()),
             });

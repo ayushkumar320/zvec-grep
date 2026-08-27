@@ -7,7 +7,7 @@ use std::{
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use thiserror::Error;
-use zg_engine::{LexicalSearchRequest, Operation, Outcome, Reply};
+use zg_engine::{ManagedRgArgumentError, Operation, Outcome, Reply, parse_managed_rg_args};
 
 #[derive(Debug, Parser)]
 #[command(name = "zg", version, about = "Agent-friendly workspace search")]
@@ -53,7 +53,7 @@ pub struct ServerStartArgs {
     #[arg(long, env = "ZVEC_GREP_HOME")]
     pub home: Option<PathBuf>,
 
-    /// Public MCP tool profile. The Rust MVP intentionally exposes agent only.
+    /// Public MCP tool profile.
     #[arg(
         long,
         env = "ZVEC_GREP_MCP_TOOLSET",
@@ -74,6 +74,7 @@ pub struct ServerHomeArgs {
 pub enum McpToolset {
     #[default]
     Agent,
+    Full,
 }
 
 #[derive(Debug, Args)]
@@ -123,14 +124,8 @@ pub enum ServerPlan {
 pub enum CliError {
     #[error("the Rust POC currently implements only `zg query --rg`")]
     UnsupportedSlice,
-    #[error("zg query --rg requires a pattern")]
-    MissingPattern,
-    #[error("unsupported --rg option in the POC: {0}")]
-    UnsupportedRgOption(String),
-    #[error("{option} requires a value")]
-    MissingOptionValue { option: String },
-    #[error("invalid value {value:?} for {option}")]
-    InvalidOptionValue { option: String, value: String },
+    #[error(transparent)]
+    ManagedRg(#[from] ManagedRgArgumentError),
 }
 
 impl Cli {
@@ -144,7 +139,10 @@ impl Cli {
         match self.command {
             CommandLine::Query(args) if args.rg => Ok(CliPlan::Execute {
                 mode: args.mode,
-                operation: Box::new(Operation::lexical(root, parse_rg_args(&args.rg_args)?)),
+                operation: Box::new(Operation::lexical(
+                    root,
+                    parse_managed_rg_args(&args.rg_args)?,
+                )),
             }),
             CommandLine::Query(_) => Err(CliError::UnsupportedSlice),
             CommandLine::Server(args) => Ok(CliPlan::Server(match args.action {
@@ -155,121 +153,6 @@ impl Cli {
             })),
         }
     }
-}
-
-fn parse_rg_args(args: &[String]) -> Result<LexicalSearchRequest, CliError> {
-    let mut request = LexicalSearchRequest::default();
-    let mut index = 0;
-    let mut options_finished = false;
-    let mut positionals = Vec::new();
-
-    while index < args.len() {
-        let arg = &args[index];
-        if options_finished {
-            positionals.push(arg.clone());
-            index += 1;
-            continue;
-        }
-        if arg == "--" {
-            options_finished = true;
-            index += 1;
-            continue;
-        }
-
-        match arg.as_str() {
-            "-n" | "--line-number" => {}
-            "-F" | "--fixed-strings" => request.options.fixed_strings = true,
-            "-i" | "--ignore-case" => request.options.ignore_case = true,
-            "-w" | "--word-regexp" => request.options.word_regexp = true,
-            "--hidden" => request.options.hidden = true,
-            "--no-ignore" => request.options.no_ignore = true,
-            "--follow" => request.options.follow = true,
-            "-g" | "--glob" => {
-                request
-                    .options
-                    .globs
-                    .push(take_value(args, &mut index, arg)?);
-            }
-            "-t" | "--type" => {
-                request
-                    .options
-                    .file_types
-                    .push(take_value(args, &mut index, arg)?);
-            }
-            "-T" | "--type-not" => {
-                request
-                    .options
-                    .excluded_file_types
-                    .push(take_value(args, &mut index, arg)?);
-            }
-            "--ignore-file" => request
-                .options
-                .ignore_files
-                .push(PathBuf::from(take_value(args, &mut index, arg)?)),
-            "--max-depth" => {
-                request.options.max_depth = Some(take_usize(args, &mut index, arg)?);
-            }
-            "--max-filesize" => {
-                request.options.max_file_size_bytes = Some(take_u64(args, &mut index, arg)?);
-            }
-            "-A" | "--after-context" => {
-                request.options.after_context = take_usize(args, &mut index, arg)?;
-            }
-            "-B" | "--before-context" => {
-                request.options.before_context = take_usize(args, &mut index, arg)?;
-            }
-            "-C" | "--context" => {
-                let value = take_usize(args, &mut index, arg)?;
-                request.options.before_context = value;
-                request.options.after_context = value;
-            }
-            "-e" | "--regexp" => {
-                request.patterns.push(take_value(args, &mut index, arg)?);
-            }
-            "-f" | "--file" => request
-                .pattern_files
-                .push(PathBuf::from(take_value(args, &mut index, arg)?)),
-            value if value.starts_with('-') => {
-                return Err(CliError::UnsupportedRgOption(value.to_owned()));
-            }
-            value => positionals.push(value.to_owned()),
-        }
-        index += 1;
-    }
-
-    if request.patterns.is_empty() && request.pattern_files.is_empty() {
-        if positionals.is_empty() {
-            return Err(CliError::MissingPattern);
-        }
-        request.patterns.push(positionals.remove(0));
-    }
-    request.paths = positionals.into_iter().map(PathBuf::from).collect();
-    Ok(request)
-}
-
-fn take_value(args: &[String], index: &mut usize, option: &str) -> Result<String, CliError> {
-    *index += 1;
-    args.get(*index)
-        .cloned()
-        .ok_or_else(|| CliError::MissingOptionValue {
-            option: option.to_owned(),
-        })
-}
-
-fn take_usize(args: &[String], index: &mut usize, option: &str) -> Result<usize, CliError> {
-    let value = take_value(args, index, option)?;
-    value.parse().map_err(|_| CliError::InvalidOptionValue {
-        option: option.to_owned(),
-        value,
-    })
-}
-
-fn take_u64(args: &[String], index: &mut usize, option: &str) -> Result<u64, CliError> {
-    let value = take_value(args, index, option)?;
-    value.parse().map_err(|_| CliError::InvalidOptionValue {
-        option: option.to_owned(),
-        value,
-    })
 }
 
 /// Renders a canonical Core outcome for the terminal.
@@ -399,9 +282,15 @@ mod tests {
     }
 
     #[test]
-    fn rejects_full_mcp_toolset() {
-        let error = Cli::try_parse_from(["zg", "server", "on", "--mcp-toolset", "full"])
-            .expect_err("full toolset must not be accepted");
-        assert!(error.to_string().contains("invalid value 'full'"));
+    fn parses_full_mcp_toolset() {
+        let cli = Cli::try_parse_from(["zg", "server", "on", "--mcp-toolset", "full"])
+            .expect("full toolset must be accepted");
+        let plan = cli
+            .into_plan(PathBuf::from("/workspace"))
+            .expect("server plan");
+        let CliPlan::Server(ServerPlan::On(args)) = plan else {
+            panic!("server on must create a server plan");
+        };
+        assert_eq!(args.mcp_toolset, McpToolset::Full);
     }
 }

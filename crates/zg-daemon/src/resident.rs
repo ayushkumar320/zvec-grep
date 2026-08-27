@@ -1,4 +1,12 @@
-use std::{collections::HashMap, path::Path, path::PathBuf, sync::Arc};
+use std::{
+    collections::HashMap,
+    path::Path,
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 use async_trait::async_trait;
 use thiserror::Error;
@@ -23,6 +31,7 @@ struct ManagerInner {
     sessions: Mutex<HashMap<PathBuf, ResidentWorkspace>>,
     lifecycle: Mutex<()>,
     shutdown: CancellationToken,
+    active_count: AtomicUsize,
 }
 
 struct ResidentWorkspace {
@@ -80,6 +89,7 @@ impl ResidentWorkspaceManager {
                 sessions: Mutex::new(HashMap::new()),
                 lifecycle: Mutex::new(()),
                 shutdown: CancellationToken::new(),
+                active_count: AtomicUsize::new(0),
             }),
         }
     }
@@ -110,6 +120,7 @@ impl ResidentWorkspaceManager {
                 self.inner.sessions.lock().await.insert(key, previous);
                 return Ok(());
             }
+            self.inner.active_count.fetch_sub(1, Ordering::AcqRel);
             if let Err(error) = stop_workspace(previous).await {
                 warn!(%error, "failed to retire resident workspace session before restart");
             }
@@ -141,7 +152,13 @@ impl ResidentWorkspaceManager {
                 task,
             },
         );
+        self.inner.active_count.fetch_add(1, Ordering::AcqRel);
         Ok(())
+    }
+
+    #[must_use]
+    pub fn active_count(&self) -> usize {
+        self.inner.active_count.load(Ordering::Acquire)
     }
 
     /// Stops and removes the watcher for `root`.
@@ -157,6 +174,7 @@ impl ResidentWorkspaceManager {
         let Some(workspace) = workspace else {
             return Ok(false);
         };
+        self.inner.active_count.fetch_sub(1, Ordering::AcqRel);
         stop_workspace(workspace).await?;
         Ok(true)
     }
@@ -179,6 +197,7 @@ impl ResidentWorkspaceManager {
             .drain()
             .map(|(_, workspace)| workspace)
             .collect::<Vec<_>>();
+        self.inner.active_count.store(0, Ordering::Release);
         let mut first_error = None;
         for workspace in workspaces {
             if let Err(error) = stop_workspace(workspace).await

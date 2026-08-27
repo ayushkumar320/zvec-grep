@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use super::{DiscoveryOptions, EmbeddingModelSpec, RootSpec, TimingEntry};
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct IndexRequest {
     pub roots: Vec<RootSpec>,
     pub rebuild: bool,
@@ -15,6 +16,10 @@ pub struct IndexRequest {
     pub discovery: DiscoveryOptions,
     pub embedding: Option<EmbeddingModelSpec>,
     pub embedding_concurrency: Option<usize>,
+    /// Wait for the submitted index job instead of returning an accepted job.
+    pub wait: bool,
+    /// Include bounded skipped-file diagnostics in a completed response.
+    pub debug: bool,
 }
 
 /// A normalized filesystem change relative to its [`RootSpec`].

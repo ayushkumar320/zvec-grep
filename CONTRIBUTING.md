@@ -42,7 +42,7 @@ CLI arguments
 ```
 
 `zg query --rg` is implemented end to end. `zg server on/status/off` also runs
-the resident daemon and its agent-only Streamable HTTP MCP endpoint. Other
+the resident daemon and its agent/full Streamable HTTP MCP endpoint. Other
 typed Core commands are present so transports and adapters can compile against
 stable shapes, but they return `capability_unavailable` until their Core
 orchestration is implemented.
@@ -85,7 +85,7 @@ one of these localities:
 | Extraction | new `crates/zg-extract-native` | proving text extraction plus one real parser |
 | Storage | new `crates/zg-storage-zvec` | reading a fixture index and atomically publishing one generation |
 | Model runtime | one new `crates/zg-model-*` crate | producing a golden vector from one real model |
-| Daemon or MCP transport | `crates/zg-daemon` or `crates/zg-transport-mcp` | extending the agent search contract or daemon lifecycle with `ScriptedExecutor` |
+| Daemon or MCP transport | `crates/zg-daemon` or `crates/zg-transport-mcp` | extending agent/full tool contracts or daemon lifecycle with `ScriptedExecutor` |
 | CLI and release | `crates/zg-cli`, packaging files | capturing one CLI case and matching its output and exit status |
 
 Do not create placeholder crates. A new crate starts with its first real native

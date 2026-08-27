@@ -1,28 +1,45 @@
-//! MCP transport adapter for the public agent toolset.
+//! MCP transport adapter for the public agent and full toolsets.
 //!
 //! This crate owns MCP schemas and formatting only. Every request becomes a
 //! canonical [`zg_engine::Operation`] and executes through an injected
 //! [`zg_engine::OperationExecutor`].
 
-use std::{fmt::Write as _, path::PathBuf, sync::Arc};
+use std::{
+    fmt::{self, Write as _},
+    path::{Component, Path, PathBuf},
+    sync::Arc,
+};
 
 use chrono::{DateTime, Local, NaiveDate, TimeZone};
 use rmcp::{
     ErrorData, RoleServer, ServerHandler,
-    handler::server::wrapper::Parameters,
-    model::{CallToolResult, ContentBlock, ServerCapabilities, ServerInfo},
+    handler::server::{router::tool::ToolRouter, tool::ToolCallContext, wrapper::Parameters},
+    model::{
+        CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ListToolsResult,
+        PaginatedRequestParams, ServerCapabilities, ServerInfo,
+    },
     service::RequestContext,
-    tool, tool_handler, tool_router,
+    tool, tool_router,
 };
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use zg_engine::{
-    Command, ContentRange, ErrorCode, Freshness, MatchedBy, Operation, OperationExecutor, Outcome,
-    QueryItem, QueryReply, QueryRequest, QueryRoute, QueryRouteMode, RefreshMode, Reply,
-    RunControl, SymbolType,
+    ChangeIndexAction, ChangeIndexRequest, Command, ContentRange, Device, DiscoveryOptions,
+    EmbeddingModelSpec, ErrorCode, Freshness, IndexPolicy, IndexReply, IndexRequest, InspectReply,
+    InspectRequest, LexicalCoverage, LexicalSearchReply, MatchedBy, Operation, OperationExecutor,
+    Outcome, QueryItem, QueryReply, QueryRequest, QueryRoute, QueryRouteMode, RefreshMode, Reply,
+    RootSpec, RunControl, SymbolType, parse_managed_rg_args,
 };
 
 pub const AGENT_TOOL_NAME: &str = "zvec_grep_search";
+pub const FULL_TOOL_NAMES: [&str; 6] = [
+    "zvec_grep_index",
+    "zvec_grep_index_drop",
+    "zvec_grep_index_status",
+    "zvec_grep_rg",
+    "zvec_grep_search",
+    "zvec_grep_server_status",
+];
 
 pub const AGENT_INSTRUCTIONS: &str = concat!(
     "Use zvec-grep with these workspace retrieval rules:\n",
@@ -46,26 +63,111 @@ pub const AGENT_INSTRUCTIONS: &str = concat!(
     "- When an index is missing and literal or regex search can answer the task, use native Grep or rg. Creating or rebuilding a persistent index requires explicit user authorization.",
 );
 
+pub const FULL_INSTRUCTIONS: &str = concat!(
+    "Use zvec-grep with these workspace retrieval and lifecycle rules:\n",
+    "- Use zvec_grep_rg first only when exact lookup alone is sufficient, such as locating one definition, literal, filename, configuration key, error message, regex match, or exhaustive occurrence list.\n",
+    "- Use zvec_grep_search first when wording or location is unknown, or when the answer requires architecture, lifecycle, call relationships, dependencies, data or control flow, design rationale, comparison, or synthesis across files or components.\n",
+    "- For mixed tasks, call zvec_grep_search with the semantic intent and verified exact anchors, then use Read or zvec_grep_rg for focused verification.\n",
+    "- Every workspace operation requires an absolute root path visible to the daemon.\n",
+    "- Read freshness and background_refresh from zvec_grep_search without a status preflight. Call zvec_grep_index_status only for a missing index, failed or cancelled indexing, diagnostics, or explicit progress monitoring.\n",
+    "- Call zvec_grep_index only when persistent indexing or index deletion is explicitly requested. Never silently create, rebuild, or drop an index.\n",
+    "- For a new index, use a user-selected embedding or omit it only when a server default model is known; never guess a model.\n",
+    "- zvec_grep_index wait defaults to false. Poll zvec_grep_index_status for background progress and set wait to true only when completion is required before continuing.\n",
+    "- Use zvec_grep_index with drop: true, or zvec_grep_index_drop, only when index deletion is explicitly requested.\n",
+    "- Call zvec_grep_server_status only for daemon diagnostics, not before ordinary searches.\n",
+    "- Stop searching once the available evidence is sufficient.\n",
+);
+
 const MAX_QUERY_GROUPS: usize = 32;
 const MAX_QUERY_CHARS: usize = 4_000;
 const MAX_PATH_FILTERS: usize = 128;
 const MAX_PATH_CHARS: usize = 1_024;
 const MAX_SEARCH_LIMIT: usize = 50;
 
-#[derive(Clone)]
-pub struct AgentMcpServer {
-    executor: Arc<dyn OperationExecutor>,
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpToolset {
+    #[default]
+    Agent,
+    Full,
 }
 
-impl AgentMcpServer {
+impl fmt::Display for McpToolset {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Agent => "agent",
+            Self::Full => "full",
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ServerStatusSnapshot {
+    pub version: String,
+    pub uptime_ms: u64,
+    pub shutting_down: bool,
+    pub active_runtimes: usize,
+    pub queued_jobs: usize,
+    pub running_jobs: usize,
+    pub loaded_models: usize,
+    pub active_model_leases: usize,
+}
+
+pub trait ServerStatusProvider: Send + Sync {
+    fn snapshot(&self) -> ServerStatusSnapshot;
+}
+
+#[derive(Clone)]
+pub struct ZvecGrepMcpServer {
+    executor: Arc<dyn OperationExecutor>,
+    status: Option<Arc<dyn ServerStatusProvider>>,
+    toolset: McpToolset,
+    router: ToolRouter<Self>,
+}
+
+impl ZvecGrepMcpServer {
     #[must_use]
-    pub fn new(executor: Arc<dyn OperationExecutor>) -> Self {
-        Self { executor }
+    pub fn agent(executor: Arc<dyn OperationExecutor>) -> Self {
+        Self::build(executor, McpToolset::Agent, None)
+    }
+
+    #[must_use]
+    pub fn full(
+        executor: Arc<dyn OperationExecutor>,
+        status: Arc<dyn ServerStatusProvider>,
+    ) -> Self {
+        Self::build(executor, McpToolset::Full, Some(status))
+    }
+
+    fn build(
+        executor: Arc<dyn OperationExecutor>,
+        toolset: McpToolset,
+        status: Option<Arc<dyn ServerStatusProvider>>,
+    ) -> Self {
+        let mut router = Self::tool_router();
+        if toolset == McpToolset::Agent {
+            for name in FULL_TOOL_NAMES {
+                if name != AGENT_TOOL_NAME {
+                    router.disable_route(name);
+                }
+            }
+        }
+        Self {
+            executor,
+            status,
+            toolset,
+            router,
+        }
+    }
+
+    #[must_use]
+    pub fn listed_tools(&self) -> Vec<rmcp::model::Tool> {
+        self.router.list_all()
     }
 }
 
 #[tool_router]
-impl AgentMcpServer {
+impl ZvecGrepMcpServer {
     #[tool(
         name = "zvec_grep_search",
         description = "Search an existing workspace index for semantic, relational, cross-file, or multi-hop evidence such as architecture, call chains, dependencies, lifecycle, data or control flow, design rationale, and comparisons. Use it when exact lookup alone cannot answer a workspace-grounded question. Results include bounded source snippets and query-group metadata; treat sufficient snippets as already-read evidence. Use native Grep or rg instead when exact lookup alone is sufficient. Read freshness and background_refresh from the response without a status preflight; when results are served_from_current_index, use them if sufficient.",
@@ -98,18 +200,187 @@ impl AgentMcpServer {
             ))]),
         })
     }
+
+    #[tool(
+        name = "zvec_grep_index",
+        description = "Activate an absolute workspace root to create, incrementally update, rebuild, or explicitly drop its index. Do not call this tool to create, rebuild, or drop an index unless the user requested persistent indexing or index deletion.",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<IndexOutput>(),
+        annotations(
+            title = "Ensure or drop zvec-grep index",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn zvec_grep_index(
+        &self,
+        Parameters(input): Parameters<IndexInput>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let operation = input
+            .into_operation()
+            .map_err(|message| ErrorData::invalid_params(message, None))?;
+        let root = operation.root.clone();
+        let is_drop = matches!(operation.command, Command::ChangeIndex(_));
+        let outcome = execute(&self.executor, operation, &context).await;
+        Ok(match outcome {
+            Ok(outcome) => index_outcome_to_result(&root, is_drop, outcome),
+            Err(result) => result,
+        })
+    }
+
+    #[tool(
+        name = "zvec_grep_index_drop",
+        description = "Delete the persisted index for an absolute workspace root and release its daemon runtime.",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<IndexDropOutput>(),
+        annotations(
+            title = "Drop zvec-grep workspace index",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn zvec_grep_index_drop(
+        &self,
+        Parameters(input): Parameters<RootInput>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let root = absolute_root(&input.root)
+            .map_err(|message| ErrorData::invalid_params(message, None))?;
+        let operation = Operation::new(
+            root.clone(),
+            Command::ChangeIndex(ChangeIndexRequest {
+                action: ChangeIndexAction::Drop,
+                force: false,
+            }),
+        );
+        let outcome = execute(&self.executor, operation, &context).await;
+        Ok(match outcome {
+            Ok(outcome) => drop_outcome_to_result(&root, outcome),
+            Err(result) => result,
+        })
+    }
+
+    #[tool(
+        name = "zvec_grep_rg",
+        description = "Run exhaustive ripgrep across workspace material without an index. Pass a command starting with `rg`; it is parsed as arguments and never executed by a shell. Results are exhaustive unless a trailing `| head -N` explicitly bounds them.",
+        annotations(
+            title = "Search with managed ripgrep",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn zvec_grep_rg(
+        &self,
+        Parameters(input): Parameters<RgInput>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let operation = input
+            .into_operation()
+            .map_err(|message| ErrorData::invalid_params(message, None))?;
+        let outcome = execute(&self.executor, operation, &context).await;
+        Ok(match outcome {
+            Ok(outcome) => lexical_outcome_to_result(outcome),
+            Err(result) => result,
+        })
+    }
+
+    #[tool(
+        name = "zvec_grep_index_status",
+        description = "Read persisted index status for an absolute root. Use only after a missing-index response, indexing failure or cancellation, explicit progress monitoring, or daemon diagnostics.",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<IndexStatusOutput>(),
+        annotations(
+            title = "Inspect zvec-grep index status",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn zvec_grep_index_status(
+        &self,
+        Parameters(input): Parameters<RootInput>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let root = absolute_root(&input.root)
+            .map_err(|message| ErrorData::invalid_params(message, None))?;
+        let operation = Operation::new(
+            root,
+            Command::Inspect(InspectRequest {
+                include_status: true,
+            }),
+        );
+        let outcome = execute(&self.executor, operation, &context).await;
+        Ok(match outcome {
+            Ok(outcome) => inspect_outcome_to_result(outcome),
+            Err(result) => result,
+        })
+    }
+
+    #[tool(
+        name = "zvec_grep_server_status",
+        description = "Read daemon version, queue, runtime and model-pool summary without exposing repository paths.",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<ServerStatusOutput>(),
+        annotations(
+            title = "Inspect zvec-grep server status",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn zvec_grep_server_status(
+        &self,
+        Parameters(_input): Parameters<EmptyInput>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let status = self.status.as_ref().ok_or_else(|| {
+            ErrorData::internal_error("server status provider is unavailable", None)
+        })?;
+        Ok(structured_result(ServerStatusOutput::from(
+            status.snapshot(),
+        )))
+    }
 }
 
-#[tool_handler]
-#[allow(clippy::unused_async_trait_impl)]
-impl ServerHandler for AgentMcpServer {
+impl ServerHandler for ZvecGrepMcpServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(rmcp::model::Implementation::new(
                 "zvec-grep",
                 env!("CARGO_PKG_VERSION"),
             ))
-            .with_instructions(AGENT_INSTRUCTIONS.to_owned())
+            .with_instructions(
+                match self.toolset {
+                    McpToolset::Agent => AGENT_INSTRUCTIONS,
+                    McpToolset::Full => FULL_INSTRUCTIONS,
+                }
+                .to_owned(),
+            )
+    }
+
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, ErrorData> {
+        self.router
+            .call(ToolCallContext::new(self, request, context))
+            .await
+    }
+
+    fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<ListToolsResult, ErrorData>> + Send {
+        std::future::ready(Ok(ListToolsResult {
+            tools: self.router.list_all(),
+            ..ListToolsResult::default()
+        }))
     }
 }
 
@@ -180,6 +451,206 @@ pub struct SearchInput {
     /// Allow eventual search to schedule a background index update.
     #[serde(default = "default_auto_update")]
     pub auto_update: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct IndexInput {
+    /// Absolute workspace root visible to the daemon.
+    #[schemars(length(min = 1, max = 1024))]
+    pub root: String,
+    /// One-request embedding provider API key override.
+    #[schemars(length(min = 1, max = 8192))]
+    pub api_key: Option<String>,
+    /// One-request local embedding device override.
+    pub device: Option<DeviceInput>,
+    /// Remote embedding endpoint override.
+    #[schemars(length(max = 2048))]
+    pub endpoint: Option<String>,
+    /// Permanently remove the workspace index.
+    pub drop: Option<bool>,
+    /// Embedding model reference for a new index.
+    #[schemars(length(min = 1, max = 256))]
+    pub embedding: Option<String>,
+    /// Explicitly rebuild the existing index.
+    pub rebuild: Option<bool>,
+    /// Replace the index root-path configuration.
+    pub reset_paths: Option<bool>,
+    pub globs: Option<PathListInput>,
+    pub insensitive_globs: Option<PathListInput>,
+    pub file_types: Option<PathListInput>,
+    pub excluded_file_types: Option<PathListInput>,
+    pub hidden: Option<bool>,
+    pub no_ignore: Option<bool>,
+    pub ignore_files: Option<PathListInput>,
+    pub max_depth: Option<usize>,
+    #[schemars(range(min = 1))]
+    pub max_file_size_bytes: Option<u64>,
+    pub follow: Option<bool>,
+    #[schemars(range(min = 1))]
+    pub embedding_concurrency: Option<usize>,
+    /// Include bounded skipped-file diagnostics after completion.
+    pub debug: Option<bool>,
+    /// Wait for the submitted index job to finish.
+    pub wait: Option<bool>,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
+pub struct RootInput {
+    /// Absolute workspace root visible to the daemon.
+    #[schemars(length(min = 1, max = 1024))]
+    pub root: String,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
+pub struct RgInput {
+    /// Absolute workspace root visible to the daemon.
+    #[schemars(length(min = 1, max = 1024))]
+    pub root: String,
+    /// A command beginning with `rg`; parsed without a shell.
+    #[schemars(length(min = 1, max = 4000))]
+    pub command: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
+pub struct EmptyInput {}
+
+#[derive(Clone, Copy, Debug, JsonSchema, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum IndexJobState {
+    Queued,
+    Succeeded,
+}
+
+#[derive(Clone, Copy, Debug, JsonSchema, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum IndexActionOutput {
+    Index,
+    Drop,
+}
+
+#[derive(Clone, Debug, JsonSchema, Serialize)]
+struct IndexOutput {
+    root: String,
+    job_id: String,
+    state: IndexJobState,
+    reused: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    action: Option<IndexActionOutput>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dropped: Option<bool>,
+}
+
+#[derive(Clone, Debug, JsonSchema, Serialize)]
+struct IndexDropOutput {
+    root: String,
+    removed: bool,
+}
+
+#[derive(Clone, Debug, JsonSchema, Serialize)]
+struct IndexStatusOutput {
+    root: String,
+    indexed: bool,
+    index_policy: String,
+    source: String,
+    persistent: PersistentIndexStatusOutput,
+}
+
+#[derive(Clone, Debug, JsonSchema, Serialize)]
+struct PersistentIndexStatusOutput {
+    home: String,
+    index_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    workspace_index: Option<WorkspaceIndexOutput>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    files: Option<IndexFilesOutput>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    suggestion: Option<String>,
+}
+
+#[derive(Clone, Debug, JsonSchema, Serialize)]
+struct WorkspaceIndexOutput {
+    id: String,
+    name: String,
+    path: String,
+    root_paths: Vec<RootSpecOutput>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    embedding: Option<IndexedEmbeddingOutput>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    index_version: Option<u32>,
+    created_time: u64,
+    updated_time: u64,
+}
+
+#[derive(Clone, Debug, JsonSchema, Serialize)]
+#[allow(clippy::struct_excessive_bools)]
+struct RootSpecOutput {
+    absolute_path: String,
+    recursive: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    include: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    exclude: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    globs: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    insensitive_globs: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    file_types: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    excluded_file_types: Vec<String>,
+    #[serde(skip_serializing_if = "is_false")]
+    hidden: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    no_ignore: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    ignore_files: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_depth: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_file_size_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "is_false")]
+    follow: bool,
+}
+
+#[derive(Clone, Debug, JsonSchema, Serialize)]
+struct IndexedEmbeddingOutput {
+    provider: String,
+    model: String,
+    dimension: usize,
+    metric: String,
+}
+
+#[derive(Clone, Debug, JsonSchema, Serialize)]
+struct IndexFilesOutput {
+    stored: usize,
+    scanned: usize,
+    indexed: usize,
+    pending: usize,
+    failed: usize,
+    added: usize,
+    modified: usize,
+    deleted: usize,
+    unchanged: usize,
+    entities: usize,
+    truncated_fragments: usize,
+}
+
+#[derive(Clone, Debug, JsonSchema, Serialize)]
+struct ServerStatusOutput {
+    version: String,
+    uptime_ms: u64,
+    shutting_down: bool,
+    active_runtimes: usize,
+    queued_jobs: usize,
+    running_jobs: usize,
+    models: ModelStatusOutput,
+}
+
+#[derive(Clone, Debug, JsonSchema, Serialize)]
+struct ModelStatusOutput {
+    loaded: usize,
+    active_leases: usize,
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema)]
@@ -285,11 +756,7 @@ const fn default_auto_update() -> bool {
 
 impl SearchInput {
     fn into_operation(self) -> Result<Operation, String> {
-        validate_text("root", &self.root, 1, MAX_PATH_CHARS)?;
-        let root = PathBuf::from(self.root.trim());
-        if !root.is_absolute() {
-            return Err("root must be an absolute path".to_owned());
-        }
+        let root = absolute_root(&self.root)?;
         if let Some(api_key) = &self.api_key {
             validate_text("apiKey", api_key, 1, 8_192)?;
             return Err(
@@ -383,8 +850,335 @@ impl SearchInput {
         {
             return Err("modifiedAfter must not be later than modifiedBefore".to_owned());
         }
+        validate_scoped_paths(&root, &request.discovery.ignore_files, "ignore file")?;
         Ok(Operation::new(root, Command::Query(request)))
     }
+}
+
+impl From<DeviceInput> for Device {
+    fn from(value: DeviceInput) -> Self {
+        match value {
+            DeviceInput::Auto => Self::Auto,
+            DeviceInput::Cpu => Self::Cpu,
+            DeviceInput::Metal => Self::Metal,
+            DeviceInput::Vulkan => Self::Vulkan,
+            DeviceInput::Cuda => Self::Cuda,
+        }
+    }
+}
+
+impl IndexInput {
+    fn into_operation(self) -> Result<Operation, String> {
+        let root = absolute_root(&self.root)?;
+        if self.drop.unwrap_or(false) {
+            if self.has_index_options() {
+                return Err(
+                    "drop: true cannot be combined with indexing, model, filter, wait, or debug options"
+                        .to_owned(),
+                );
+            }
+            return Ok(Operation::new(
+                root,
+                Command::ChangeIndex(ChangeIndexRequest {
+                    action: ChangeIndexAction::Drop,
+                    force: false,
+                }),
+            ));
+        }
+        if let Some(api_key) = &self.api_key {
+            validate_text("apiKey", api_key, 1, 8_192)?;
+            return Err(
+                "apiKey is not available until remote embedding authorization is implemented"
+                    .to_owned(),
+            );
+        }
+        if self.embedding_concurrency == Some(0) {
+            return Err("embeddingConcurrency must be greater than zero".to_owned());
+        }
+        if self.max_file_size_bytes == Some(0) {
+            return Err("maxFileSizeBytes must be greater than zero".to_owned());
+        }
+        if let Some(endpoint) = &self.endpoint {
+            validate_text("endpoint", endpoint, 1, 2_048)?;
+            if self.embedding.is_none() {
+                return Err("endpoint requires an explicit embedding model".to_owned());
+            }
+        }
+        if self.device.is_some() && self.embedding.is_none() {
+            return Err("device requires an explicit embedding model".to_owned());
+        }
+
+        let discovery = DiscoveryOptions {
+            globs: normalize_path_list(self.globs, "globs")?,
+            insensitive_globs: normalize_path_list(self.insensitive_globs, "insensitiveGlobs")?,
+            file_types: normalize_path_list(self.file_types, "fileTypes")?,
+            excluded_file_types: normalize_path_list(
+                self.excluded_file_types,
+                "excludedFileTypes",
+            )?,
+            hidden: self.hidden.unwrap_or(false),
+            no_ignore: self.no_ignore.unwrap_or(false),
+            ignore_files: normalize_path_list(self.ignore_files, "ignoreFiles")?
+                .into_iter()
+                .map(PathBuf::from)
+                .collect(),
+            max_depth: self.max_depth,
+            max_file_size_bytes: self.max_file_size_bytes,
+            follow: self.follow.unwrap_or(false),
+            ..DiscoveryOptions::default()
+        };
+        validate_scoped_paths(&root, &discovery.ignore_files, "ignore file")?;
+        let root_spec = RootSpec {
+            path: root.clone(),
+            recursive: true,
+            discovery: discovery.clone(),
+        };
+        let embedding = if let Some(reference) = self.embedding {
+            let reference = reference.trim().to_owned();
+            validate_text("embedding", &reference, 1, 256)?;
+            Some(EmbeddingModelSpec {
+                reference,
+                revision: None,
+                cache_dir: None,
+                endpoint: self.endpoint,
+                device: self.device.map_or(Device::Auto, Into::into),
+            })
+        } else {
+            None
+        };
+        Ok(Operation::new(
+            root,
+            Command::Index(IndexRequest {
+                roots: vec![root_spec],
+                rebuild: self.rebuild.unwrap_or(false),
+                reset_paths: self.reset_paths.unwrap_or(false),
+                discovery,
+                embedding,
+                embedding_concurrency: self.embedding_concurrency,
+                wait: self.wait.unwrap_or(false),
+                debug: self.debug.unwrap_or(false),
+                ..IndexRequest::default()
+            }),
+        ))
+    }
+
+    fn has_index_options(&self) -> bool {
+        self.api_key.is_some()
+            || self.device.is_some()
+            || self.endpoint.is_some()
+            || self.embedding.is_some()
+            || self.rebuild.is_some()
+            || self.reset_paths.is_some()
+            || self.globs.is_some()
+            || self.insensitive_globs.is_some()
+            || self.file_types.is_some()
+            || self.excluded_file_types.is_some()
+            || self.hidden.is_some()
+            || self.no_ignore.is_some()
+            || self.ignore_files.is_some()
+            || self.max_depth.is_some()
+            || self.max_file_size_bytes.is_some()
+            || self.follow.is_some()
+            || self.embedding_concurrency.is_some()
+            || self.debug.is_some()
+            || self.wait.is_some()
+    }
+}
+
+impl RgInput {
+    fn into_operation(self) -> Result<Operation, String> {
+        let root = absolute_root(&self.root)?;
+        validate_text("command", &self.command, 1, MAX_QUERY_CHARS)?;
+        let (args, limit) = parse_rg_command(&self.command)?;
+        let mut request = parse_managed_rg_args(&args).map_err(|error| error.to_string())?;
+        request.limit = limit;
+        validate_scoped_paths(&root, &request.paths, "search path")?;
+        validate_scoped_paths(&root, &request.pattern_files, "pattern file")?;
+        validate_scoped_paths(&root, &request.options.ignore_files, "ignore file")?;
+        Ok(Operation::lexical(root, request))
+    }
+}
+
+fn absolute_root(value: &str) -> Result<PathBuf, String> {
+    validate_text("root", value, 1, MAX_PATH_CHARS)?;
+    let root = PathBuf::from(value.trim());
+    if !root.is_absolute() {
+        return Err("root must be an absolute path".to_owned());
+    }
+    if root
+        .components()
+        .any(|component| component == Component::ParentDir)
+    {
+        return Err("root must not contain parent-directory components".to_owned());
+    }
+    Ok(root)
+}
+
+fn validate_scoped_paths(root: &Path, paths: &[PathBuf], kind: &str) -> Result<(), String> {
+    for path in paths {
+        if path
+            .components()
+            .any(|component| component == Component::ParentDir)
+        {
+            return Err(format!(
+                "{kind} {} escapes the workspace root",
+                path.display()
+            ));
+        }
+        if path.is_absolute() && !path.starts_with(root) {
+            return Err(format!(
+                "{kind} {} is outside the workspace root",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn parse_rg_command(command: &str) -> Result<(Vec<String>, Option<usize>), String> {
+    let mut tokens = scan_rg_command(command)?;
+    let mut limit = None;
+    if let Some(pipe) = tokens.iter().rposition(|token| token == "|") {
+        limit = Some(parse_head_limit(&tokens[pipe + 1..])?);
+        tokens.truncate(pipe);
+    }
+    if tokens.ends_with(&["2".to_owned(), ">".to_owned(), "/dev/null".to_owned()]) {
+        tokens.truncate(tokens.len() - 3);
+    }
+    if let Some(operator) = tokens
+        .iter()
+        .find(|token| matches!(token.as_str(), "|" | ">"))
+    {
+        return Err(format!(
+            "rg command does not support shell operator {operator:?}"
+        ));
+    }
+    if tokens.first().map(String::as_str) != Some("rg") {
+        return Err("rg command must start with \"rg\"".to_owned());
+    }
+    if tokens.len() == 1 {
+        return Err("rg command requires a pattern".to_owned());
+    }
+    Ok((tokens.split_off(1), limit))
+}
+
+fn scan_rg_command(command: &str) -> Result<Vec<String>, String> {
+    let mut tokens = Vec::new();
+    let mut token = String::new();
+    let mut token_started = false;
+    let mut quote = None;
+    let mut escaping = false;
+    let mut characters = command.chars().peekable();
+
+    while let Some(character) = characters.next() {
+        if character == '\0' {
+            return Err("rg command cannot contain NUL characters".to_owned());
+        }
+        if matches!(character, '\n' | '\r') {
+            return Err("rg command must be a single command on one line".to_owned());
+        }
+        if escaping {
+            token.push(character);
+            token_started = true;
+            escaping = false;
+            continue;
+        }
+        if quote == Some('\'') {
+            if character == '\'' {
+                quote = None;
+            } else {
+                token.push(character);
+            }
+            token_started = true;
+            continue;
+        }
+        if quote == Some('"') {
+            if character == '"' {
+                quote = None;
+            } else if character == '\\' {
+                let Some(next) = characters.peek().copied() else {
+                    return Err("rg command ends with an incomplete escape".to_owned());
+                };
+                if matches!(next, '"' | '\\' | '$' | '`') {
+                    token.push(next);
+                    characters.next();
+                } else {
+                    token.push(character);
+                }
+            } else if character == '`'
+                || (character == '$' && matches!(characters.peek(), Some('(' | '{')))
+            {
+                return Err("rg command does not support shell expansion".to_owned());
+            } else {
+                token.push(character);
+            }
+            token_started = true;
+            continue;
+        }
+        if character.is_whitespace() {
+            finish_token(&mut tokens, &mut token, &mut token_started);
+            continue;
+        }
+        if matches!(character, '\'' | '"') {
+            quote = Some(character);
+            token_started = true;
+            continue;
+        }
+        if character == '\\' {
+            escaping = true;
+            token_started = true;
+            continue;
+        }
+        if matches!(character, '|' | '>') {
+            finish_token(&mut tokens, &mut token, &mut token_started);
+            tokens.push(character.to_string());
+            continue;
+        }
+        if matches!(character, '&' | ';' | '<' | '(' | ')') {
+            return Err(format!(
+                "rg command does not support shell operator {character:?}"
+            ));
+        }
+        if character == '`' || (character == '$' && matches!(characters.peek(), Some('(' | '{'))) {
+            return Err("rg command does not support shell expansion".to_owned());
+        }
+        token.push(character);
+        token_started = true;
+    }
+    if escaping {
+        return Err("rg command ends with an incomplete escape".to_owned());
+    }
+    if let Some(quote) = quote {
+        return Err(format!("rg command has an unclosed {quote} quote"));
+    }
+    finish_token(&mut tokens, &mut token, &mut token_started);
+    Ok(tokens)
+}
+
+fn finish_token(tokens: &mut Vec<String>, token: &mut String, started: &mut bool) {
+    if *started {
+        tokens.push(std::mem::take(token));
+        *started = false;
+    }
+}
+
+fn parse_head_limit(tokens: &[String]) -> Result<usize, String> {
+    if tokens.first().map(String::as_str) != Some("head") {
+        return Err("rg command only supports a trailing | head output bound".to_owned());
+    }
+    let raw = match tokens {
+        [_] => "10",
+        [_, value] if value.starts_with('-') => &value[1..],
+        [_, option, value] if option == "-n" => value,
+        _ => return Err("rg command only supports a trailing | head output bound".to_owned()),
+    };
+    let limit = raw
+        .parse::<usize>()
+        .map_err(|_| "rg command head limit must be a positive integer".to_owned())?;
+    if limit == 0 {
+        return Err("rg command head limit must be a positive integer".to_owned());
+    }
+    Ok(limit)
 }
 
 fn normalize_optional_one(value: Option<String>, name: &str) -> Result<Vec<String>, String> {
@@ -467,6 +1261,275 @@ fn parse_time(value: TimeInput, name: &str) -> Result<u64, String> {
 
 fn epoch_millis(value: i64, name: &str) -> Result<u64, String> {
     u64::try_from(value).map_err(|_| format!("{name} must not be before the Unix epoch"))
+}
+
+async fn execute(
+    executor: &Arc<dyn OperationExecutor>,
+    operation: Operation,
+    context: &RequestContext<RoleServer>,
+) -> Result<Outcome, CallToolResult> {
+    executor
+        .execute(operation, RunControl::local(context.ct.child_token()))
+        .await
+        .map_err(|error| error_result(&error))
+}
+
+fn error_result(error: &zg_engine::ErrorReply) -> CallToolResult {
+    CallToolResult::error(vec![ContentBlock::text(format!(
+        "error_code: {}\nerror_message: {}\nretryable: {}",
+        error_code_label(error.code),
+        error.message,
+        error.retryable
+    ))])
+}
+
+fn structured_result(value: impl Serialize) -> CallToolResult {
+    match serde_json::to_value(value) {
+        Ok(value) => {
+            let text = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
+            let mut result = CallToolResult::success(vec![ContentBlock::text(text)]);
+            result.structured_content = Some(value);
+            result
+        }
+        Err(error) => CallToolResult::error(vec![ContentBlock::text(format!(
+            "error_code: internal\nerror_message: failed to serialize tool result: {error}"
+        ))]),
+    }
+}
+
+fn index_outcome_to_result(root: &Path, is_drop: bool, outcome: Outcome) -> CallToolResult {
+    match outcome {
+        Outcome::Completed(reply) => match *reply {
+            Reply::Index(reply) if !is_drop => structured_result(completed_index(root, &reply)),
+            Reply::ChangeIndex(reply) if is_drop => structured_result(IndexOutput {
+                root: root.display().to_string(),
+                job_id: "drop".to_owned(),
+                state: IndexJobState::Succeeded,
+                reused: false,
+                action: Some(IndexActionOutput::Drop),
+                dropped: Some(reply.changed),
+            }),
+            reply => unexpected_reply("index", &reply),
+        },
+        Outcome::Accepted(receipt) => structured_result(IndexOutput {
+            root: root.display().to_string(),
+            job_id: receipt.id,
+            state: IndexJobState::Queued,
+            reused: false,
+            action: Some(if is_drop {
+                IndexActionOutput::Drop
+            } else {
+                IndexActionOutput::Index
+            }),
+            dropped: None,
+        }),
+        Outcome::InputRequired(challenge) => authorization_result(&challenge.reason),
+    }
+}
+
+fn completed_index(root: &Path, reply: &IndexReply) -> IndexOutput {
+    IndexOutput {
+        root: root.display().to_string(),
+        job_id: format!("generation-{}", reply.generation),
+        state: IndexJobState::Succeeded,
+        reused: false,
+        action: Some(IndexActionOutput::Index),
+        dropped: None,
+    }
+}
+
+fn drop_outcome_to_result(root: &Path, outcome: Outcome) -> CallToolResult {
+    match outcome {
+        Outcome::Completed(reply) => match *reply {
+            Reply::ChangeIndex(reply) => structured_result(IndexDropOutput {
+                root: root.display().to_string(),
+                removed: reply.changed,
+            }),
+            reply => unexpected_reply("change_index", &reply),
+        },
+        Outcome::Accepted(receipt) => CallToolResult::success(vec![ContentBlock::text(format!(
+            "job_id: {}\nstate: queued",
+            receipt.id
+        ))]),
+        Outcome::InputRequired(challenge) => authorization_result(&challenge.reason),
+    }
+}
+
+fn lexical_outcome_to_result(outcome: Outcome) -> CallToolResult {
+    match outcome {
+        Outcome::Completed(reply) => match *reply {
+            Reply::LexicalSearch(reply) => {
+                CallToolResult::success(vec![ContentBlock::text(format_lexical_reply(&reply))])
+            }
+            reply => unexpected_reply("lexical_search", &reply),
+        },
+        Outcome::Accepted(receipt) => CallToolResult::success(vec![ContentBlock::text(format!(
+            "job_id: {}\nstate: queued",
+            receipt.id
+        ))]),
+        Outcome::InputRequired(challenge) => authorization_result(&challenge.reason),
+    }
+}
+
+fn inspect_outcome_to_result(outcome: Outcome) -> CallToolResult {
+    match outcome {
+        Outcome::Completed(reply) => match *reply {
+            Reply::Inspect(reply) => structured_result(IndexStatusOutput::from(*reply)),
+            reply => unexpected_reply("inspect", &reply),
+        },
+        Outcome::Accepted(receipt) => CallToolResult::success(vec![ContentBlock::text(format!(
+            "job_id: {}\nstate: queued",
+            receipt.id
+        ))]),
+        Outcome::InputRequired(challenge) => authorization_result(&challenge.reason),
+    }
+}
+
+fn authorization_result(reason: &str) -> CallToolResult {
+    CallToolResult::error(vec![ContentBlock::text(format!(
+        "error_code: authorization_required\nerror_message: {reason}"
+    ))])
+}
+
+fn unexpected_reply(expected: &str, reply: &Reply) -> CallToolResult {
+    CallToolResult::error(vec![ContentBlock::text(format!(
+        "error_code: internal\nerror_message: {expected} returned unexpected reply {}",
+        reply_name(reply)
+    ))])
+}
+
+fn format_lexical_reply(reply: &LexicalSearchReply) -> String {
+    if reply.matches.is_empty() {
+        return "No matches.".to_owned();
+    }
+    let mut matches = reply.matches.iter().collect::<Vec<_>>();
+    matches.sort_by_key(|item| item.rank);
+    let mut output = String::new();
+    for item in matches {
+        let _ = write!(
+            output,
+            "{}#{} matchedBy=lexical {}:{}\nsource:",
+            if output.is_empty() { "" } else { "\n\n" },
+            item.rank,
+            item.relative_path.display(),
+            item.range.start_line
+        );
+        for line in item.content.lines().take(10) {
+            let _ = write!(output, "\n  {}", truncate_line(line));
+        }
+    }
+    if reply.coverage == LexicalCoverage::Truncated {
+        output.push_str(
+            "\n\nMore matches were omitted by the explicit output bound. Remove or increase the trailing head bound to see them.",
+        );
+    }
+    output
+}
+
+impl From<InspectReply> for IndexStatusOutput {
+    fn from(reply: InspectReply) -> Self {
+        let workspace_index = reply.workspace_index.map(|info| WorkspaceIndexOutput {
+            id: info.id,
+            name: info.name,
+            path: info.path.display().to_string(),
+            root_paths: info.roots.into_iter().map(RootSpecOutput::from).collect(),
+            embedding: info.embedding.map(|embedding| IndexedEmbeddingOutput {
+                provider: embedding.provider,
+                model: embedding.model,
+                dimension: embedding.dimension,
+                metric: embedding.metric,
+            }),
+            index_version: info.index_version,
+            created_time: info.created_epoch_ms,
+            updated_time: info.updated_epoch_ms,
+        });
+        let files = reply.status.map(|status| IndexFilesOutput {
+            stored: status.files_stored,
+            scanned: status.files_scanned,
+            indexed: status.files_indexed,
+            pending: status.files_pending,
+            failed: status.files_failed,
+            added: status.files_added,
+            modified: status.files_modified,
+            deleted: status.files_deleted,
+            unchanged: status.files_unchanged,
+            entities: status.entities_indexed,
+            truncated_fragments: status.fragments_truncated,
+        });
+        Self {
+            root: reply.root.display().to_string(),
+            indexed: reply.indexed,
+            index_policy: index_policy_label(reply.index_policy).to_owned(),
+            source: match reply.source {
+                zg_engine::InspectSource::Index => "index",
+                zg_engine::InspectSource::Unindexed => "unindexed",
+            }
+            .to_owned(),
+            persistent: PersistentIndexStatusOutput {
+                home: reply.home.display().to_string(),
+                index_path: reply.index_path.display().to_string(),
+                workspace_index,
+                files,
+                suggestion: reply.suggestion,
+            },
+        }
+    }
+}
+
+impl From<RootSpec> for RootSpecOutput {
+    fn from(root: RootSpec) -> Self {
+        Self {
+            absolute_path: root.path.display().to_string(),
+            recursive: root.recursive,
+            include: root.discovery.include_paths,
+            exclude: root.discovery.exclude_paths,
+            globs: root.discovery.globs,
+            insensitive_globs: root.discovery.insensitive_globs,
+            file_types: root.discovery.file_types,
+            excluded_file_types: root.discovery.excluded_file_types,
+            hidden: root.discovery.hidden,
+            no_ignore: root.discovery.no_ignore,
+            ignore_files: root
+                .discovery
+                .ignore_files
+                .into_iter()
+                .map(|path| path.display().to_string())
+                .collect(),
+            max_depth: root.discovery.max_depth,
+            max_file_size_bytes: root.discovery.max_file_size_bytes,
+            follow: root.discovery.follow,
+        }
+    }
+}
+
+impl From<ServerStatusSnapshot> for ServerStatusOutput {
+    fn from(status: ServerStatusSnapshot) -> Self {
+        Self {
+            version: status.version,
+            uptime_ms: status.uptime_ms,
+            shutting_down: status.shutting_down,
+            active_runtimes: status.active_runtimes,
+            queued_jobs: status.queued_jobs,
+            running_jobs: status.running_jobs,
+            models: ModelStatusOutput {
+                loaded: status.loaded_models,
+                active_leases: status.active_model_leases,
+            },
+        }
+    }
+}
+
+fn index_policy_label(policy: IndexPolicy) -> &'static str {
+    match policy {
+        IndexPolicy::Enabled => "enabled",
+        IndexPolicy::Disabled => "disabled",
+        IndexPolicy::Undecided => "undecided",
+    }
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 fn outcome_to_result(outcome: Outcome) -> CallToolResult {
@@ -609,8 +1672,21 @@ mod tests {
     use zg_testkit::fakes::ScriptedExecutor;
 
     use super::{
-        AGENT_TOOL_NAME, AgentMcpServer, FreshnessInput, PathListInput, QueryListInput, SearchInput,
+        AGENT_TOOL_NAME, FULL_TOOL_NAMES, FreshnessInput, IndexInput, PathListInput,
+        QueryListInput, RgInput, SearchInput, ServerStatusProvider, ServerStatusSnapshot,
+        ZvecGrepMcpServer,
     };
+
+    struct FixedStatus;
+
+    impl ServerStatusProvider for FixedStatus {
+        fn snapshot(&self) -> ServerStatusSnapshot {
+            ServerStatusSnapshot {
+                version: "test".to_owned(),
+                ..ServerStatusSnapshot::default()
+            }
+        }
+    }
 
     fn input() -> SearchInput {
         SearchInput {
@@ -662,11 +1738,84 @@ mod tests {
 
     #[test]
     fn agent_server_exposes_only_search() {
-        let server = AgentMcpServer::new(Arc::new(ScriptedExecutor::default()));
-        let tools = AgentMcpServer::tool_router().list_all();
+        let server = ZvecGrepMcpServer::agent(Arc::new(ScriptedExecutor::default()));
+        let tools = server.listed_tools();
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].name, AGENT_TOOL_NAME);
         assert!(server.get_info().instructions.is_some());
+    }
+
+    #[test]
+    fn full_server_exposes_all_six_tools() {
+        let server =
+            ZvecGrepMcpServer::full(Arc::new(ScriptedExecutor::default()), Arc::new(FixedStatus));
+        let names = server
+            .listed_tools()
+            .into_iter()
+            .map(|tool| tool.name.into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(names, FULL_TOOL_NAMES);
+        assert!(
+            server
+                .get_info()
+                .instructions
+                .is_some_and(|instructions| instructions.contains("zvec_grep_index"))
+        );
+    }
+
+    #[test]
+    fn maps_full_index_to_canonical_operation() {
+        let operation = index_input()
+            .into_operation()
+            .expect("index input should map");
+        let Command::Index(request) = operation.command else {
+            panic!("index tool must create an index operation");
+        };
+        assert_eq!(request.roots.len(), 1);
+        assert_eq!(request.discovery.globs, ["*.rs"]);
+        assert_eq!(
+            request
+                .embedding
+                .as_ref()
+                .map(|model| model.reference.as_str()),
+            Some("potion-base-8M")
+        );
+        assert!(request.wait);
+        assert!(request.debug);
+    }
+
+    #[test]
+    fn maps_full_rg_without_using_a_shell_and_enforces_root_scope() {
+        let operation = RgInput {
+            root: "/workspace".to_owned(),
+            command: "rg -n -F 'resident manager' src | head -5".to_owned(),
+        }
+        .into_operation()
+        .expect("managed rg should map");
+        let Command::LexicalSearch(request) = operation.command else {
+            panic!("rg tool must create a lexical operation");
+        };
+        assert_eq!(request.patterns, ["resident manager"]);
+        assert_eq!(request.paths, [PathBuf::from("src")]);
+        assert_eq!(request.limit, Some(5));
+        assert!(request.options.fixed_strings);
+
+        assert!(
+            RgInput {
+                root: "/workspace".to_owned(),
+                command: "rg needle ../secret".to_owned(),
+            }
+            .into_operation()
+            .is_err()
+        );
+        assert!(
+            RgInput {
+                root: "/workspace".to_owned(),
+                command: "rg $(whoami)".to_owned(),
+            }
+            .into_operation()
+            .is_err()
+        );
     }
 
     #[test]
@@ -679,5 +1828,31 @@ mod tests {
         empty.query = Some("  ".to_owned());
         empty.fts = None;
         assert!(empty.into_operation().is_err());
+    }
+
+    fn index_input() -> IndexInput {
+        IndexInput {
+            root: "/workspace".to_owned(),
+            api_key: None,
+            device: None,
+            endpoint: None,
+            drop: None,
+            embedding: Some("potion-base-8M".to_owned()),
+            rebuild: Some(false),
+            reset_paths: None,
+            globs: Some(PathListInput::One("*.rs".to_owned())),
+            insensitive_globs: None,
+            file_types: None,
+            excluded_file_types: None,
+            hidden: None,
+            no_ignore: None,
+            ignore_files: None,
+            max_depth: None,
+            max_file_size_bytes: None,
+            follow: None,
+            embedding_concurrency: Some(2),
+            debug: Some(true),
+            wait: Some(true),
+        }
     }
 }

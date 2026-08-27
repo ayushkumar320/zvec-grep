@@ -14,7 +14,7 @@ one workstream. Ownership is not permission to fork Core behavior.
 | Model base | new `zg-model-model2vec`, artifact implementation | embedding/artifact ports | default model golden vector |
 | ONNX | new `zg-model-onnx` | embedding/artifact ports | one ONNX model golden vector |
 | GGUF | new `zg-model-llama` | embedding/artifact ports | one GGUF model golden vector |
-| Runtime | `zg-daemon`, `zg-transport-mcp` | daemon protocol, typed `Operation/Outcome`, `OperationExecutor` | agent HTTP MCP lifecycle, then daemon Execute/Cancel plus stdio thin proxy |
+| Runtime | `zg-daemon`, `zg-transport-mcp` | daemon protocol, typed `Operation/Outcome`, `OperationExecutor` | agent/full HTTP MCP lifecycle, then daemon Execute/Cancel plus stdio thin proxy |
 | CLI/release | `zg-cli`, platform/npm packaging | typed `Operation/Outcome` | native CLI parity and package canary |
 
 ## Change protocol

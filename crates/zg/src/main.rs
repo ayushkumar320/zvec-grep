@@ -117,6 +117,7 @@ fn server_config(args: ServerStartArgs) -> Result<ServerConfig, Box<dyn Error>> 
     let mut config = ServerConfig::new(listen, home);
     config.mcp_toolset = match args.mcp_toolset {
         McpToolset::Agent => DaemonMcpToolset::Agent,
+        McpToolset::Full => DaemonMcpToolset::Full,
     };
     Ok(config)
 }

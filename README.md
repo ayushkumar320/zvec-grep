@@ -25,21 +25,24 @@ with the current implementation. Future Direct, daemon-backed and MCP entry
 points must all construct the same typed `Operation` and use the same Core
 execution contract.
 
-The resident daemon and public agent MCP endpoint are also runnable:
+The resident daemon and public MCP endpoint are also runnable:
 
 ```sh
 cargo run -p zg -- server on --mcp-toolset agent
+# Or expose lifecycle/admin tools as well:
+cargo run -p zg -- server on --mcp-toolset full
 cargo run -p zg -- server status
 cargo run -p zg -- server off
 ```
 
 `server on` starts the same `zg` binary in the background and reports a
-loopback Streamable HTTP URL, normally `http://127.0.0.1:7999/mcp`. The Rust MVP
-accepts only the `agent` toolset and exposes only `zvec_grep_search`. That tool
-already validates and translates the current MCP search contract into the
-canonical Core `Query` operation. Query orchestration is not implemented yet,
-so an invocation currently returns the stable `capability_unavailable` error
-instead of creating an index or fabricating results.
+loopback Streamable HTTP URL, normally `http://127.0.0.1:7999/mcp`. The default
+`agent` toolset exposes only `zvec_grep_search`. The opt-in `full` toolset also
+exposes index, index-drop, index-status, managed-rg and daemon-status tools.
+Every workspace tool validates its input and translates it into the same typed
+Core operation used by other entry points. Managed-rg and daemon-status are
+runnable now; Query, Index and Inspect return the stable
+`capability_unavailable` error until their Core orchestration lands.
 
 ## Workspace now
 
@@ -47,8 +50,8 @@ instead of creating an index or fabricating results.
   budget, errors, events and internal ports.
 - `zg-daemon-protocol`: versioned Execute/Cancel/Event envelopes shared by the
   resident daemon and thin clients.
-- `zg-transport-mcp`: the agent-only MCP schema, request translation and compact
-  result formatting around `OperationExecutor`.
+- `zg-transport-mcp`: agent/full MCP schemas, request translation, managed-rg
+  command safety and compact result formatting around `OperationExecutor`.
 - `zg-daemon`: loopback Streamable HTTP hosting, instance records, health,
   controlled background process lifecycle and resident per-root watcher loops.
 - `zg-lexical-rg`: the first production adapter. It owns process invocation and

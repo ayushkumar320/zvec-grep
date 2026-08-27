@@ -143,7 +143,7 @@ The framework contains only crates with an executable responsibility:
 | `zg-host-native` | metadata-first scanning and normalized filesystem watch sessions |
 | `zg-cli` | argument-to-Operation translation and terminal formatting |
 | `zg-testkit` | fakes, fixture readers and reusable contract suites |
-| `zg-transport-mcp` | agent-only MCP schema, Core operation translation and compact output |
+| `zg-transport-mcp` | agent/full MCP schemas, Core operation translation and compact output |
 | `zg-daemon` | loopback HTTP host, instance lock and background process lifecycle |
 | `zg` | single binary and production composition root |
 

@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use super::{EmbeddingModelSpec, IndexPolicy, RootSpec};
+use super::{IndexPolicy, RootSpec};
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct InspectRequest {
@@ -36,11 +36,19 @@ pub struct WorkspaceIndexInfo {
     pub path: PathBuf,
     pub roots: Vec<RootSpec>,
     pub policy: IndexPolicy,
-    pub embedding: Option<EmbeddingModelSpec>,
+    pub embedding: Option<IndexedEmbeddingInfo>,
     pub index_version: Option<u32>,
     pub generation: Option<u64>,
     pub created_epoch_ms: u64,
     pub updated_epoch_ms: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct IndexedEmbeddingInfo {
+    pub provider: String,
+    pub model: String,
+    pub dimension: usize,
+    pub metric: String,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]

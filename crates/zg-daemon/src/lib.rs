@@ -1,7 +1,7 @@
 //! Resident daemon lifecycle and loopback HTTP host.
 //!
-//! The daemon is the sole resident Core owner. It exposes the public agent MCP
-//! transport at `/mcp`, a health probe, and a local shutdown endpoint.
+//! The daemon is the sole resident Core owner. It exposes the selected agent or
+//! full MCP toolset at `/mcp`, a health probe, and a local shutdown endpoint.
 
 mod controller;
 mod resident;
@@ -11,24 +11,11 @@ use std::{fmt, net::SocketAddr, path::PathBuf, str::FromStr, sync::Arc, time::Du
 
 pub use controller::{DaemonInstanceRecord, DaemonStatus, start_server, stop_server};
 pub use resident::{ResidentWorkspaceError, ResidentWorkspaceManager};
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use zg_engine::{OperationExecutor, WorkspaceWatcherFactoryPort};
+pub use zg_transport_mcp::McpToolset;
 
 pub const DEFAULT_LISTEN: &str = "127.0.0.1:7999";
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum McpToolset {
-    #[default]
-    Agent,
-}
-
-impl fmt::Display for McpToolset {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("agent")
-    }
-}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ListenAddress {
@@ -108,7 +95,7 @@ pub enum DaemonError {
     #[error("zvec-grep server is already running with PID {pid}")]
     AlreadyRunning { pid: u32 },
     #[error(
-        "zvec-grep server is already running with MCP toolset {active:?}; run `zg server off` before starting the agent toolset"
+        "zvec-grep server is already running with MCP toolset {active:?}; run `zg server off` before changing toolsets"
     )]
     ToolsetMismatch { active: String },
     #[error("server address {0} is already in use")]
