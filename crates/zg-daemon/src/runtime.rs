@@ -12,10 +12,14 @@ use rmcp::transport::streamable_http_server::{
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
-use zg_engine::OperationExecutor;
+use zg_engine::{OperationExecutor, WorkspaceWatcherFactoryPort};
 use zg_transport_mcp::AgentMcpServer;
 
-use crate::{DaemonError, ServerConfig, controller::InstanceLock};
+use crate::{
+    DaemonError, ServerConfig,
+    controller::InstanceLock,
+    resident::{ResidentOperationExecutor, ResidentWorkspaceManager},
+};
 
 #[derive(Clone)]
 struct ControlState {
@@ -25,6 +29,7 @@ struct ControlState {
 pub(crate) async fn run_server(
     config: ServerConfig,
     executor: Arc<dyn OperationExecutor>,
+    watcher_factory: Arc<dyn WorkspaceWatcherFactoryPort>,
 ) -> Result<(), DaemonError> {
     let mut instance = InstanceLock::acquire(&config).await?;
     let listener = match tokio::net::TcpListener::bind(config.listen.socket_addr()).await {
@@ -35,6 +40,9 @@ pub(crate) async fn run_server(
         }
     };
     let shutdown = CancellationToken::new();
+    let residents = ResidentWorkspaceManager::new(watcher_factory, Arc::clone(&executor));
+    let executor: Arc<dyn OperationExecutor> =
+        Arc::new(ResidentOperationExecutor::new(executor, residents.clone()));
     let mcp_config = StreamableHttpServerConfig::default()
         .with_cancellation_token(shutdown.child_token())
         .with_allowed_hosts([
@@ -72,8 +80,10 @@ pub(crate) async fn run_server(
         .with_graceful_shutdown(shutdown.clone().cancelled_owned())
         .await;
     shutdown.cancel();
+    let resident_result = residents.shutdown_all().await;
     let release_result = instance.release().await;
     serve_result?;
+    resident_result?;
     release_result
 }
 

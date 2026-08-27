@@ -1761,6 +1761,7 @@ dependencies = [
  "zg-cli",
  "zg-daemon",
  "zg-engine",
+ "zg-host-native",
  "zg-lexical-rg",
 ]
 
@@ -1777,6 +1778,7 @@ dependencies = [
 name = "zg-daemon"
 version = "0.0.1"
 dependencies = [
+ "async-trait",
  "axum",
  "rmcp",
  "serde",

@@ -9,10 +9,32 @@ pub struct IndexRequest {
     pub roots: Vec<RootSpec>,
     pub rebuild: bool,
     pub reset_paths: bool,
-    pub changed_paths: Vec<PathBuf>,
+    /// Normalized watcher changes for a narrow incremental index operation.
+    /// An empty list means normal discovery rather than "no work".
+    pub changes: Vec<WorkspaceChange>,
     pub discovery: DiscoveryOptions,
     pub embedding: Option<EmbeddingModelSpec>,
     pub embedding_concurrency: Option<usize>,
+}
+
+/// A normalized filesystem change relative to its [`RootSpec`].
+///
+/// These variants deliberately retain deletion and directory scope. Flattening
+/// them into paths would make an incremental index unable to distinguish an
+/// upsert from a delete or a watcher overflow from a file event.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "path")]
+pub enum WorkspaceChange {
+    Upsert(PathBuf),
+    Delete(PathBuf),
+    RescanDirectory(PathBuf),
+    DeletePrefix(PathBuf),
+    Rescan,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct WorkspaceChangeBatch {
+    pub changes: Vec<WorkspaceChange>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]

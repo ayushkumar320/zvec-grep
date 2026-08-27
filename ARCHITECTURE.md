@@ -83,8 +83,10 @@ Core-owned coarse seams isolate native dependencies:
 
 `CorePorts` accepts scanner, extraction, storage, embedding and clock
 dependencies from the binary composition root. Model factories receive an
-`ArtifactSourcePort` in their constructor. The daemon owns watch sessions and
-turns each change batch into a normal Index operation. Adapter crates depend on
+`ArtifactSourcePort` in their constructor. The daemon resident workspace
+manager owns one watch session per root and turns each change batch into a
+normal Index operation. A synchronous successful daemon Index attaches the
+session; Drop/Disable and daemon shutdown close it. Adapter crates depend on
 `zg-engine`; `zg-engine` never depends on a native adapter.
 
 Each `RootSpec` is the only discovery-policy source consumed by scanner and
@@ -194,13 +196,14 @@ workstreams can now begin:
 1. Capture TypeScript oracle cases and implement the differential runner.
 2. Complete managed-rg flags, path security, structure enrichment and formatter
    parity in the lexical/CLI localities.
-3. Integrate the proven native scanner into Core indexing and the watcher into
-   daemon composition when those orchestration slices land.
+3. Integrate the proven native scanner into Core indexing, and notify the
+   resident workspace manager when a future accepted Index job completes. The
+   synchronous completed-Index path and native watcher composition are wired.
 4. Add extraction, zvec storage and model adapter crates with their first native
    proof and shared contract invocation.
 5. Add the resident daemon client/server and MCP stdio thin proxy against the
    scripted executor.
-6. Add model authorization, artifact verification, jobs and resident lifecycle
-   orchestration inside the shared Core.
+6. Add model authorization, artifact verification and jobs inside the shared
+   Core.
 7. Add platform binaries and npm canary packaging after the binary contract is
    stable.

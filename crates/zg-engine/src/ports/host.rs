@@ -2,7 +2,7 @@ use std::{path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
 
-use crate::{CoreError, FileKind, RootSpec, RunControl, SkippedFile};
+use crate::{CoreError, FileKind, RootSpec, RunControl, SkippedFile, WorkspaceChangeBatch};
 
 pub trait ClockPort: Send + Sync {
     fn now_epoch_ms(&self) -> u64;
@@ -94,21 +94,6 @@ pub trait WorkspaceScannerPort: Send + Sync {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WatchRequest {
     pub root: RootSpec,
-}
-
-/// Normalized changes relative to the watched root.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum WorkspaceChange {
-    Upsert(PathBuf),
-    Delete(PathBuf),
-    RescanDirectory(PathBuf),
-    DeletePrefix(PathBuf),
-    Rescan,
-}
-
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct WorkspaceChangeBatch {
-    pub changes: Vec<WorkspaceChange>,
 }
 
 /// Creates one resident watch session for a workspace root.

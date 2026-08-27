@@ -4,14 +4,16 @@
 //! transport at `/mcp`, a health probe, and a local shutdown endpoint.
 
 mod controller;
+mod resident;
 mod runtime;
 
 use std::{fmt, net::SocketAddr, path::PathBuf, str::FromStr, sync::Arc, time::Duration};
 
 pub use controller::{DaemonInstanceRecord, DaemonStatus, start_server, stop_server};
+pub use resident::{ResidentWorkspaceError, ResidentWorkspaceManager};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use zg_engine::OperationExecutor;
+use zg_engine::{OperationExecutor, WorkspaceWatcherFactoryPort};
 
 pub const DEFAULT_LISTEN: &str = "127.0.0.1:7999";
 
@@ -127,6 +129,8 @@ pub enum DaemonError {
     Json(#[from] serde_json::Error),
     #[error("daemon HTTP server failed: {0}")]
     Http(#[from] axum::Error),
+    #[error("resident workspace manager failed: {0}")]
+    Resident(#[from] ResidentWorkspaceError),
 }
 
 /// Resolves the daemon home without changing process-global state.
@@ -167,8 +171,9 @@ pub async fn server_status(home: &std::path::Path) -> Result<DaemonStatus, Daemo
 pub async fn run_server(
     config: ServerConfig,
     executor: Arc<dyn OperationExecutor>,
+    watcher_factory: Arc<dyn WorkspaceWatcherFactoryPort>,
 ) -> Result<(), DaemonError> {
-    runtime::run_server(config, executor).await
+    runtime::run_server(config, executor, watcher_factory).await
 }
 
 #[must_use]

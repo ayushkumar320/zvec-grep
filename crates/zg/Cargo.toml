@@ -16,6 +16,7 @@ tracing-subscriber.workspace = true
 zg-cli = { path = "../zg-cli" }
 zg-daemon = { path = "../zg-daemon" }
 zg-engine = { path = "../zg-engine" }
+zg-host-native = { path = "../zg-host-native" }
 zg-lexical-rg = { path = "../zg-lexical-rg" }
 
 [dev-dependencies]

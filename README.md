@@ -49,8 +49,8 @@ instead of creating an index or fabricating results.
   resident daemon and thin clients.
 - `zg-transport-mcp`: the agent-only MCP schema, request translation and compact
   result formatting around `OperationExecutor`.
-- `zg-daemon`: loopback Streamable HTTP hosting, instance records, health and
-  controlled background process lifecycle.
+- `zg-daemon`: loopback Streamable HTTP hosting, instance records, health,
+  controlled background process lifecycle and resident per-root watcher loops.
 - `zg-lexical-rg`: the first production adapter. It owns process invocation and
   ripgrep JSON decoding.
 - `zg-host-native`: the production metadata scanner and daemon-owned filesystem
@@ -66,8 +66,10 @@ ChangeIndex and Job. Native seams cover lexical, metadata-first scanning,
 extraction, file-level storage generations, embedding, verified artifact
 materialization, clock and daemon-owned watch sessions. Scanner results retain
 format hints and bounded skip diagnostics; watcher batches preserve scoped
-directory rescans and deletions. New production adapter crates are added only
-when their first real proof starts. Planned names are
+directory rescans and deletions all the way into incremental Index operations.
+After a synchronous daemon Index succeeds, its root watcher is attached once;
+Drop/Disable and daemon shutdown stop it. New production adapter crates are
+added only when their first real proof starts. Planned names are
 `zg-extract-native`, `zg-storage-zvec`, and `zg-model-*`. The workspace uses
 `crates/*`, so a new
 owner can add a crate without editing the root member list.

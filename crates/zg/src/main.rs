@@ -8,6 +8,7 @@ use tracing_subscriber::EnvFilter;
 use zg_cli::{Cli, CliPlan, ClientMode, McpToolset, ServerPlan, ServerStartArgs};
 use zg_daemon::{DaemonStatus, ListenAddress, McpToolset as DaemonMcpToolset, ServerConfig};
 use zg_engine::{Core, CoreConfig, CorePorts, Operation, ResourceBudget, RunControl};
+use zg_host_native::NativeWatcherFactory;
 use zg_lexical_rg::RipgrepAdapter;
 
 fn main() -> ExitCode {
@@ -96,7 +97,12 @@ async fn execute_server_plan(
         ServerPlan::Run(args) => {
             let config = server_config(args)?;
             let core = open_core(resources).await?;
-            let server_result = zg_daemon::run_server(config, Arc::new(core.clone())).await;
+            let server_result = zg_daemon::run_server(
+                config,
+                Arc::new(core.clone()),
+                Arc::new(NativeWatcherFactory::default()),
+            )
+            .await;
             let shutdown_result = core.shutdown(Duration::from_secs(5)).await;
             server_result?;
             shutdown_result?;
