@@ -17,6 +17,7 @@ use uuid::Uuid;
 use crate::{DaemonError, ListenAddress, ServerConfig};
 
 const INSTANCE_FILE: &str = "instance.lock";
+const STARTUP_FILE: &str = "startup.lock";
 const START_TIMEOUT: Duration = Duration::from_secs(10);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(2);
 const SIGNAL_GRACE: Duration = Duration::from_secs(2);
@@ -44,6 +45,104 @@ pub struct DaemonStatus {
     pub pid: Option<u32>,
     pub server_url: Option<String>,
     pub mcp_toolset: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StartupRecord {
+    pid: u32,
+    hostname: String,
+    token: Uuid,
+}
+
+struct StartupLock {
+    path: PathBuf,
+    record: StartupRecord,
+}
+
+impl StartupLock {
+    async fn acquire(home: &Path) -> Result<Self, DaemonError> {
+        let daemon_dir = daemon_dir(home);
+        create_private_dir(&daemon_dir)?;
+        let path = daemon_dir.join(STARTUP_FILE);
+        let deadline = tokio::time::Instant::now() + START_TIMEOUT;
+        loop {
+            let record = StartupRecord {
+                pid: std::process::id(),
+                hostname: hostname(),
+                token: Uuid::new_v4(),
+            };
+            if try_create_startup_record(&path, &record)? {
+                return Ok(Self { path, record });
+            }
+            let existing = match read_startup_record(&path).await {
+                Ok(existing) => existing,
+                Err(DaemonError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            if existing.hostname == hostname() && process_is_alive(existing.pid) {
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(DaemonError::Timeout { action: "start" });
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            } else {
+                remove_startup_record_if_same(&path, &existing).await?;
+            }
+        }
+    }
+
+    async fn release(self) -> Result<(), DaemonError> {
+        remove_startup_record_if_same(&self.path, &self.record).await?;
+        Ok(())
+    }
+}
+
+fn try_create_startup_record(path: &Path, record: &StartupRecord) -> Result<bool, DaemonError> {
+    // Publish a fully-written record with an atomic hard-link operation. A
+    // contender can therefore never observe the empty/partial contents that a
+    // direct create_new + write sequence would expose.
+    let candidate = path.with_file_name(format!(".startup-{}.claim", record.token));
+    let write_result = (|| -> Result<(), DaemonError> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)?;
+        set_private_file(&file)?;
+        serde_json::to_writer(&mut file, record)?;
+        file.write_all(b"\n")?;
+        file.sync_all()?;
+        Ok(())
+    })();
+    if let Err(error) = write_result {
+        let _ = std::fs::remove_file(&candidate);
+        return Err(error);
+    }
+    let linked = match std::fs::hard_link(&candidate, path) {
+        Ok(()) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
+        Err(error) => {
+            let _ = std::fs::remove_file(&candidate);
+            return Err(error.into());
+        }
+    };
+    let _ = std::fs::remove_file(candidate);
+    Ok(linked)
+}
+
+impl Drop for StartupLock {
+    fn drop(&mut self) {
+        let Ok(bytes) = std::fs::read(&self.path) else {
+            return;
+        };
+        let Ok(current) = serde_json::from_slice::<StartupRecord>(&bytes) else {
+            return;
+        };
+        if current == self.record {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
 }
 
 pub(crate) struct InstanceLock {
@@ -125,6 +224,24 @@ pub async fn start_server(
     executable: &Path,
     config: &ServerConfig,
 ) -> Result<DaemonStatus, DaemonError> {
+    if let Some(current) = existing_server(config).await? {
+        return Ok(current);
+    }
+
+    // The status check above is intentionally only a fast path. This
+    // cross-process claim closes the check/spawn race for concurrent stdio
+    // bootstrap processes. The winner alone may spawn; waiters re-check state
+    // after the claim is released and reuse the ready daemon.
+    let startup = StartupLock::acquire(&config.home).await?;
+    let result = start_server_with_lock(executable, config).await;
+    let release = startup.release().await;
+    match (result, release) {
+        (Ok(status), Ok(())) => Ok(status),
+        (Err(error), _) | (Ok(_), Err(error)) => Err(error),
+    }
+}
+
+async fn existing_server(config: &ServerConfig) -> Result<Option<DaemonStatus>, DaemonError> {
     let current = server_status(&config.home).await?;
     if current.running {
         let requested_toolset = config.mcp_toolset.to_string();
@@ -134,9 +251,21 @@ pub async fn start_server(
             });
         }
         if current.ready {
-            return Ok(current);
+            return Ok(Some(current));
         }
-        return wait_for_status(&config.home, true, START_TIMEOUT, None).await;
+        return wait_for_status(&config.home, true, START_TIMEOUT, None)
+            .await
+            .map(Some);
+    }
+    Ok(None)
+}
+
+async fn start_server_with_lock(
+    executable: &Path,
+    config: &ServerConfig,
+) -> Result<DaemonStatus, DaemonError> {
+    if let Some(current) = existing_server(config).await? {
+        return Ok(current);
     }
 
     assert_address_available(&config.listen).await?;
@@ -255,6 +384,45 @@ async fn read_instance_record_path(
         }
     }
     Err(DaemonError::InvalidRecord(path.to_owned()))
+}
+
+async fn read_startup_record(path: &Path) -> Result<StartupRecord, DaemonError> {
+    for attempt in 0..3 {
+        let bytes = match tokio::fs::read(path).await {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && attempt < 2 => {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                continue;
+            }
+            Err(error) => return Err(error.into()),
+        };
+        if let Ok(record) = serde_json::from_slice(&bytes) {
+            return Ok(record);
+        }
+        if attempt < 2 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+    Err(DaemonError::InvalidRecord(path.to_owned()))
+}
+
+async fn remove_startup_record_if_same(
+    path: &Path,
+    expected: &StartupRecord,
+) -> Result<(), DaemonError> {
+    let bytes = match tokio::fs::read(path).await {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if serde_json::from_slice::<StartupRecord>(&bytes)
+        .ok()
+        .as_ref()
+        == Some(expected)
+    {
+        remove_file_if_exists(path).await?;
+    }
+    Ok(())
 }
 
 async fn wait_for_status(

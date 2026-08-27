@@ -41,8 +41,9 @@ CLI arguments
   -> terminal rendering
 ```
 
-`zg query --rg` is implemented end to end. `zg server on/status/off` also runs
-the resident daemon and its agent/full Streamable HTTP MCP endpoint. Other
+`zg query --rg` is implemented end to end. `zg server on/status/off` runs the
+resident daemon and its agent/full Streamable HTTP MCP endpoint; `zg server
+--stdio` safely bootstraps or reuses it and proxies MCP over stdin/stdout. Other
 typed Core commands are present so transports and adapters can compile against
 stable shapes, but they return `capability_unavailable` until their Core
 orchestration is implemented.
@@ -162,7 +163,7 @@ Use `zg_testkit::ScriptedExecutor` as the adapter for the one-method
    sessions and forwards Execute frames to the same `Core::run` used directly.
 4. Give MCP transports only an injected `OperationExecutor`; they must not open
    Core, zvec, models or watchers. The implemented HTTP host lives in the daemon;
-   the planned MCP stdio client remains a thin daemon proxy.
+   the implemented MCP stdio client remains a thin daemon proxy.
 5. Translate each MCP request into the same typed `Operation` used by Direct
    mode and translate canonical `Outcome`/`ErrorReply` back to MCP.
 

@@ -1,10 +1,12 @@
 use std::{
     error::Error,
-    io::{Read, Write},
+    io::{BufRead, BufReader, Read, Write},
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
-    process::{Command, Output},
-    time::Duration,
+    process::{Child, ChildStdin, Command, Output, Stdio},
+    sync::mpsc::{self, Receiver},
+    thread::JoinHandle,
+    time::{Duration, Instant},
 };
 
 use serde_json::json;
@@ -36,6 +38,113 @@ impl Drop for ServerGuard {
                 .args(["server", "off", "--home"])
                 .arg(&self.home)
                 .output();
+        }
+    }
+}
+
+struct StdioBridge {
+    child: Child,
+    stdin: Option<ChildStdin>,
+    lines: Receiver<String>,
+    reader: Option<JoinHandle<()>>,
+}
+
+impl StdioBridge {
+    fn spawn(binary: &Path, home: &Path, listen: &str) -> Result<Self, Box<dyn Error>> {
+        let mut child = Command::new(binary)
+            .args([
+                "server",
+                "--stdio",
+                "--home",
+                path_text(home)?,
+                "--listen",
+                listen,
+                "--mcp-toolset",
+                "full",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()?;
+        let stdin = child.stdin.take().ok_or("stdio bridge has no stdin")?;
+        let stdout = child.stdout.take().ok_or("stdio bridge has no stdout")?;
+        let (sender, lines) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                let Ok(line) = line else {
+                    break;
+                };
+                if sender.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        Ok(Self {
+            child,
+            stdin: Some(stdin),
+            lines,
+            reader: Some(reader),
+        })
+    }
+
+    fn request(
+        &mut self,
+        request: &serde_json::Value,
+    ) -> Result<serde_json::Value, Box<dyn Error>> {
+        let id = request.get("id").cloned().ok_or("request has no id")?;
+        let stdin = self.stdin.as_mut().ok_or("stdio bridge is closed")?;
+        writeln!(stdin, "{request}")?;
+        stdin.flush()?;
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let line = self.lines.recv_timeout(remaining)?;
+            let response = serde_json::from_str::<serde_json::Value>(&line)?;
+            if response.get("id") == Some(&id) {
+                return Ok(response);
+            }
+        }
+    }
+
+    fn notify(&mut self, notification: &serde_json::Value) -> Result<(), Box<dyn Error>> {
+        let stdin = self.stdin.as_mut().ok_or("stdio bridge is closed")?;
+        writeln!(stdin, "{notification}")?;
+        stdin.flush()?;
+        Ok(())
+    }
+
+    fn close(mut self) -> Result<(), Box<dyn Error>> {
+        drop(self.stdin.take());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(status) = self.child.try_wait()? {
+                if let Some(reader) = self.reader.take() {
+                    let _ = reader.join();
+                }
+                if status.success() {
+                    return Ok(());
+                }
+                return Err(format!("stdio bridge exited with {status}").into());
+            }
+            if Instant::now() >= deadline {
+                self.child.kill()?;
+                let _ = self.child.wait();
+                return Err("stdio bridge did not exit after stdin closed".into());
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+}
+
+impl Drop for StdioBridge {
+    fn drop(&mut self) {
+        drop(self.stdin.take());
+        if self.child.try_wait().ok().flatten().is_none() {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
         }
     }
 }
@@ -249,6 +358,70 @@ fn full_toolset_exposes_lifecycle_tools_and_runs_managed_rg() -> Result<(), Box<
     assert!(response.contains("error_code: capability_unavailable"));
     assert!(response.contains("capability unavailable: inspect"));
     assert!(response.contains("\"isError\":true"));
+
+    let output = guard.stop()?;
+    assert_command_success(&output);
+    Ok(())
+}
+
+#[test]
+fn concurrent_stdio_bootstraps_share_one_resident_daemon() -> Result<(), Box<dyn Error>> {
+    let binary = PathBuf::from(env!("CARGO_BIN_EXE_zg"));
+    let home = TempDir::new()?;
+    let port = available_port()?;
+    let listen = format!("127.0.0.1:{port}");
+    let mut guard = ServerGuard {
+        binary: binary.clone(),
+        home: home.path().to_owned(),
+        active: true,
+    };
+    let mut bridges = (0..4)
+        .map(|_| StdioBridge::spawn(&binary, home.path(), &listen))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    for (index, bridge) in bridges.iter_mut().enumerate() {
+        let initialize = json!({
+            "jsonrpc": "2.0",
+            "id": index + 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {},
+                "clientInfo": { "name": "zg-stdio-test", "version": "1" }
+            }
+        });
+        let response = bridge.request(&initialize)?;
+        assert_eq!(response["result"]["serverInfo"]["name"], "zvec-grep");
+        bridge.notify(&json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+            "params": {}
+        }))?;
+    }
+
+    let list = bridges[0].request(&json!({
+        "jsonrpc": "2.0",
+        "id": 100,
+        "method": "tools/list",
+        "params": {}
+    }))?;
+    let tools = list["result"]["tools"]
+        .as_array()
+        .ok_or("tools/list did not return an array")?;
+    assert_eq!(tools.len(), 6);
+
+    for bridge in bridges {
+        bridge.close()?;
+    }
+
+    let status = Command::new(&binary)
+        .args(["server", "status", "--home"])
+        .arg(home.path())
+        .output()?;
+    assert_command_success(&status);
+    let stdout = String::from_utf8_lossy(&status.stdout);
+    assert!(stdout.contains("Server: ready"));
+    assert!(stdout.contains("MCP toolset: full"));
 
     let output = guard.stop()?;
     assert_command_success(&output);

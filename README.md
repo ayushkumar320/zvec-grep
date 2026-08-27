@@ -31,13 +31,19 @@ The resident daemon and public MCP endpoint are also runnable:
 cargo run -p zg -- server on --mcp-toolset agent
 # Or expose lifecycle/admin tools as well:
 cargo run -p zg -- server on --mcp-toolset full
+# Bootstrap/reuse the daemon and proxy MCP on stdin/stdout:
+cargo run -p zg -- server --stdio --mcp-toolset agent
 cargo run -p zg -- server status
 cargo run -p zg -- server off
 ```
 
 `server on` starts the same `zg` binary in the background and reports a
 loopback Streamable HTTP URL, normally `http://127.0.0.1:7999/mcp`. The default
-`agent` toolset exposes only `zvec_grep_search`. The opt-in `full` toolset also
+`server --stdio` command safely starts or reuses that daemon, transparently
+relays MCP between stdin/stdout and HTTP, and leaves the daemon running after
+the stdio client disconnects. Concurrent bootstrap processes are serialized by
+a cross-process startup claim, so only one of them may spawn the daemon. The
+default `agent` toolset exposes only `zvec_grep_search`. The opt-in `full` toolset also
 exposes index, index-drop, index-status, managed-rg and daemon-status tools.
 Every workspace tool validates its input and translates it into the same typed
 Core operation used by other entry points. Managed-rg and daemon-status are
@@ -52,8 +58,9 @@ runnable now; Query, Index and Inspect return the stable
   resident daemon and thin clients.
 - `zg-transport-mcp`: agent/full MCP schemas, request translation, managed-rg
   command safety and compact result formatting around `OperationExecutor`.
-- `zg-daemon`: loopback Streamable HTTP hosting, instance records, health,
-  controlled background process lifecycle and resident per-root watcher loops.
+- `zg-daemon`: loopback Streamable HTTP hosting, stdio bootstrap proxy,
+  concurrency-safe instance startup, health, controlled background process
+  lifecycle and resident per-root watcher loops.
 - `zg-lexical-rg`: the first production adapter. It owns process invocation and
   ripgrep JSON decoding.
 - `zg-host-native`: the production metadata scanner and daemon-owned filesystem

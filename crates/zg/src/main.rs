@@ -78,6 +78,11 @@ async fn execute_server_plan(
     resources: ResourceBudget,
 ) -> Result<(), Box<dyn Error>> {
     match plan {
+        ServerPlan::Stdio(args) => {
+            let config = server_config(args)?;
+            let executable = std::env::current_exe()?;
+            zg_daemon::run_stdio_bridge(&executable, &config).await?;
+        }
         ServerPlan::On(args) => {
             let config = server_config(args)?;
             let executable = std::env::current_exe()?;

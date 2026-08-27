@@ -26,8 +26,24 @@ pub enum CommandLine {
 
 #[derive(Debug, Args)]
 pub struct ServerArgs {
+    /// Start or reuse the resident daemon and proxy MCP over stdin/stdout.
+    #[arg(long)]
+    pub stdio: bool,
+
+    /// Loopback HTTP listen address used when stdio needs to start the daemon.
+    #[arg(long, value_name = "ADDRESS")]
+    pub listen: Option<String>,
+
+    /// zvec-grep state home used by the stdio bridge.
+    #[arg(long, env = "ZVEC_GREP_HOME")]
+    pub home: Option<PathBuf>,
+
+    /// Public MCP tool profile used by the stdio bridge.
+    #[arg(long, env = "ZVEC_GREP_MCP_TOOLSET", value_enum)]
+    pub mcp_toolset: Option<McpToolset>,
+
     #[command(subcommand)]
-    pub action: ServerAction,
+    pub action: Option<ServerAction>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -114,6 +130,7 @@ pub enum CliPlan {
 
 #[derive(Debug)]
 pub enum ServerPlan {
+    Stdio(ServerStartArgs),
     On(ServerStartArgs),
     Off(ServerHomeArgs),
     Status(ServerHomeArgs),
@@ -124,6 +141,10 @@ pub enum ServerPlan {
 pub enum CliError {
     #[error("the Rust POC currently implements only `zg query --rg`")]
     UnsupportedSlice,
+    #[error("use `zg server --stdio` or choose one of: on, off, status")]
+    MissingServerAction,
+    #[error("`--stdio` cannot be combined with a server action")]
+    StdioWithServerAction,
     #[error(transparent)]
     ManagedRg(#[from] ManagedRgArgumentError),
 }
@@ -145,12 +166,26 @@ impl Cli {
                 )),
             }),
             CommandLine::Query(_) => Err(CliError::UnsupportedSlice),
-            CommandLine::Server(args) => Ok(CliPlan::Server(match args.action {
-                ServerAction::On(args) => ServerPlan::On(args),
-                ServerAction::Off(args) => ServerPlan::Off(args),
-                ServerAction::Status(args) => ServerPlan::Status(args),
-                ServerAction::Run(args) => ServerPlan::Run(args),
-            })),
+            CommandLine::Server(args) => {
+                let plan = if args.stdio {
+                    if args.action.is_some() {
+                        return Err(CliError::StdioWithServerAction);
+                    }
+                    ServerPlan::Stdio(ServerStartArgs {
+                        listen: args.listen.unwrap_or_else(|| "127.0.0.1:7999".to_owned()),
+                        home: args.home,
+                        mcp_toolset: args.mcp_toolset.unwrap_or_default(),
+                    })
+                } else {
+                    match args.action.ok_or(CliError::MissingServerAction)? {
+                        ServerAction::On(args) => ServerPlan::On(args),
+                        ServerAction::Off(args) => ServerPlan::Off(args),
+                        ServerAction::Status(args) => ServerPlan::Status(args),
+                        ServerAction::Run(args) => ServerPlan::Run(args),
+                    }
+                };
+                Ok(CliPlan::Server(plan))
+            }
         }
     }
 }
@@ -292,5 +327,40 @@ mod tests {
             panic!("server on must create a server plan");
         };
         assert_eq!(args.mcp_toolset, McpToolset::Full);
+    }
+
+    #[test]
+    fn parses_stdio_bootstrap_with_full_toolset() {
+        let cli = Cli::try_parse_from([
+            "zg",
+            "server",
+            "--stdio",
+            "--listen",
+            "127.0.0.1:8124",
+            "--home",
+            "/tmp/zg-stdio-test",
+            "--mcp-toolset",
+            "full",
+        ])
+        .expect("stdio bootstrap should parse");
+        let plan = cli
+            .into_plan(PathBuf::from("/workspace"))
+            .expect("stdio plan");
+        let CliPlan::Server(ServerPlan::Stdio(args)) = plan else {
+            panic!("server --stdio must create a stdio server plan");
+        };
+        assert_eq!(args.listen, "127.0.0.1:8124");
+        assert_eq!(args.home, Some(PathBuf::from("/tmp/zg-stdio-test")));
+        assert_eq!(args.mcp_toolset, McpToolset::Full);
+    }
+
+    #[test]
+    fn rejects_stdio_combined_with_a_lifecycle_action() {
+        let cli = Cli::try_parse_from(["zg", "server", "--stdio", "on"])
+            .expect("syntax is parsed before plan validation");
+        assert!(
+            cli.into_plan(PathBuf::from("/workspace")).is_err(),
+            "stdio and lifecycle actions must be mutually exclusive"
+        );
     }
 }

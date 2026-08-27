@@ -19,14 +19,17 @@ selection. The one-method `OperationExecutor` seam returns transport-stable
 
 In resident mode the daemon is the only process that owns a Core. The current
 Streamable HTTP endpoint calls that resident Core through `OperationExecutor`.
-The planned MCP stdio entry point is a thin proxy:
+The MCP stdio entry point is a thin, policy-free transport proxy:
 
 ```text
-MCP stdio -> DaemonClient -> versioned local wire -> DaemonServer -> Core::run
+MCP stdio <-> Streamable HTTP MCP <-> resident OperationExecutor -> Core::run
 ```
 
-`zg-daemon-protocol` owns only the versioned wire envelopes. Local IPC framing,
-daemon process management and MCP framing remain transport adapters.
+It bootstraps or reuses the daemon under a cross-process startup claim, relays
+JSON-RPC in both directions (including progress, cancellation and server-to-client
+requests), and does not stop the daemon on stdin EOF. `zg-daemon-protocol` owns
+only the versioned wire envelopes used by future non-MCP daemon clients. Local
+IPC framing, daemon process management and MCP framing remain transport adapters.
 
 The current tracer bullet is executable:
 
@@ -201,8 +204,8 @@ workstreams can now begin:
    synchronous completed-Index path and native watcher composition are wired.
 4. Add extraction, zvec storage and model adapter crates with their first native
    proof and shared contract invocation.
-5. Add the resident daemon client/server and MCP stdio thin proxy against the
-   scripted executor.
+5. Add the non-MCP resident daemon client/server against the scripted executor;
+   the MCP stdio thin proxy is implemented over the public HTTP transport.
 6. Add model authorization, artifact verification and jobs inside the shared
    Core.
 7. Add platform binaries and npm canary packaging after the binary contract is

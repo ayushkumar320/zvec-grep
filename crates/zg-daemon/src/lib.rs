@@ -1,16 +1,20 @@
 //! Resident daemon lifecycle and loopback HTTP host.
 //!
 //! The daemon is the sole resident Core owner. It exposes the selected agent or
-//! full MCP toolset at `/mcp`, a health probe, and a local shutdown endpoint.
+//! full MCP toolset at `/mcp`, a health probe, a local shutdown endpoint, and a
+//! concurrency-safe stdio bootstrap proxy.
 
 mod controller;
+mod http_client;
 mod resident;
 mod runtime;
+mod stdio;
 
 use std::{fmt, net::SocketAddr, path::PathBuf, str::FromStr, sync::Arc, time::Duration};
 
 pub use controller::{DaemonInstanceRecord, DaemonStatus, start_server, stop_server};
 pub use resident::{ResidentWorkspaceError, ResidentWorkspaceManager};
+pub use stdio::run_stdio_bridge;
 use thiserror::Error;
 use zg_engine::{OperationExecutor, WorkspaceWatcherFactoryPort};
 pub use zg_transport_mcp::McpToolset;
@@ -116,6 +120,8 @@ pub enum DaemonError {
     Json(#[from] serde_json::Error),
     #[error("daemon HTTP server failed: {0}")]
     Http(#[from] axum::Error),
+    #[error("daemon MCP stdio bridge failed: {0}")]
+    McpBridge(String),
     #[error("resident workspace manager failed: {0}")]
     Resident(#[from] ResidentWorkspaceError),
 }
