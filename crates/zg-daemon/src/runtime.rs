@@ -12,14 +12,10 @@ use rmcp::transport::streamable_http_server::{
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
-use zg_engine::{OperationExecutor, WorkspaceWatcherFactoryPort};
+use zg_engine::ZvecGrep;
 use zg_transport_mcp::{McpToolset, ServerStatusProvider, ServerStatusSnapshot, ZvecGrepMcpServer};
 
-use crate::{
-    DaemonError, ServerConfig,
-    controller::InstanceLock,
-    resident::{ResidentOperationExecutor, ResidentWorkspaceManager},
-};
+use crate::{DaemonError, ServerConfig, controller::InstanceLock};
 
 #[derive(Clone)]
 struct ControlState {
@@ -29,7 +25,6 @@ struct ControlState {
 struct RuntimeStatusProvider {
     started: Instant,
     shutdown: CancellationToken,
-    residents: ResidentWorkspaceManager,
 }
 
 impl ServerStatusProvider for RuntimeStatusProvider {
@@ -38,7 +33,7 @@ impl ServerStatusProvider for RuntimeStatusProvider {
             version: env!("CARGO_PKG_VERSION").to_owned(),
             uptime_ms: u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX),
             shutting_down: self.shutdown.is_cancelled(),
-            active_runtimes: self.residents.active_count(),
+            active_runtimes: 0,
             queued_jobs: 0,
             running_jobs: 0,
             loaded_models: 0,
@@ -49,8 +44,7 @@ impl ServerStatusProvider for RuntimeStatusProvider {
 
 pub(crate) async fn run_server(
     config: ServerConfig,
-    executor: Arc<dyn OperationExecutor>,
-    watcher_factory: Arc<dyn WorkspaceWatcherFactoryPort>,
+    engine: Arc<ZvecGrep>,
 ) -> Result<(), DaemonError> {
     let mut instance = InstanceLock::acquire(&config).await?;
     let listener = match tokio::net::TcpListener::bind(config.listen.socket_addr()).await {
@@ -61,17 +55,13 @@ pub(crate) async fn run_server(
         }
     };
     let shutdown = CancellationToken::new();
-    let residents = ResidentWorkspaceManager::new(watcher_factory, Arc::clone(&executor));
-    let executor: Arc<dyn OperationExecutor> =
-        Arc::new(ResidentOperationExecutor::new(executor, residents.clone()));
     let status: Arc<dyn ServerStatusProvider> = Arc::new(RuntimeStatusProvider {
         started: Instant::now(),
         shutdown: shutdown.clone(),
-        residents: residents.clone(),
     });
     let mcp_server = match config.mcp_toolset {
-        McpToolset::Agent => ZvecGrepMcpServer::agent(Arc::clone(&executor)),
-        McpToolset::Full => ZvecGrepMcpServer::full(Arc::clone(&executor), status),
+        McpToolset::Agent => ZvecGrepMcpServer::agent(Arc::clone(&engine)),
+        McpToolset::Full => ZvecGrepMcpServer::full(Arc::clone(&engine), status),
     };
     let mcp_config = StreamableHttpServerConfig::default()
         .with_cancellation_token(shutdown.child_token())
@@ -109,10 +99,9 @@ pub(crate) async fn run_server(
         .with_graceful_shutdown(shutdown.clone().cancelled_owned())
         .await;
     shutdown.cancel();
-    let resident_result = residents.shutdown_all().await;
+    engine.close();
     let release_result = instance.release().await;
     serve_result?;
-    resident_result?;
     release_result
 }
 

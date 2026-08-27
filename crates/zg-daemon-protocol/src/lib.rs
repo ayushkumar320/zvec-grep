@@ -1,11 +1,15 @@
 //! Versioned wire envelopes shared by the resident daemon and thin clients.
 //!
-//! Framing and the local transport remain adapter concerns. These DTOs preserve
-//! Core operations, outcomes, stable failures, cancellation and progress across
-//! the process seam.
+//! These transport-only DTOs are intentionally separate from the in-process
+//! `ZvecGrep` API.
 
 use serde::{Deserialize, Serialize};
-use zg_engine::{CoreEvent, ErrorReply, Operation, OperationId, Outcome, Principal, TraceContext};
+use uuid::Uuid;
+use zg_engine::{
+    ChangeIndexReply, ChangeIndexRequest, ErrorCode, IndexReply, IndexRequest, InspectReply,
+    InspectRequest, JobReply, JobRequest, LexicalSearchReply, LexicalSearchRequest, QueryReply,
+    QueryRequest,
+};
 
 pub const CURRENT_DAEMON_PROTOCOL_VERSION: u32 = 1;
 
@@ -40,19 +44,66 @@ impl HelloRequest {
     }
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct RequestId(Uuid);
+
+impl RequestId {
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
+impl Default for RequestId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ExecuteRequest {
-    pub operation: Operation,
-    /// Remaining duration at the client, avoiding cross-process `Instant`
-    /// serialization and wall-clock skew.
+    pub request_id: RequestId,
+    pub command: DaemonCommand,
+    /// Remaining duration at the client, avoiding cross-process clock skew.
     pub timeout_millis: Option<u64>,
     pub principal: Principal,
     pub trace: TraceContext,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "request")]
+pub enum DaemonCommand {
+    Query(QueryRequest),
+    LexicalSearch(LexicalSearchRequest),
+    Index(IndexRequest),
+    Inspect(InspectRequest),
+    ChangeIndex(ChangeIndexRequest),
+    Job(JobRequest),
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Principal {
+    pub subject: String,
+}
+
+impl Principal {
+    #[must_use]
+    pub fn local() -> Self {
+        Self {
+            subject: "local-user".to_owned(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct TraceContext {
+    pub trace_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CancelRequest {
-    pub operation_id: OperationId,
+    pub request_id: RequestId,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -70,7 +121,7 @@ pub struct DaemonResponse {
 #[serde(rename_all = "snake_case", tag = "kind", content = "value")]
 pub enum DaemonResponseKind {
     Hello(HelloReply),
-    Event(CoreEvent),
+    Event(RequestEvent),
     Result(ExecuteResult),
     Acknowledged(DaemonAction),
     Error(ErrorReply),
@@ -91,50 +142,61 @@ pub enum DaemonAction {
     Shutdown,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RequestEvent {
+    pub request_id: RequestId,
+    pub sequence: u64,
+    pub kind: RequestEventKind,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum RequestEventKind {
+    Started,
+    Progress { completed: u64, total: Option<u64> },
+    Warning { code: String, message: String },
+    Completed { result_count: usize },
+    Failed { code: ErrorCode },
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct ExecuteResult {
-    pub operation_id: OperationId,
+    pub request_id: RequestId,
     pub result: ExecutionResult,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case", tag = "status", content = "value")]
 pub enum ExecutionResult {
-    Success(Outcome),
+    Success(DaemonReply),
     Failure(ErrorReply),
 }
 
-impl ExecutionResult {
-    #[must_use]
-    pub fn from_result(result: Result<Outcome, ErrorReply>) -> Self {
-        match result {
-            Ok(outcome) => Self::Success(outcome),
-            Err(error) => Self::Failure(error),
-        }
-    }
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "reply")]
+pub enum DaemonReply {
+    Query(Box<QueryReply>),
+    LexicalSearch(Box<LexicalSearchReply>),
+    Index(Box<IndexReply>),
+    Inspect(Box<InspectReply>),
+    ChangeIndex(Box<ChangeIndexReply>),
+    Job(Box<JobReply>),
+}
 
-    /// Converts the wire result back to the transport execution result.
-    ///
-    /// # Errors
-    ///
-    /// Returns the stable Core failure carried by a Failure frame.
-    pub fn into_result(self) -> Result<Outcome, ErrorReply> {
-        match self {
-            Self::Success(outcome) => Ok(outcome),
-            Self::Failure(error) => Err(error),
-        }
-    }
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ErrorReply {
+    pub code: ErrorCode,
+    pub message: String,
+    pub retryable: bool,
 }
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
-    use zg_engine::{Command, Operation, QueryRequest};
+    use zg_engine::QueryRequest;
 
     use super::{
-        CURRENT_DAEMON_PROTOCOL_VERSION, DaemonRequest, DaemonRequestKind, ExecuteRequest,
-        HelloRequest,
+        CURRENT_DAEMON_PROTOCOL_VERSION, DaemonCommand, DaemonRequest, DaemonRequestKind,
+        ExecuteRequest, HelloRequest, Principal, RequestId, TraceContext,
     };
 
     #[test]
@@ -144,17 +206,18 @@ mod tests {
     }
 
     #[test]
-    fn execute_request_round_trips_without_run_control() {
+    fn execute_request_round_trips() {
         let request = DaemonRequest {
             message_id: 7,
             kind: DaemonRequestKind::Execute(Box::new(ExecuteRequest {
-                operation: Operation::new(
-                    PathBuf::from("/workspace"),
-                    Command::Query(QueryRequest::default()),
-                ),
+                request_id: RequestId::new(),
+                command: DaemonCommand::Query(QueryRequest {
+                    root: Some("/workspace".into()),
+                    ..QueryRequest::default()
+                }),
                 timeout_millis: Some(5_000),
-                principal: zg_engine::Principal::local(),
-                trace: zg_engine::TraceContext {
+                principal: Principal::local(),
+                trace: TraceContext {
                     trace_id: Some("trace-1".to_owned()),
                 },
             })),

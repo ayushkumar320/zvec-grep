@@ -1,3 +1,5 @@
+//! Context query requests and replies.
+
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -6,6 +8,8 @@ use super::{ContentRange, DiscoveryOptions, EntityMetadata, SymbolType, TimingEn
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct QueryRequest {
+    /// Workspace root. `None` uses the process working directory.
+    pub root: Option<PathBuf>,
     pub queries: Vec<String>,
     pub routes: Vec<QueryRoute>,
     pub fuse: bool,

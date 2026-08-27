@@ -1,4 +1,4 @@
-//! Production lexical adapter backed by the official ripgrep executable.
+//! Private lexical search service backed by ripgrep.
 
 use std::{
     collections::HashMap,
@@ -7,26 +7,25 @@ use std::{
     time::UNIX_EPOCH,
 };
 
-use async_trait::async_trait;
+use crate::{
+    EngineError, LexicalCoverage, LexicalDiagnostics, LexicalMatch, LexicalSearchReply,
+    LexicalSearchRequest, TextRange,
+};
 use serde::Deserialize;
 use tokio::{process::Command, sync::Semaphore};
 use tracing::debug;
-use zg_engine::{
-    CoreError, LexicalCoverage, LexicalDiagnostics, LexicalMatch, LexicalSearchPort,
-    LexicalSearchReply, LexicalSearchRequest, RunControl, TextRange,
-};
 
 const HARD_IGNORED_DIRECTORIES: [&str; 2] = [".git", ".zvec-grep"];
 
 #[derive(Clone, Debug)]
-pub struct RipgrepAdapter {
+pub(crate) struct LexicalSearchService {
     executable: PathBuf,
     process_slots: std::sync::Arc<Semaphore>,
 }
 
-impl RipgrepAdapter {
+impl LexicalSearchService {
     #[must_use]
-    pub fn new(executable: impl Into<PathBuf>) -> Self {
+    pub(crate) fn new(executable: impl Into<PathBuf>) -> Self {
         Self {
             executable: executable.into(),
             process_slots: std::sync::Arc::new(Semaphore::new(1)),
@@ -34,36 +33,35 @@ impl RipgrepAdapter {
     }
 
     #[must_use]
-    pub fn with_max_processes(mut self, max_processes: usize) -> Self {
+    pub(crate) fn with_max_processes(mut self, max_processes: usize) -> Self {
         self.process_slots = std::sync::Arc::new(Semaphore::new(max_processes.max(1)));
         self
     }
 }
 
-impl Default for RipgrepAdapter {
+impl Default for LexicalSearchService {
     fn default() -> Self {
         Self::new("rg")
     }
 }
 
-#[async_trait]
-impl LexicalSearchPort for RipgrepAdapter {
-    async fn search(
+impl LexicalSearchService {
+    pub(crate) async fn search(
         &self,
         root: &Path,
         request: &LexicalSearchRequest,
-        control: &RunControl,
-    ) -> Result<LexicalSearchReply, CoreError> {
+    ) -> Result<LexicalSearchReply, EngineError> {
         if request.patterns.is_empty() && request.pattern_files.is_empty() {
-            return Err(CoreError::invalid_input(
+            return Err(EngineError::invalid_input(
                 "lexical search requires a pattern or pattern file",
             ));
         }
 
-        let _process_slot = tokio::select! {
-            () = control.cancellation.cancelled() => return Err(CoreError::Cancelled),
-            permit = self.process_slots.acquire() => permit.map_err(|_| CoreError::ShuttingDown)?,
-        };
+        let _process_slot = self
+            .process_slots
+            .acquire()
+            .await
+            .map_err(|_| EngineError::Closed)?;
 
         let checked_paths = check_paths(root, &request.paths);
         let args = build_args(request, &checked_paths.existing);
@@ -87,21 +85,18 @@ impl LexicalSearchPort for RipgrepAdapter {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
 
-        let output = tokio::select! {
-            () = control.cancellation.cancelled() => return Err(CoreError::Cancelled),
-            result = command.output() => result.map_err(|error| {
-                if error.kind() == std::io::ErrorKind::NotFound {
-                    CoreError::CapabilityUnavailable {
-                        capability: format!("ripgrep executable {}", self.executable.display()),
-                    }
-                } else {
-                    CoreError::backend("ripgrep", error.to_string())
+        let output = command.output().await.map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                EngineError::CapabilityUnavailable {
+                    capability: format!("ripgrep executable {}", self.executable.display()),
                 }
-            })?,
-        };
+            } else {
+                EngineError::backend("ripgrep", error.to_string())
+            }
+        })?;
 
         if !matches!(output.status.code(), Some(0 | 1)) {
-            return Err(CoreError::backend(
+            return Err(EngineError::backend(
                 "ripgrep",
                 format!(
                     "exit status {}: {}",

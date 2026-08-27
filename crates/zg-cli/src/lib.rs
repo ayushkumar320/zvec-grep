@@ -1,4 +1,4 @@
-//! CLI adapter: parse terminal arguments into Core operations and render replies.
+//! CLI adapter: parse terminal arguments into typed requests and render replies.
 
 use std::{
     io::{self, Write},
@@ -7,7 +7,9 @@ use std::{
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use thiserror::Error;
-use zg_engine::{ManagedRgArgumentError, Operation, Outcome, Reply, parse_managed_rg_args};
+use zg_engine::{
+    LexicalSearchReply, LexicalSearchRequest, ManagedRgArgumentError, parse_managed_rg_args,
+};
 
 #[derive(Debug, Parser)]
 #[command(name = "zg", version, about = "Agent-friendly workspace search")]
@@ -123,7 +125,7 @@ pub enum ClientMode {
 pub enum CliPlan {
     Execute {
         mode: ClientMode,
-        operation: Box<Operation>,
+        request: Box<LexicalSearchRequest>,
     },
     Server(ServerPlan),
 }
@@ -150,7 +152,7 @@ pub enum CliError {
 }
 
 impl Cli {
-    /// Converts terminal arguments into one typed Core operation.
+    /// Converts terminal arguments into one typed engine request.
     ///
     /// # Errors
     ///
@@ -158,13 +160,14 @@ impl Cli {
     /// argument is not supported by the current POC.
     pub fn into_plan(self, root: PathBuf) -> Result<CliPlan, CliError> {
         match self.command {
-            CommandLine::Query(args) if args.rg => Ok(CliPlan::Execute {
-                mode: args.mode,
-                operation: Box::new(Operation::lexical(
-                    root,
-                    parse_managed_rg_args(&args.rg_args)?,
-                )),
-            }),
+            CommandLine::Query(args) if args.rg => {
+                let mut request = parse_managed_rg_args(&args.rg_args)?;
+                request.root = Some(root);
+                Ok(CliPlan::Execute {
+                    mode: args.mode,
+                    request: Box::new(request),
+                })
+            }
             CommandLine::Query(_) => Err(CliError::UnsupportedSlice),
             CommandLine::Server(args) => {
                 let plan = if args.stdio {
@@ -190,79 +193,34 @@ impl Cli {
     }
 }
 
-/// Renders a canonical Core outcome for the terminal.
+/// Renders a lexical-search reply for the terminal.
 ///
 /// # Errors
 ///
 /// Returns the writer's I/O error when output cannot be written.
-pub fn write_outcome(mut writer: impl Write, outcome: &Outcome) -> io::Result<()> {
-    match outcome {
-        Outcome::Completed(reply) => match reply.as_ref() {
-            Reply::Query(reply) => {
-                if reply.items.is_empty() {
-                    writeln!(writer, "No matches.")?;
-                } else {
-                    for item in &reply.items {
-                        writeln!(writer, "{}", item.relative_path.display())?;
-                        writeln!(writer, "  {}", item.content.trim_end())?;
-                    }
-                }
-                Ok(())
-            }
-            Reply::LexicalSearch(reply) => {
-                if reply.matches.is_empty() {
-                    writeln!(writer, "No matches.")?;
-                    return Ok(());
-                }
-
-                let mut previous_path: Option<&std::path::Path> = None;
-                for item in &reply.matches {
-                    if previous_path != Some(item.relative_path.as_path()) {
-                        if previous_path.is_some() {
-                            writeln!(writer)?;
-                        }
-                        writeln!(writer, "{}", item.relative_path.display())?;
-                        previous_path = Some(item.relative_path.as_path());
-                    }
-                    writeln!(
-                        writer,
-                        "  {}: {}",
-                        item.range.start_line,
-                        item.content.trim_end()
-                    )?;
-                }
-                Ok(())
-            }
-            Reply::Index(reply) => writeln!(
-                writer,
-                "Indexed generation {}: {} files, {} entities",
-                reply.generation, reply.files_scanned, reply.entities_created
-            ),
-            Reply::Inspect(reply) => writeln!(
-                writer,
-                "{}: {}",
-                reply.root.display(),
-                if reply.indexed {
-                    "indexed"
-                } else {
-                    "unindexed"
-                }
-            ),
-            Reply::ChangeIndex(reply) => {
-                writeln!(writer, "{}: {:?}", reply.index_path.display(), reply.policy)
-            }
-            Reply::Job(reply) => {
-                for job in &reply.jobs {
-                    writeln!(writer, "{}: {:?}", job.id, job.state)?;
-                }
-                Ok(())
-            }
-        },
-        Outcome::Accepted(receipt) => writeln!(writer, "Job accepted: {}", receipt.id),
-        Outcome::InputRequired(challenge) => {
-            writeln!(writer, "Authorization required: {}", challenge.reason)
-        }
+pub fn write_lexical_reply(mut writer: impl Write, reply: &LexicalSearchReply) -> io::Result<()> {
+    if reply.matches.is_empty() {
+        writeln!(writer, "No matches.")?;
+        return Ok(());
     }
+
+    let mut previous_path: Option<&std::path::Path> = None;
+    for item in &reply.matches {
+        if previous_path != Some(item.relative_path.as_path()) {
+            if previous_path.is_some() {
+                writeln!(writer)?;
+            }
+            writeln!(writer, "{}", item.relative_path.display())?;
+            previous_path = Some(item.relative_path.as_path());
+        }
+        writeln!(
+            writer,
+            "  {}: {}",
+            item.range.start_line,
+            item.content.trim_end()
+        )?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -272,10 +230,9 @@ mod tests {
     use clap::Parser;
 
     use super::{Cli, CliPlan, McpToolset, ServerPlan};
-    use zg_engine::Command;
 
     #[test]
-    fn parses_managed_rg_into_a_typed_operation() {
+    fn parses_managed_rg_into_a_typed_request() {
         let cli = Cli::try_parse_from([
             "zg", "query", "--mode", "server", "--rg", "-n", "-F", "needle", "src",
         ])
@@ -283,12 +240,10 @@ mod tests {
         let plan = cli
             .into_plan(PathBuf::from("/workspace"))
             .expect("plan should be valid");
-        let CliPlan::Execute { operation, .. } = plan else {
+        let CliPlan::Execute { request, .. } = plan else {
             panic!("query must create an execute plan");
         };
-        let Command::LexicalSearch(request) = operation.command else {
-            panic!("query --rg must create a lexical operation");
-        };
+        assert_eq!(request.root, Some(PathBuf::from("/workspace")));
         assert_eq!(request.patterns, ["needle"]);
         assert_eq!(request.paths, [PathBuf::from("src")]);
         assert!(request.options.fixed_strings);

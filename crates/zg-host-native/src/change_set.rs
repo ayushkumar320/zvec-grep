@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use zg_engine::{WorkspaceChange, WorkspaceChangeBatch};
+use crate::api::{WorkspaceChange, WorkspaceChangeBatch};
 
 #[derive(Debug)]
 pub(crate) struct ChangeSet {
@@ -204,7 +204,7 @@ fn parent_scope(path: &Path) -> PathBuf {
 mod tests {
     use std::path::PathBuf;
 
-    use zg_engine::WorkspaceChange;
+    use crate::api::WorkspaceChange;
 
     use super::ChangeSet;
 

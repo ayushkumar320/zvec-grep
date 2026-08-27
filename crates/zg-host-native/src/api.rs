@@ -1,8 +1,42 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{fmt, path::PathBuf, sync::Arc, time::Instant};
 
 use async_trait::async_trait;
+use tokio_util::sync::CancellationToken;
 
-use crate::{CoreError, FileKind, RootSpec, RunControl, SkippedFile, WorkspaceChangeBatch};
+use zg_engine::{EngineError, FileKind, RootSpec, SkippedFile};
+
+/// Cancellation and deadline state for scanner and watcher operations.
+#[derive(Clone)]
+pub struct TaskControl {
+    pub cancellation: CancellationToken,
+    pub deadline: Option<Instant>,
+}
+
+impl TaskControl {
+    #[must_use]
+    pub fn new(cancellation: CancellationToken) -> Self {
+        Self {
+            cancellation,
+            deadline: None,
+        }
+    }
+}
+
+impl Default for TaskControl {
+    fn default() -> Self {
+        Self::new(CancellationToken::new())
+    }
+}
+
+impl fmt::Debug for TaskControl {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TaskControl")
+            .field("cancelled", &self.cancellation.is_cancelled())
+            .field("deadline", &self.deadline)
+            .finish()
+    }
+}
 
 pub trait ClockPort: Send + Sync {
     fn now_epoch_ms(&self) -> u64;
@@ -81,19 +115,34 @@ pub trait WorkspaceScannerPort: Send + Sync {
     async fn discover(
         &self,
         request: &ScanRequest,
-        control: &RunControl,
-    ) -> Result<ScanSnapshot, CoreError>;
+        control: &TaskControl,
+    ) -> Result<ScanSnapshot, EngineError>;
 
     async fn read_batch(
         &self,
         request: &ReadBatchRequest,
-        control: &RunControl,
-    ) -> Result<Vec<SourceFile>, CoreError>;
+        control: &TaskControl,
+    ) -> Result<Vec<SourceFile>, EngineError>;
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WatchRequest {
     pub root: RootSpec,
+}
+
+/// Normalized changes relative to the watched root.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WorkspaceChange {
+    Upsert(PathBuf),
+    Delete(PathBuf),
+    RescanDirectory(PathBuf),
+    DeletePrefix(PathBuf),
+    Rescan,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct WorkspaceChangeBatch {
+    pub changes: Vec<WorkspaceChange>,
 }
 
 /// Creates one resident watch session for a workspace root.
@@ -102,8 +151,8 @@ pub trait WorkspaceWatcherFactoryPort: Send + Sync {
     async fn watch(
         &self,
         request: &WatchRequest,
-        control: &RunControl,
-    ) -> Result<Arc<dyn WorkspaceWatchSessionPort>, CoreError>;
+        control: &TaskControl,
+    ) -> Result<Arc<dyn WorkspaceWatchSessionPort>, EngineError>;
 }
 
 /// A daemon-owned watch session.
@@ -113,7 +162,10 @@ pub trait WorkspaceWatcherFactoryPort: Send + Sync {
 /// Native queue overflow and watcher recovery are normalized into one Rescan.
 #[async_trait]
 pub trait WorkspaceWatchSessionPort: Send + Sync {
-    async fn next_changes(&self, control: &RunControl) -> Result<WorkspaceChangeBatch, CoreError>;
+    async fn next_changes(
+        &self,
+        control: &TaskControl,
+    ) -> Result<WorkspaceChangeBatch, EngineError>;
 
-    async fn close(&self) -> Result<(), CoreError>;
+    async fn close(&self) -> Result<(), EngineError>;
 }

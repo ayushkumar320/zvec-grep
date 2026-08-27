@@ -1,49 +1,25 @@
-# Adding a production adapter
+# Adding a native implementation
 
-Create the crate only when it contains a real native proof. Do not add an empty
-pass-through crate.
+Create a separate crate only when the native component is independently useful
+or testable. Keep its library types and runtime policy inside that crate.
 
-Example manifest shape:
+When the component becomes part of `ZvecGrep`:
 
-```toml
-[package]
-name = "zg-extract-native"
-version.workspace = true
-edition.workspace = true
-rust-version.workspace = true
-license.workspace = true
-repository.workspace = true
-publish.workspace = true
+1. define or reuse the typed engine request and reply;
+2. put orchestration behind a private `zg-engine` service;
+3. call the service directly from the corresponding `ZvecGrep` method;
+4. map native failures to `EngineError`;
+5. add compatibility tests against the TypeScript behavior.
 
-[dependencies]
-async-trait.workspace = true
-zg-engine = { path = "../zg-engine" }
-
-[dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt"] }
-zg-testkit = { path = "../zg-testkit" }
-
-[lints]
-workspace = true
-```
-
-The first adapter test calls the shared contract rather than duplicating it:
-
-```rust,no_run
-# async fn example(adapter: &dyn zg_engine::ExtractionPort) {
-zg_testkit::contracts::verify_extraction_contract(adapter)
-    .await
-    .expect("native extraction must satisfy the Core contract");
-# }
-```
+Do not introduce a public adapter registry, port bundle, command dispatcher or
+an `*-internal` crate merely to compose the implementation. If Rust crate
+dependencies would form a cycle, move the concrete implementation behind the
+engine boundary or isolate genuinely neutral value types.
 
 Checklist:
 
-- Native/library types remain inside the adapter crate.
-- Errors are mapped to stable `CoreError` codes.
-- Cancellation is observed before and during expensive work.
-- Output order is deterministic.
-- No private unbounded Tokio or Rayon pool is created.
-- Contract tests pass with the production adapter.
-- Native revision, ABI and artifact fingerprints are recorded where applicable.
-- The composition root is changed separately after the adapter is proven.
+- cancellation is observable during expensive work;
+- processes, queues and workers have explicit limits;
+- output order is deterministic;
+- partial artifacts are cleaned up;
+- native revision and artifact fingerprints are recorded where applicable.

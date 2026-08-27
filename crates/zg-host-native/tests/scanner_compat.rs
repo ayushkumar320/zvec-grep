@@ -8,11 +8,11 @@ use std::{
 
 use tempfile::tempdir;
 use tokio_util::sync::CancellationToken;
-use zg_engine::{
-    DiscoveryOptions, KnownSourceFile, ReadBatchRequest, RootSpec, RunControl, ScanRequest,
-    SkippedFileReason, WorkspaceScannerPort,
+use zg_engine::{DiscoveryOptions, RootSpec, SkippedFileReason};
+use zg_host_native::{
+    DiscoveredFile, KnownSourceFile, NativeScanner, ReadBatchRequest, ScanRequest, ScanSnapshot,
+    TaskControl, WorkspaceScannerPort,
 };
-use zg_host_native::NativeScanner;
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
@@ -237,7 +237,7 @@ async fn discover(
     root: &Path,
     discovery: DiscoveryOptions,
     known_files: Vec<KnownSourceFile>,
-) -> TestResult<zg_engine::ScanSnapshot> {
+) -> TestResult<ScanSnapshot> {
     Ok(scanner
         .discover(
             &ScanRequest {
@@ -261,15 +261,15 @@ fn root_spec(root: &Path) -> RootSpec {
     }
 }
 
-fn relative_paths(files: &[zg_engine::DiscoveredFile]) -> BTreeSet<PathBuf> {
+fn relative_paths(files: &[DiscoveredFile]) -> BTreeSet<PathBuf> {
     files
         .iter()
         .map(|file| file.relative_path.clone())
         .collect()
 }
 
-fn control() -> RunControl {
-    RunControl::local(CancellationToken::new())
+fn control() -> TaskControl {
+    TaskControl::new(CancellationToken::new())
 }
 
 fn mkdir(root: &Path, path: &str) -> std::io::Result<()> {

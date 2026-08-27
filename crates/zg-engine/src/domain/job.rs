@@ -1,7 +1,13 @@
+//! Background job requests and replies.
+
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct JobRequest {
+    /// Workspace whose jobs are being queried. `None` uses the working directory.
+    pub root: Option<PathBuf>,
     pub action: JobAction,
     pub id: Option<String>,
 }

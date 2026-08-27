@@ -1,3 +1,5 @@
+//! Workspace inspection requests and replies.
+
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -6,6 +8,8 @@ use super::{IndexPolicy, RootSpec};
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct InspectRequest {
+    /// Workspace to inspect. `None` uses the process working directory.
+    pub root: Option<PathBuf>,
     pub include_status: bool,
 }
 

@@ -1,15 +1,12 @@
-use std::{error::Error, io, process::ExitCode, sync::Arc, time::Duration};
+use std::{error::Error, io, process::ExitCode, sync::Arc};
 
 use clap::Parser;
 use tokio::runtime::Builder;
-use tokio_util::sync::CancellationToken;
 use tracing::debug;
 use tracing_subscriber::EnvFilter;
 use zg_cli::{Cli, CliPlan, ClientMode, McpToolset, ServerPlan, ServerStartArgs};
 use zg_daemon::{DaemonStatus, ListenAddress, McpToolset as DaemonMcpToolset, ServerConfig};
-use zg_engine::{Core, CoreConfig, CorePorts, Operation, ResourceBudget, RunControl};
-use zg_host_native::NativeWatcherFactory;
-use zg_lexical_rg::RipgrepAdapter;
+use zg_engine::{LexicalSearchRequest, ZvecGrep};
 
 fn main() -> ExitCode {
     match run() {
@@ -27,56 +24,33 @@ fn run() -> Result<(), Box<dyn Error>> {
     let plan = cli.into_plan(std::env::current_dir()?)?;
     init_tracing();
 
-    let resources = ResourceBudget::default();
-    let worker_threads = resources.max_cpu_tasks;
-    let runtime = Builder::new_multi_thread()
-        .worker_threads(worker_threads)
-        .max_blocking_threads(resources.max_blocking_tasks)
-        .enable_all()
-        .build()?;
+    let runtime = Builder::new_multi_thread().enable_all().build()?;
 
-    runtime.block_on(async move { execute_plan(plan, resources).await })
+    runtime.block_on(async move { execute_plan(plan).await })
 }
 
-async fn execute_plan(plan: CliPlan, resources: ResourceBudget) -> Result<(), Box<dyn Error>> {
+async fn execute_plan(plan: CliPlan) -> Result<(), Box<dyn Error>> {
     match plan {
-        CliPlan::Execute { mode, operation } => {
-            execute_operation(mode, *operation, resources).await
-        }
-        CliPlan::Server(plan) => execute_server_plan(plan, resources).await,
+        CliPlan::Execute { mode, request } => execute_request(mode, *request).await,
+        CliPlan::Server(plan) => execute_server_plan(plan).await,
     }
 }
 
-async fn execute_operation(
+async fn execute_request(
     mode: ClientMode,
-    operation: Operation,
-    resources: ResourceBudget,
+    request: LexicalSearchRequest,
 ) -> Result<(), Box<dyn Error>> {
     if mode == ClientMode::Server {
         debug!("managed --rg remains local in server mode");
     }
-    let core = open_core(resources).await?;
-
-    let cancellation = CancellationToken::new();
-    let signal_cancellation = cancellation.clone();
-    tokio::spawn(async move {
-        if tokio::signal::ctrl_c().await.is_ok() {
-            signal_cancellation.cancel();
-        }
-    });
-
-    let result = core.run(operation, RunControl::local(cancellation)).await;
-    let shutdown = core.shutdown(Duration::from_secs(5)).await;
-    let outcome = result?;
-    shutdown?;
-    zg_cli::write_outcome(io::stdout().lock(), &outcome)?;
+    let engine = ZvecGrep::new();
+    let reply = engine.lexical_search(request).await?;
+    engine.close();
+    zg_cli::write_lexical_reply(io::stdout().lock(), &reply)?;
     Ok(())
 }
 
-async fn execute_server_plan(
-    plan: ServerPlan,
-    resources: ResourceBudget,
-) -> Result<(), Box<dyn Error>> {
+async fn execute_server_plan(plan: ServerPlan) -> Result<(), Box<dyn Error>> {
     match plan {
         ServerPlan::Stdio(args) => {
             let config = server_config(args)?;
@@ -101,16 +75,7 @@ async fn execute_server_plan(
         }
         ServerPlan::Run(args) => {
             let config = server_config(args)?;
-            let core = open_core(resources).await?;
-            let server_result = zg_daemon::run_server(
-                config,
-                Arc::new(core.clone()),
-                Arc::new(NativeWatcherFactory::default()),
-            )
-            .await;
-            let shutdown_result = core.shutdown(Duration::from_secs(5)).await;
-            server_result?;
-            shutdown_result?;
+            zg_daemon::run_server(config, Arc::new(ZvecGrep::new())).await?;
         }
     }
     Ok(())
@@ -125,13 +90,6 @@ fn server_config(args: ServerStartArgs) -> Result<ServerConfig, Box<dyn Error>> 
         McpToolset::Full => DaemonMcpToolset::Full,
     };
     Ok(config)
-}
-
-async fn open_core(resources: ResourceBudget) -> Result<Core, Box<dyn Error>> {
-    let adapter =
-        Arc::new(RipgrepAdapter::default().with_max_processes(resources.max_lexical_processes));
-    let ports = CorePorts::new().with_lexical(adapter);
-    Ok(Core::open(CoreConfig::new(ports).with_resources(resources)).await?)
 }
 
 fn write_server_status(status: &DaemonStatus) {

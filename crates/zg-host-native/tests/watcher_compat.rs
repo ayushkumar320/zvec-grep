@@ -2,11 +2,11 @@ use std::{error::Error, fs, path::PathBuf, time::Duration};
 
 use tempfile::tempdir_in;
 use tokio_util::sync::CancellationToken;
-use zg_engine::{
-    DiscoveryOptions, RootSpec, RunControl, WatchRequest, WorkspaceChange,
+use zg_engine::{DiscoveryOptions, RootSpec};
+use zg_host_native::{
+    NativeWatcherConfig, NativeWatcherFactory, TaskControl, WatchRequest, WorkspaceChange,
     WorkspaceWatcherFactoryPort,
 };
-use zg_host_native::{NativeWatcherConfig, NativeWatcherFactory};
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
@@ -29,7 +29,7 @@ async fn watcher_debounces_changes_and_filters_default_ignored_paths() -> TestRe
         poll_interval: Some(Duration::from_millis(30)),
         ..NativeWatcherConfig::default()
     });
-    let control = RunControl::local(CancellationToken::new());
+    let control = TaskControl::new(CancellationToken::new());
     let session = factory
         .watch(
             &WatchRequest {
@@ -84,7 +84,7 @@ async fn watcher_close_does_not_wait_for_a_full_batch_queue() -> TestResult {
         batch_capacity: 1,
         ..NativeWatcherConfig::default()
     });
-    let control = RunControl::local(CancellationToken::new());
+    let control = TaskControl::new(CancellationToken::new());
     let session = factory
         .watch(
             &WatchRequest {

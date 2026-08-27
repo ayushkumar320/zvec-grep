@@ -19,12 +19,13 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
-use zg_engine::{
-    CoreError, RunControl, WatchRequest, WorkspaceChange, WorkspaceChangeBatch,
-    WorkspaceWatchSessionPort, WorkspaceWatcherFactoryPort,
-};
+use zg_engine::EngineError;
 
 use crate::{
+    api::{
+        TaskControl, WatchRequest, WorkspaceChange, WorkspaceChangeBatch,
+        WorkspaceWatchSessionPort, WorkspaceWatcherFactoryPort,
+    },
     change_set::ChangeSet,
     pattern::normalize_relative_path,
     policy::{FileTypeResolver, RootPolicy},
@@ -96,26 +97,26 @@ impl WorkspaceWatcherFactoryPort for NativeWatcherFactory {
     async fn watch(
         &self,
         request: &WatchRequest,
-        control: &RunControl,
-    ) -> Result<Arc<dyn WorkspaceWatchSessionPort>, CoreError> {
+        control: &TaskControl,
+    ) -> Result<Arc<dyn WorkspaceWatchSessionPort>, EngineError> {
         check_control(control)?;
         let root = request.root.clone();
         let resolver = self.resolver.clone();
         let policy_task = tokio::task::spawn_blocking(move || RootPolicy::new(root, &resolver));
         let policy = tokio::select! {
-            () = control.cancellation.cancelled() => return Err(CoreError::Cancelled),
-            () = deadline_wait(control.deadline) => return Err(CoreError::DeadlineExceeded),
+            () = control.cancellation.cancelled() => return Err(EngineError::Cancelled),
+            () = deadline_wait(control.deadline) => return Err(EngineError::DeadlineExceeded),
             result = policy_task => result
-                .map_err(|error| CoreError::Internal { message: format!("watch policy worker failed: {error}") })??,
+                .map_err(|error| EngineError::Internal { message: format!("watch policy worker failed: {error}") })??,
         };
         let metadata = std::fs::metadata(policy.root_path()).map_err(|error| {
-            CoreError::invalid_input(format!(
+            EngineError::invalid_input(format!(
                 "watch root {} could not be inspected: {error}",
                 policy.root_path().display()
             ))
         })?;
         if !metadata.is_file() && !metadata.is_dir() {
-            return Err(CoreError::invalid_input(format!(
+            return Err(EngineError::invalid_input(format!(
                 "watch root {} must be a file or directory",
                 policy.root_path().display()
             )));
@@ -182,25 +183,28 @@ impl Drop for WatchSessionInner {
 
 #[async_trait]
 impl WorkspaceWatchSessionPort for NativeWatchSession {
-    async fn next_changes(&self, control: &RunControl) -> Result<WorkspaceChangeBatch, CoreError> {
+    async fn next_changes(
+        &self,
+        control: &TaskControl,
+    ) -> Result<WorkspaceChangeBatch, EngineError> {
         check_control(control)?;
         if self.inner.close.is_cancelled() {
-            return Err(CoreError::ShuttingDown);
+            return Err(EngineError::Closed);
         }
         let mut receiver = self.inner.receiver.lock().await;
         tokio::select! {
-            () = self.inner.close.cancelled() => Err(CoreError::ShuttingDown),
-            () = control.cancellation.cancelled() => Err(CoreError::Cancelled),
-            () = deadline_wait(control.deadline) => Err(CoreError::DeadlineExceeded),
-            batch = receiver.recv() => batch.ok_or(CoreError::ShuttingDown),
+            () = self.inner.close.cancelled() => Err(EngineError::Closed),
+            () = control.cancellation.cancelled() => Err(EngineError::Cancelled),
+            () = deadline_wait(control.deadline) => Err(EngineError::DeadlineExceeded),
+            batch = receiver.recv() => batch.ok_or(EngineError::Closed),
         }
     }
 
-    async fn close(&self) -> Result<(), CoreError> {
+    async fn close(&self) -> Result<(), EngineError> {
         self.inner.close.cancel();
         let task = lock_task(&self.inner.task).take();
         if let Some(task) = task {
-            task.await.map_err(|error| CoreError::Internal {
+            task.await.map_err(|error| EngineError::Internal {
                 message: format!("native watcher task failed: {error}"),
             })?;
         }
@@ -351,7 +355,7 @@ fn create_watcher(
     overflowed: &Arc<AtomicBool>,
     overflow_notify: &Arc<Notify>,
     poll_interval: Option<Duration>,
-) -> Result<NativeWatcher, CoreError> {
+) -> Result<NativeWatcher, EngineError> {
     let sender = raw_sender.clone();
     let overflowed = Arc::clone(overflowed);
     let overflow_notify = Arc::clone(overflow_notify);
@@ -367,7 +371,7 @@ fn create_watcher(
         RecursiveMode::NonRecursive
     };
     let watch_error = |error| {
-        CoreError::backend(
+        EngineError::backend(
             "native-watcher",
             format!("could not watch {}: {error}", root.display()),
         )
@@ -380,12 +384,12 @@ fn create_watcher(
                 .with_poll_interval(interval)
                 .with_compare_contents(true),
         )
-        .map_err(|error| CoreError::backend("native-watcher", error.to_string()))?;
+        .map_err(|error| EngineError::backend("native-watcher", error.to_string()))?;
         watcher.watch(root, recursive_mode).map_err(watch_error)?;
         Ok(NativeWatcher::Poll { _watcher: watcher })
     } else {
         let mut watcher = notify::recommended_watcher(handler)
-            .map_err(|error| CoreError::backend("native-watcher", error.to_string()))?;
+            .map_err(|error| EngineError::backend("native-watcher", error.to_string()))?;
         watcher.watch(root, recursive_mode).map_err(watch_error)?;
         Ok(NativeWatcher::Recommended { _watcher: watcher })
     }
@@ -550,15 +554,15 @@ fn normalize_config(mut config: NativeWatcherConfig) -> NativeWatcherConfig {
     config
 }
 
-fn check_control(control: &RunControl) -> Result<(), CoreError> {
+fn check_control(control: &TaskControl) -> Result<(), EngineError> {
     if control.cancellation.is_cancelled() {
-        return Err(CoreError::Cancelled);
+        return Err(EngineError::Cancelled);
     }
     if control
         .deadline
         .is_some_and(|deadline| std::time::Instant::now() >= deadline)
     {
-        return Err(CoreError::DeadlineExceeded);
+        return Err(EngineError::DeadlineExceeded);
     }
     Ok(())
 }

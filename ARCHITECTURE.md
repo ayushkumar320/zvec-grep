@@ -1,212 +1,76 @@
-# Parallel-ready Rust architecture
+# Rust architecture
 
-## 1. Framework boundary
+## Public application boundary
 
-The outer Core seam is intentionally small:
+`zg-engine` has one behavioral entry point: `ZvecGrep`. Each public method
+accepts a concrete request and returns its concrete reply:
 
-```rust
-Core::open(CoreConfig) -> Core
-Core::run(Operation, RunControl) -> Outcome
-Core::shutdown(deadline)
+```rust,ignore
+ZvecGrep::new() -> ZvecGrep
+ZvecGrep::query(QueryRequest) -> Result<QueryReply, EngineError>
+ZvecGrep::lexical_search(LexicalSearchRequest) -> Result<LexicalSearchReply, EngineError>
+ZvecGrep::index(IndexRequest) -> Result<IndexReply, EngineError>
+ZvecGrep::inspect(InspectRequest) -> Result<InspectReply, EngineError>
+ZvecGrep::change_index(ChangeIndexRequest) -> Result<ChangeIndexReply, EngineError>
+ZvecGrep::job(JobRequest) -> Result<JobReply, EngineError>
+ZvecGrep::close()
 ```
 
-All Direct and daemon-backed entry points construct the same typed `Operation`
-and consume the same `Outcome`. Transports translate owned DTOs; they do not
-perform query normalization, ranking, freshness, authorization or model
-selection. The one-method `OperationExecutor` seam returns transport-stable
-`ErrorReply` values and is implemented by in-process `Core`,
-`zg-testkit::ScriptedExecutor`, and the future daemon client.
+Every request carries an optional workspace `root`; omitting it uses the process
+working directory. `ZvecGrep` owns shared engine resources rather than one
+workspace, so one long-lived instance can serve many roots. Multiple instances
+remain legal for configuration or test isolation; there is no global static
+singleton.
 
-In resident mode the daemon is the only process that owns a Core. The current
-Streamable HTTP endpoint calls that resident Core through `OperationExecutor`.
-The MCP stdio entry point is a thin, policy-free transport proxy:
+There is deliberately no `Core`, `Command`, `Operation`, `Reply`, `Outcome`,
+`CorePorts` or `OperationExecutor` in the engine. `RequestOutcome` is also
+absent: an in-process call returns the reply it requested.
+
+The implemented lexical path is:
 
 ```text
-MCP stdio <-> Streamable HTTP MCP <-> resident OperationExecutor -> Core::run
+CLI -> ZvecGrep::lexical_search -> private lexical service -> rg
+MCP -> ZvecGrep::lexical_search -> private lexical service -> rg
 ```
 
-It bootstraps or reuses the daemon under a cross-process startup claim, relays
-JSON-RPC in both directions (including progress, cancellation and server-to-client
-requests), and does not stop the daemon on stdin EOF. `zg-daemon-protocol` owns
-only the versioned wire envelopes used by future non-MCP daemon clients. Local
-IPC framing, daemon process management and MCP framing remain transport adapters.
+## Internal services
 
-The current tracer bullet is executable:
+Implementation modules live in `zg-engine` and remain private. A service may
+own concurrency, cancellation or resource cleanup required by its native
+resource, but those policies do not justify a second generic dispatcher.
 
-```text
-terminal argv
-  -> typed LexicalSearch Operation
-  -> shared Core lifecycle and resource admission
-  -> spawned official rg --json
-  -> canonical lexical reply
-  -> terminal formatter
-```
+The lexical service owns ripgrep invocation, process admission, JSON parsing,
+filtering and deterministic ordering. Dropping an in-flight future kills its
+child process.
 
-Other command envelopes are frozen enough for CLI/daemon/MCP mapping and return
-a stable `capability_unavailable` result until their Core orchestration lands.
+## Process transport
 
-## 2. Typed commands
+The daemon owns one process-level `Arc<ZvecGrep>`. `zg-transport-mcp` translates
+each tool input directly into the corresponding typed method call; it does not
+introduce a generic executor or engine command bus.
 
-`Command` and `Reply` have matching exhaustive variants:
+Other daemon serialization belongs to `zg-daemon-protocol`. Its wire DTOs are
+transport types only; the in-process engine never translates itself into a
+transport command.
 
-```text
-Query          <-> QueryReply
-LexicalSearch  <-> LexicalSearchReply
-Index          <-> IndexReply
-Inspect        <-> InspectReply
-ChangeIndex    <-> ChangeIndexReply
-Job            <-> JobReply
-```
+## Supporting crates
 
-`Outcome` remains `Completed`, `Accepted` or `InputRequired`. Arbitrary JSON and
-generic plugin registries are not accepted as shortcuts. Fields are derived
-from the current TypeScript contracts; compatibility fixtures remain the source
-of truth when a field needs refinement.
-Transport failures use the serializable `ErrorReply` derived from stable
-`CoreError` codes; transports do not invent their own error taxonomy.
+The embedding catalog and Model2Vec runtime live in the private
+`zg-engine::models` module. They are not yet composed into the high-level
+index/query path, but integration requires no public model API or crate cycle.
 
-Domain types are split by work locality under `zg-engine/src/domain/`. The
-top-level operation envelope stays owned by the Core integrator so transport
-and adapter branches do not each evolve a private protocol.
+`zg-host-native` remains an independently testable scanner and watcher crate not
+yet composed into the high-level index/query path. When integrated, its concrete
+implementation should move behind a private engine service without introducing
+a dispatcher layer.
 
-## 3. Internal ports
+## Dependency rules
 
-Core-owned coarse seams isolate native dependencies:
-
-| Port | Responsibility | Test adapter |
-| --- | --- | --- |
-| `LexicalSearchPort` | exhaustive lexical search | `RecordedLexical` |
-| `WorkspaceScannerPort` | metadata discovery and bounded source reads | `FixtureScanner` |
-| `ExtractionPort` | batch document extraction | `FixtureExtraction` |
-| `IndexStoragePort`/`IndexWritePort` | file state, recall and atomic generations | `InMemoryStorage` |
-| `EmbeddingFactoryPort`/`EmbeddingSessionPort` | model load/embed/close | deterministic embedding |
-| `ArtifactSourcePort` | verified local materialization | fixture artifact source |
-| `ClockPort` | deterministic time | manual clock |
-| `WorkspaceWatcherFactoryPort`/`WorkspaceWatchSessionPort` | daemon-owned normalized changes | manual watcher |
-
-`CorePorts` accepts scanner, extraction, storage, embedding and clock
-dependencies from the binary composition root. Model factories receive an
-`ArtifactSourcePort` in their constructor. The daemon resident workspace
-manager owns one watch session per root and turns each change batch into a
-normal Index operation. A synchronous successful daemon Index attaches the
-session; Drop/Disable and daemon shutdown close it. Adapter crates depend on
-`zg-engine`; `zg-engine` never depends on a native adapter.
-
-Each `RootSpec` is the only discovery-policy source consumed by scanner and
-watcher adapters. `ScanRequest` additionally carries opaque known source
-fingerprints so unchanged indexed files can avoid repeated binary sniffing.
-Discovery returns kind and format hints plus bounded skip diagnostics; complete
-file bytes are read only through `read_batch`. Watch changes use paths relative
-to their `RootSpec` and preserve directory scope through `RescanDirectory` and
-`DeletePrefix`.
-
-Every external I/O seam has a fake or deterministic adapter in `zg-testkit`.
-Storage, extraction, embedding, artifact and lexical also have reusable contract
-suites. A production adapter calls the same suite from its integration tests.
-
-## 4. Invariants
-
-1. Direct invokes `Core::run`; MCP invokes the daemon through a client that
-   implements the same `OperationExecutor` interface.
-2. CLI `query --rg` stays local even when mode is Server, matching the current
-   implementation, while still using the shared lexical Core path.
-3. A lexical operation does not read a manifest, open zvec or load a model.
-4. Adapters do not own normalization, ranking, freshness or authorization
-   policy.
-5. Result order is deterministic and independent of async completion order.
-6. Event delivery is non-blocking; admitted operations attempt one started and
-   one terminal event.
-7. `shutdown` rejects new work and drains admitted operations up to its deadline.
-8. CPU workers, blocking workers, concurrent operations, lexical processes and
-   background jobs have explicit budgets. Adapters cannot create private
-   unbounded runtimes or pools.
-9. A storage writer publishes only through `finalize`; `ReplaceFile` removes all
-   stale entities for that file and readers never observe pending mutations.
-10. Native library, Clap, daemon framing and MCP types do not cross the Core seam.
-11. Remote artifact or embedding work must complete authorization before any
-   outbound request.
-12. No Rust dynamic plugin ABI and no Node/Rust SDK are part of the product.
-13. `RunControl` never crosses a process seam. The daemon wire carries remaining
-    timeout, principal and trace; cancellation and events use separate frames.
-14. Native file rename events are normalized to Delete/Upsert, directory
-    changes retain RescanDirectory/DeletePrefix scope, and overflow or watcher
-    recovery becomes Rescan before triggering Core operations.
-15. Source fingerprints are adapter-owned opaque values. Core and storage may
-    compare or persist them but must not parse their representation.
-
-## 5. Crate policy and dependency direction
-
-The framework contains only crates with an executable responsibility:
-
-| Crate | Stable responsibility |
-| --- | --- |
-| `zg-engine` | Core, typed domain, lifecycle, errors, events, budgets and ports |
-| `zg-daemon-protocol` | versioned daemon request/response/event envelopes |
-| `zg-lexical-rg` | official ripgrep process and JSON adapter |
-| `zg-host-native` | metadata-first scanning and normalized filesystem watch sessions |
-| `zg-cli` | argument-to-Operation translation and terminal formatting |
-| `zg-testkit` | fakes, fixture readers and reusable contract suites |
-| `zg-transport-mcp` | agent/full MCP schemas, Core operation translation and compact output |
-| `zg-daemon` | loopback HTTP host, instance lock and background process lifecycle |
-| `zg` | single binary and production composition root |
-
-```text
-zg-testkit ----------> zg-engine <---------- production adapters
-                          ^  ^                         |
-                          |  +---- zg-daemon-protocol  |
-                          +------- zg-transport-mcp <-- zg-daemon
-                          ^               ^               ^
-                          |               |               |
-                       zg-cli <-----------+----- zg ------+
-                                             composition root
-```
-
-Future owners add `zg-extract-native`, `zg-storage-zvec`, or `zg-model-*` only
-with their first real proof. The workspace member glob avoids central
-member-list edits. A crate isolates a native dependency or independently
-testable policy seam; it does not mirror a TypeScript class.
-
-## 6. Parallel change protocol
-
-Ownership and merge rules live in `OWNERS.md`; adapter setup is documented in
-`crates/ADAPTER_GUIDE.md`.
-
-- Port or command-envelope changes land as dedicated Core contract changes.
-- Adapter work normally modifies only its crate and contract invocation.
-- Daemon/MCP owners implement against `OperationExecutor` and the versioned
-  protocol; they do not wait for storage or models.
-- Production composition changes land separately after an adapter passes its
-  shared contract.
-- Compatibility changes require an oracle fixture and an allowed-difference ID.
-- CI runs formatting, strict Clippy, all contracts and portable tests.
-
-## 7. Compatibility data
-
-`compat/` contains machine-readable TypeScript/Rust and Direct/Server contracts,
-not Rust test implementations. The schema is versioned. Fixtures exclude
-developer paths, secrets, random IDs and timings; the differential runner owns
-normalization.
-
-The first fixture records managed-rg no-match behavior. `mcp/`, `index/` and
-`models/` are added with their first captured fixtures rather than as empty
-directories.
-
-## 8. Remaining product work
-
-The framework is parallel-ready, but product parity is not complete. Independent
-workstreams can now begin:
-
-1. Capture TypeScript oracle cases and implement the differential runner.
-2. Complete managed-rg flags, path security, structure enrichment and formatter
-   parity in the lexical/CLI localities.
-3. Integrate the proven native scanner into Core indexing, and notify the
-   resident workspace manager when a future accepted Index job completes. The
-   synchronous completed-Index path and native watcher composition are wired.
-4. Add extraction, zvec storage and model adapter crates with their first native
-   proof and shared contract invocation.
-5. Add the non-MCP resident daemon client/server against the scripted executor;
-   the MCP stdio thin proxy is implemented over the public HTTP transport.
-6. Add model authorization, artifact verification and jobs inside the shared
-   Core.
-7. Add platform binaries and npm canary packaging after the binary contract is
-   stable.
+- Application code depends on `zg-engine`, never on private implementation
+  modules.
+- Transport DTOs do not enter the engine API.
+- Native implementation types stay in the crate that owns the dependency.
+- Add an abstraction only when at least two real implementations require it.
+- Concurrency limits live next to the resource they constrain.
+- Output ordering and error codes remain deterministic across Direct and Server
+  modes.

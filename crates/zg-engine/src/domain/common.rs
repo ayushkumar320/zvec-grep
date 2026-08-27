@@ -1,3 +1,5 @@
+//! Shared public value types used by the high-level requests and replies.
+
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -144,6 +146,21 @@ pub enum Device {
     Metal,
     Vulkan,
     Cuda,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EmbeddingMetric {
+    Cosine,
+    DotProduct,
+    Euclidean,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EmbeddingInputKind {
+    Text,
+    Image,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

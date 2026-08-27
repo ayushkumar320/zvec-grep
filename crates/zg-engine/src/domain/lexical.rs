@@ -1,3 +1,5 @@
+//! Lexical search requests and replies.
+
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -7,6 +9,8 @@ use super::TextRange;
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct LexicalSearchRequest {
+    /// Workspace root. `None` uses the process working directory.
+    pub root: Option<PathBuf>,
     pub patterns: Vec<String>,
     pub pattern_files: Vec<PathBuf>,
     pub paths: Vec<PathBuf>,

@@ -1,3 +1,5 @@
+//! Index lifecycle requests and replies.
+
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -7,6 +9,8 @@ use super::{DiscoveryOptions, EmbeddingModelSpec, RootSpec, TimingEntry};
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct IndexRequest {
+    /// Workspace whose index is being updated. `None` uses the working directory.
+    pub root: Option<PathBuf>,
     pub roots: Vec<RootSpec>,
     pub rebuild: bool,
     pub reset_paths: bool,
@@ -35,11 +39,6 @@ pub enum WorkspaceChange {
     RescanDirectory(PathBuf),
     DeletePrefix(PathBuf),
     Rescan,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-pub struct WorkspaceChangeBatch {
-    pub changes: Vec<WorkspaceChange>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -84,6 +83,8 @@ pub enum ChangeIndexAction {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ChangeIndexRequest {
+    /// Workspace whose index is being changed. `None` uses the working directory.
+    pub root: Option<PathBuf>,
     pub action: ChangeIndexAction,
     pub force: bool,
 }

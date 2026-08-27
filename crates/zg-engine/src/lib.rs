@@ -1,23 +1,27 @@
-//! Shared zvec-grep engine.
+//! High-level Rust API for zvec-grep.
 //!
-//! CLI, daemon and MCP are adapters around this crate. Search policy and native
-//! dependency selection must not leak into those adapters.
+//! Create one [`ZvecGrep`] for a process and call its typed methods. Command
+//! dispatch, transport envelopes and adapter composition are not part of this
+//! public API.
 
-mod config;
-mod control;
 mod domain;
 mod error;
-mod executor;
-mod ports;
+mod lexical;
+#[allow(dead_code)]
+mod models;
 mod service;
 
-pub use config::{CoreConfig, CorePorts, ResourceBudget};
-pub use control::{
-    CoreEvent, CoreEventKind, EmitError, EventSink, NoopEventSink, Principal, RunControl,
-    TraceContext,
+pub use domain::{
+    ChangeIndexAction, ChangeIndexReply, ChangeIndexRequest, Content, ContentRange, Device,
+    DiscoveryOptions, EmbeddingInputKind, EmbeddingMetric, EmbeddingModelSpec, EmptyReason,
+    EntityMetadata, FileKind, Freshness, ImageContent, ImageFormat, IndexPolicy, IndexReply,
+    IndexRequest, InspectReply, InspectRequest, InspectSource, JobAction, JobInfo, JobReceipt,
+    JobReply, JobRequest, JobState, LexicalCoverage, LexicalDiagnostics, LexicalMatch,
+    LexicalOptions, LexicalSearchReply, LexicalSearchRequest, ManagedRgArgumentError, MatchedBy,
+    QueryCoverage, QueryDiagnostics, QueryItem, QueryItemKind, QueryReply, QueryRequest,
+    QueryRoute, QueryRouteMode, QuerySource, RefreshMode, RootSpec, SkippedFile, SkippedFileReason,
+    SymbolType, TextRange, TimingEntry, WorkspaceIndexInfo, WorkspaceIndexRef,
+    WorkspaceIndexStatus, parse_managed_rg_args,
 };
-pub use domain::*;
-pub use error::{CoreError, ErrorCode, ErrorReply};
-pub use executor::OperationExecutor;
-pub use ports::*;
-pub use service::Core;
+pub use error::{EngineError, ErrorCode};
+pub use service::ZvecGrep;

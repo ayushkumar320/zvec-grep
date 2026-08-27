@@ -1,22 +1,20 @@
-//! Resident daemon lifecycle and loopback HTTP host.
+//! Daemon lifecycle and loopback HTTP host.
 //!
-//! The daemon is the sole resident Core owner. It exposes the selected agent or
+//! The daemon owns one reusable `ZvecGrep` instance. It exposes the selected agent or
 //! full MCP toolset at `/mcp`, a health probe, a local shutdown endpoint, and a
 //! concurrency-safe stdio bootstrap proxy.
 
 mod controller;
 mod http_client;
-mod resident;
 mod runtime;
 mod stdio;
 
 use std::{fmt, net::SocketAddr, path::PathBuf, str::FromStr, sync::Arc, time::Duration};
 
 pub use controller::{DaemonInstanceRecord, DaemonStatus, start_server, stop_server};
-pub use resident::{ResidentWorkspaceError, ResidentWorkspaceManager};
 pub use stdio::run_stdio_bridge;
 use thiserror::Error;
-use zg_engine::{OperationExecutor, WorkspaceWatcherFactoryPort};
+use zg_engine::ZvecGrep;
 pub use zg_transport_mcp::McpToolset;
 
 pub const DEFAULT_LISTEN: &str = "127.0.0.1:7999";
@@ -122,8 +120,6 @@ pub enum DaemonError {
     Http(#[from] axum::Error),
     #[error("daemon MCP stdio bridge failed: {0}")]
     McpBridge(String),
-    #[error("resident workspace manager failed: {0}")]
-    Resident(#[from] ResidentWorkspaceError),
 }
 
 /// Resolves the daemon home without changing process-global state.
@@ -161,12 +157,8 @@ pub async fn server_status(home: &std::path::Path) -> Result<DaemonStatus, Daemo
 /// # Errors
 ///
 /// Returns lifecycle, bind, state-file, or HTTP server errors.
-pub async fn run_server(
-    config: ServerConfig,
-    executor: Arc<dyn OperationExecutor>,
-    watcher_factory: Arc<dyn WorkspaceWatcherFactoryPort>,
-) -> Result<(), DaemonError> {
-    runtime::run_server(config, executor, watcher_factory).await
+pub async fn run_server(config: ServerConfig, engine: Arc<ZvecGrep>) -> Result<(), DaemonError> {
+    runtime::run_server(config, engine).await
 }
 
 #[must_use]

@@ -1,4 +1,4 @@
-# Direct and Server use the same Core. Entries in this file are the only allowed
+# Direct and Server call the same ZvecGrep methods. Entries here are the only allowed
 # semantic differences and must be exercised by compatibility tests.
 
 [[difference]]
@@ -19,5 +19,5 @@ reason = "only a resident process can safely own a background refresh"
 id = "resident-resources"
 operation = "lifecycle"
 direct = "resources live for one command"
-server = "watchers, model sessions and read sessions may be reused"
+server = "one process-level ZvecGrep instance and its private resources are reused across roots"
 reason = "lifecycle difference; semantic replies remain equivalent"

@@ -1,241 +1,138 @@
 use std::{
-    sync::{Arc, Mutex, MutexGuard},
-    time::Duration,
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
-
-use tokio::sync::{Notify, Semaphore};
-use tracing::debug;
 
 use crate::{
-    CURRENT_PROTOCOL_VERSION, Command, CoreConfig, CoreError, CoreEvent, CoreEventKind, Operation,
-    Outcome, Reply, RunControl,
+    ChangeIndexReply, ChangeIndexRequest, EngineError, IndexReply, IndexRequest, InspectReply,
+    InspectRequest, JobReply, JobRequest, LexicalSearchReply, LexicalSearchRequest, QueryReply,
+    QueryRequest, lexical::LexicalSearchService,
 };
 
+const DEFAULT_MAX_LEXICAL_PROCESSES: usize = 2;
+
+/// Reusable zvec-grep engine serving workspace roots supplied by each request.
 #[derive(Clone, Debug)]
-pub struct Core {
-    inner: Arc<Inner>,
+pub struct ZvecGrep {
+    lexical: LexicalSearchService,
+    closed: Arc<AtomicBool>,
 }
 
-#[derive(Debug)]
-struct Inner {
-    config: CoreConfig,
-    operation_slots: Arc<Semaphore>,
-    lifecycle: Mutex<Lifecycle>,
-    drained: Notify,
-}
-
-#[derive(Debug, Default)]
-struct Lifecycle {
-    accepting: bool,
-    active: usize,
-    closed: bool,
-}
-
-impl Core {
-    /// Opens a Core with adapters supplied by the composition root.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CoreError::InvalidInput`] when a resource limit is invalid.
-    #[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
-    pub async fn open(config: CoreConfig) -> Result<Self, CoreError> {
-        config.resources.validate()?;
-        let max_operations = config.resources.max_concurrent_operations;
-        Ok(Self {
-            inner: Arc::new(Inner {
-                config,
-                operation_slots: Arc::new(Semaphore::new(max_operations)),
-                lifecycle: Mutex::new(Lifecycle {
-                    accepting: true,
-                    active: 0,
-                    closed: false,
-                }),
-                drained: Notify::new(),
-            }),
-        })
-    }
-
-    /// Executes one typed operation through the shared engine.
-    ///
-    /// # Errors
-    ///
-    /// Returns a stable [`CoreError`] for invalid protocol/input, cancellation,
-    /// deadlines, lifecycle rejection or adapter failure.
-    pub async fn run(
-        &self,
-        operation: Operation,
-        control: RunControl,
-    ) -> Result<Outcome, CoreError> {
-        if operation.protocol_version != CURRENT_PROTOCOL_VERSION {
-            return Err(CoreError::UnsupportedProtocol {
-                actual: operation.protocol_version,
-                expected: CURRENT_PROTOCOL_VERSION,
-            });
-        }
-
-        let _active = self.begin_operation()?;
-        let operation_id = operation.id;
-        let _ = control.events.try_emit(CoreEvent {
-            operation_id,
-            sequence: 1,
-            kind: CoreEventKind::Started,
-        });
-
-        let result = match self.acquire_operation_slot(&control).await {
-            Ok(permit) => {
-                let execution = self.execute(operation, &control);
-                tokio::pin!(execution);
-                let result = if let Some(deadline) = control.deadline {
-                    tokio::select! {
-                        () = control.cancellation.cancelled() => Err(CoreError::Cancelled),
-                        () = tokio::time::sleep_until(deadline.into()) => Err(CoreError::DeadlineExceeded),
-                        outcome = &mut execution => outcome,
-                    }
-                } else {
-                    tokio::select! {
-                        () = control.cancellation.cancelled() => Err(CoreError::Cancelled),
-                        outcome = &mut execution => outcome,
-                    }
-                };
-                drop(permit);
-                result
-            }
-            Err(error) => Err(error),
-        };
-
-        let terminal = match &result {
-            Ok(Outcome::Completed(reply)) => CoreEventKind::Completed {
-                result_count: reply.result_count(),
-            },
-            Ok(Outcome::Accepted(_) | Outcome::InputRequired(_)) => {
-                CoreEventKind::Completed { result_count: 0 }
-            }
-            Err(error) => CoreEventKind::Failed { code: error.code() },
-        };
-        let _ = control.events.try_emit(CoreEvent {
-            operation_id,
-            sequence: 2,
-            kind: terminal,
-        });
-        result
-    }
-
-    /// Stops accepting new work and waits for active operations to drain.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CoreError::DeadlineExceeded`] if active operations do not
-    /// finish before `deadline`.
-    pub async fn shutdown(&self, deadline: Duration) -> Result<(), CoreError> {
-        {
-            let mut lifecycle = self.lock_lifecycle();
-            if lifecycle.closed {
-                return Ok(());
-            }
-            lifecycle.accepting = false;
-        }
-
-        let wait_until_drained = async {
-            loop {
-                let notified = self.inner.drained.notified();
-                if self.lock_lifecycle().active == 0 {
-                    break;
-                }
-                notified.await;
-            }
-        };
-
-        if tokio::time::timeout(deadline, wait_until_drained)
-            .await
-            .is_err()
-        {
-            return Err(CoreError::DeadlineExceeded);
-        }
-
-        self.lock_lifecycle().closed = true;
-        debug!("core shutdown complete");
-        Ok(())
-    }
-
-    /// Returns the native capabilities registered by this composition root.
+#[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
+impl ZvecGrep {
+    /// Creates a reusable engine instance.
     #[must_use]
-    pub fn capabilities(&self) -> Vec<&'static str> {
-        self.inner.config.ports.capabilities()
-    }
-
-    async fn execute(
-        &self,
-        operation: Operation,
-        control: &RunControl,
-    ) -> Result<Outcome, CoreError> {
-        match operation.command {
-            Command::LexicalSearch(request) => self
-                .inner
-                .config
-                .ports
-                .lexical()?
-                .search(&operation.root, &request, control)
-                .await
-                .map(|reply| Outcome::Completed(Box::new(Reply::LexicalSearch(Box::new(reply))))),
-            command => Err(CoreError::CapabilityUnavailable {
-                capability: command.capability().to_owned(),
-            }),
+    pub fn new() -> Self {
+        Self {
+            lexical: LexicalSearchService::default()
+                .with_max_processes(DEFAULT_MAX_LEXICAL_PROCESSES),
+            closed: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    async fn acquire_operation_slot(
-        &self,
-        control: &RunControl,
-    ) -> Result<tokio::sync::OwnedSemaphorePermit, CoreError> {
-        let acquire = Arc::clone(&self.inner.operation_slots).acquire_owned();
-        tokio::pin!(acquire);
+    /// Runs an indexed or routed context query.
+    ///
+    /// # Errors
+    ///
+    /// Returns an engine error when indexed query support is unavailable.
+    pub async fn query(&self, request: QueryRequest) -> Result<QueryReply, EngineError> {
+        self.ensure_open()?;
+        let _root = resolve_root(request.root.as_deref())?;
+        Err(unavailable("query"))
+    }
 
-        let permit = if let Some(deadline) = control.deadline {
-            tokio::select! {
-                () = control.cancellation.cancelled() => return Err(CoreError::Cancelled),
-                () = tokio::time::sleep_until(deadline.into()) => return Err(CoreError::DeadlineExceeded),
-                permit = &mut acquire => permit,
-            }
+    /// Runs an exhaustive lexical search.
+    ///
+    /// # Errors
+    ///
+    /// Returns an engine error when the request is invalid or ripgrep fails.
+    pub async fn lexical_search(
+        &self,
+        request: LexicalSearchRequest,
+    ) -> Result<LexicalSearchReply, EngineError> {
+        self.ensure_open()?;
+        let root = resolve_root(request.root.as_deref())?;
+        self.lexical.search(&root, &request).await
+    }
+
+    /// Creates or refreshes the workspace index.
+    ///
+    /// # Errors
+    ///
+    /// Returns an engine error when indexing support is unavailable.
+    pub async fn index(&self, request: IndexRequest) -> Result<IndexReply, EngineError> {
+        self.ensure_open()?;
+        let _root = resolve_root(request.root.as_deref())?;
+        Err(unavailable("index"))
+    }
+
+    /// Inspects workspace index metadata and status.
+    ///
+    /// # Errors
+    ///
+    /// Returns an engine error when inspection support is unavailable.
+    pub async fn inspect(&self, request: InspectRequest) -> Result<InspectReply, EngineError> {
+        self.ensure_open()?;
+        let _root = resolve_root(request.root.as_deref())?;
+        Err(unavailable("inspect"))
+    }
+
+    /// Drops or disables the workspace index.
+    ///
+    /// # Errors
+    ///
+    /// Returns an engine error when index mutation support is unavailable.
+    pub async fn change_index(
+        &self,
+        request: ChangeIndexRequest,
+    ) -> Result<ChangeIndexReply, EngineError> {
+        self.ensure_open()?;
+        let _root = resolve_root(request.root.as_deref())?;
+        Err(unavailable("change_index"))
+    }
+
+    /// Lists, inspects or cancels background jobs.
+    ///
+    /// # Errors
+    ///
+    /// Returns an engine error when job support is unavailable.
+    pub async fn job(&self, request: JobRequest) -> Result<JobReply, EngineError> {
+        self.ensure_open()?;
+        let _root = resolve_root(request.root.as_deref())?;
+        Err(unavailable("job"))
+    }
+
+    /// Closes this service and rejects subsequent requests.
+    pub fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+    }
+
+    fn ensure_open(&self) -> Result<(), EngineError> {
+        if self.closed.load(Ordering::Acquire) {
+            Err(EngineError::Closed)
         } else {
-            tokio::select! {
-                () = control.cancellation.cancelled() => return Err(CoreError::Cancelled),
-                permit = &mut acquire => permit,
-            }
-        };
-
-        permit.map_err(|_| CoreError::ShuttingDown)
-    }
-
-    fn begin_operation(&self) -> Result<ActiveOperation<'_>, CoreError> {
-        let mut lifecycle = self.lock_lifecycle();
-        if !lifecycle.accepting {
-            return Err(CoreError::ShuttingDown);
-        }
-        lifecycle.active += 1;
-        drop(lifecycle);
-        Ok(ActiveOperation { core: self })
-    }
-
-    fn lock_lifecycle(&self) -> MutexGuard<'_, Lifecycle> {
-        match self.inner.lifecycle.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
+            Ok(())
         }
     }
 }
 
-struct ActiveOperation<'a> {
-    core: &'a Core,
+impl Default for ZvecGrep {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
-impl Drop for ActiveOperation<'_> {
-    fn drop(&mut self) {
-        let mut lifecycle = self.core.lock_lifecycle();
-        lifecycle.active = lifecycle.active.saturating_sub(1);
-        let drained = lifecycle.active == 0;
-        drop(lifecycle);
-        if drained {
-            self.core.inner.drained.notify_waiters();
-        }
+fn resolve_root(root: Option<&Path>) -> Result<PathBuf, EngineError> {
+    std::path::absolute(root.unwrap_or_else(|| Path::new("."))).map_err(|error| {
+        EngineError::backend("workspace", format!("failed to resolve root: {error}"))
+    })
+}
+
+fn unavailable(capability: &str) -> EngineError {
+    EngineError::CapabilityUnavailable {
+        capability: capability.to_owned(),
     }
 }

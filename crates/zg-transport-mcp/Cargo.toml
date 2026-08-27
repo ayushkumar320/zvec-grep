@@ -13,12 +13,10 @@ rmcp.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio-util = { workspace = true, features = ["rt"] }
 zg-engine = { path = "../zg-engine" }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
-zg-testkit = { path = "../zg-testkit" }
 
 [lints]
 workspace = true

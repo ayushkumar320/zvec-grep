@@ -1,8 +1,7 @@
 //! MCP transport adapter for the public agent and full toolsets.
 //!
-//! This crate owns MCP schemas and formatting only. Every request becomes a
-//! canonical [`zg_engine::Operation`] and executes through an injected
-//! [`zg_engine::OperationExecutor`].
+//! This crate owns MCP schemas and formatting only. It translates tool input
+//! into the typed request accepted directly by [`zg_engine::ZvecGrep`].
 
 use std::{
     fmt::{self, Write as _},
@@ -24,11 +23,11 @@ use rmcp::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use zg_engine::{
-    ChangeIndexAction, ChangeIndexRequest, Command, ContentRange, Device, DiscoveryOptions,
-    EmbeddingModelSpec, ErrorCode, Freshness, IndexPolicy, IndexReply, IndexRequest, InspectReply,
-    InspectRequest, LexicalCoverage, LexicalSearchReply, MatchedBy, Operation, OperationExecutor,
-    Outcome, QueryItem, QueryReply, QueryRequest, QueryRoute, QueryRouteMode, RefreshMode, Reply,
-    RootSpec, RunControl, SymbolType, parse_managed_rg_args,
+    ChangeIndexAction, ChangeIndexReply, ChangeIndexRequest, ContentRange, Device,
+    DiscoveryOptions, EmbeddingModelSpec, EngineError, ErrorCode, Freshness, IndexPolicy,
+    IndexReply, IndexRequest, InspectReply, InspectRequest, LexicalCoverage, LexicalSearchReply,
+    MatchedBy, QueryItem, QueryReply, QueryRequest, QueryRoute, QueryRouteMode, RefreshMode,
+    RootSpec, SymbolType, ZvecGrep, parse_managed_rg_args,
 };
 
 pub const AGENT_TOOL_NAME: &str = "zvec_grep_search";
@@ -119,7 +118,7 @@ pub trait ServerStatusProvider: Send + Sync {
 
 #[derive(Clone)]
 pub struct ZvecGrepMcpServer {
-    executor: Arc<dyn OperationExecutor>,
+    engine: Arc<ZvecGrep>,
     status: Option<Arc<dyn ServerStatusProvider>>,
     toolset: McpToolset,
     router: ToolRouter<Self>,
@@ -127,20 +126,17 @@ pub struct ZvecGrepMcpServer {
 
 impl ZvecGrepMcpServer {
     #[must_use]
-    pub fn agent(executor: Arc<dyn OperationExecutor>) -> Self {
-        Self::build(executor, McpToolset::Agent, None)
+    pub fn agent(engine: Arc<ZvecGrep>) -> Self {
+        Self::build(engine, McpToolset::Agent, None)
     }
 
     #[must_use]
-    pub fn full(
-        executor: Arc<dyn OperationExecutor>,
-        status: Arc<dyn ServerStatusProvider>,
-    ) -> Self {
-        Self::build(executor, McpToolset::Full, Some(status))
+    pub fn full(engine: Arc<ZvecGrep>, status: Arc<dyn ServerStatusProvider>) -> Self {
+        Self::build(engine, McpToolset::Full, Some(status))
     }
 
     fn build(
-        executor: Arc<dyn OperationExecutor>,
+        engine: Arc<ZvecGrep>,
         toolset: McpToolset,
         status: Option<Arc<dyn ServerStatusProvider>>,
     ) -> Self {
@@ -153,7 +149,7 @@ impl ZvecGrepMcpServer {
             }
         }
         Self {
-            executor,
+            engine,
             status,
             toolset,
             router,
@@ -182,22 +178,16 @@ impl ZvecGrepMcpServer {
     async fn zvec_grep_search(
         &self,
         Parameters(input): Parameters<SearchInput>,
-        context: RequestContext<RoleServer>,
+        _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let operation = input
-            .into_operation()
+        let request = input
+            .into_request()
             .map_err(|message| ErrorData::invalid_params(message, None))?;
-        let control = RunControl::local(context.ct.child_token());
-        let result = self.executor.execute(operation, control).await;
+        let result = self.engine.query(request).await;
 
         Ok(match result {
-            Ok(outcome) => outcome_to_result(outcome),
-            Err(error) => CallToolResult::error(vec![ContentBlock::text(format!(
-                "error_code: {}\nerror_message: {}\nretryable: {}",
-                error_code_label(error.code),
-                error.message,
-                error.retryable
-            ))]),
+            Ok(reply) => query_reply_to_result(&reply),
+            Err(error) => error_result(&error),
         })
     }
 
@@ -216,17 +206,26 @@ impl ZvecGrepMcpServer {
     async fn zvec_grep_index(
         &self,
         Parameters(input): Parameters<IndexInput>,
-        context: RequestContext<RoleServer>,
+        _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let operation = input
-            .into_operation()
+        let request = input
+            .into_request()
             .map_err(|message| ErrorData::invalid_params(message, None))?;
-        let root = operation.root.clone();
-        let is_drop = matches!(operation.command, Command::ChangeIndex(_));
-        let outcome = execute(&self.executor, operation, &context).await;
-        Ok(match outcome {
-            Ok(outcome) => index_outcome_to_result(&root, is_drop, outcome),
-            Err(result) => result,
+        Ok(match request {
+            IndexToolRequest::Index(request) => {
+                let root = request_root(request.root.as_deref());
+                match self.engine.index(*request).await {
+                    Ok(reply) => index_reply_to_result(&root, &reply),
+                    Err(error) => error_result(&error),
+                }
+            }
+            IndexToolRequest::Drop(request) => {
+                let root = request_root(request.root.as_deref());
+                match self.engine.change_index(request).await {
+                    Ok(reply) => drop_reply_to_index_result(&root, &reply),
+                    Err(error) => error_result(&error),
+                }
+            }
         })
     }
 
@@ -245,21 +244,18 @@ impl ZvecGrepMcpServer {
     async fn zvec_grep_index_drop(
         &self,
         Parameters(input): Parameters<RootInput>,
-        context: RequestContext<RoleServer>,
+        _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let root = absolute_root(&input.root)
             .map_err(|message| ErrorData::invalid_params(message, None))?;
-        let operation = Operation::new(
-            root.clone(),
-            Command::ChangeIndex(ChangeIndexRequest {
-                action: ChangeIndexAction::Drop,
-                force: false,
-            }),
-        );
-        let outcome = execute(&self.executor, operation, &context).await;
-        Ok(match outcome {
-            Ok(outcome) => drop_outcome_to_result(&root, outcome),
-            Err(result) => result,
+        let request = ChangeIndexRequest {
+            root: Some(root.clone()),
+            action: ChangeIndexAction::Drop,
+            force: false,
+        };
+        Ok(match self.engine.change_index(request).await {
+            Ok(reply) => drop_reply_to_result(&root, &reply),
+            Err(error) => error_result(&error),
         })
     }
 
@@ -277,15 +273,14 @@ impl ZvecGrepMcpServer {
     async fn zvec_grep_rg(
         &self,
         Parameters(input): Parameters<RgInput>,
-        context: RequestContext<RoleServer>,
+        _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let operation = input
-            .into_operation()
+        let request = input
+            .into_request()
             .map_err(|message| ErrorData::invalid_params(message, None))?;
-        let outcome = execute(&self.executor, operation, &context).await;
-        Ok(match outcome {
-            Ok(outcome) => lexical_outcome_to_result(outcome),
-            Err(result) => result,
+        Ok(match self.engine.lexical_search(request).await {
+            Ok(reply) => lexical_reply_to_result(&reply),
+            Err(error) => error_result(&error),
         })
     }
 
@@ -304,20 +299,17 @@ impl ZvecGrepMcpServer {
     async fn zvec_grep_index_status(
         &self,
         Parameters(input): Parameters<RootInput>,
-        context: RequestContext<RoleServer>,
+        _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let root = absolute_root(&input.root)
             .map_err(|message| ErrorData::invalid_params(message, None))?;
-        let operation = Operation::new(
-            root,
-            Command::Inspect(InspectRequest {
-                include_status: true,
-            }),
-        );
-        let outcome = execute(&self.executor, operation, &context).await;
-        Ok(match outcome {
-            Ok(outcome) => inspect_outcome_to_result(outcome),
-            Err(result) => result,
+        let request = InspectRequest {
+            root: Some(root),
+            include_status: true,
+        };
+        Ok(match self.engine.inspect(request).await {
+            Ok(reply) => inspect_reply_to_result(reply),
+            Err(error) => error_result(&error),
         })
     }
 
@@ -512,13 +504,17 @@ pub struct RgInput {
     pub command: String,
 }
 
+enum IndexToolRequest {
+    Index(Box<IndexRequest>),
+    Drop(ChangeIndexRequest),
+}
+
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 pub struct EmptyInput {}
 
 #[derive(Clone, Copy, Debug, JsonSchema, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum IndexJobState {
-    Queued,
     Succeeded,
 }
 
@@ -755,7 +751,7 @@ const fn default_auto_update() -> bool {
 }
 
 impl SearchInput {
-    fn into_operation(self) -> Result<Operation, String> {
+    fn into_request(self) -> Result<QueryRequest, String> {
         let root = absolute_root(&self.root)?;
         if let Some(api_key) = &self.api_key {
             validate_text("apiKey", api_key, 1, 8_192)?;
@@ -812,6 +808,7 @@ impl SearchInput {
         };
 
         let request = QueryRequest {
+            root: Some(root.clone()),
             queries,
             routes,
             fuse: self.fuse.unwrap_or(false),
@@ -851,7 +848,7 @@ impl SearchInput {
             return Err("modifiedAfter must not be later than modifiedBefore".to_owned());
         }
         validate_scoped_paths(&root, &request.discovery.ignore_files, "ignore file")?;
-        Ok(Operation::new(root, Command::Query(request)))
+        Ok(request)
     }
 }
 
@@ -868,7 +865,7 @@ impl From<DeviceInput> for Device {
 }
 
 impl IndexInput {
-    fn into_operation(self) -> Result<Operation, String> {
+    fn into_request(self) -> Result<IndexToolRequest, String> {
         let root = absolute_root(&self.root)?;
         if self.drop.unwrap_or(false) {
             if self.has_index_options() {
@@ -877,13 +874,11 @@ impl IndexInput {
                         .to_owned(),
                 );
             }
-            return Ok(Operation::new(
-                root,
-                Command::ChangeIndex(ChangeIndexRequest {
-                    action: ChangeIndexAction::Drop,
-                    force: false,
-                }),
-            ));
+            return Ok(IndexToolRequest::Drop(ChangeIndexRequest {
+                root: Some(root),
+                action: ChangeIndexAction::Drop,
+                force: false,
+            }));
         }
         if let Some(api_key) = &self.api_key {
             validate_text("apiKey", api_key, 1, 8_192)?;
@@ -946,20 +941,18 @@ impl IndexInput {
         } else {
             None
         };
-        Ok(Operation::new(
-            root,
-            Command::Index(IndexRequest {
-                roots: vec![root_spec],
-                rebuild: self.rebuild.unwrap_or(false),
-                reset_paths: self.reset_paths.unwrap_or(false),
-                discovery,
-                embedding,
-                embedding_concurrency: self.embedding_concurrency,
-                wait: self.wait.unwrap_or(false),
-                debug: self.debug.unwrap_or(false),
-                ..IndexRequest::default()
-            }),
-        ))
+        Ok(IndexToolRequest::Index(Box::new(IndexRequest {
+            root: Some(root),
+            roots: vec![root_spec],
+            rebuild: self.rebuild.unwrap_or(false),
+            reset_paths: self.reset_paths.unwrap_or(false),
+            discovery,
+            embedding,
+            embedding_concurrency: self.embedding_concurrency,
+            wait: self.wait.unwrap_or(false),
+            debug: self.debug.unwrap_or(false),
+            ..IndexRequest::default()
+        })))
     }
 
     fn has_index_options(&self) -> bool {
@@ -986,7 +979,7 @@ impl IndexInput {
 }
 
 impl RgInput {
-    fn into_operation(self) -> Result<Operation, String> {
+    fn into_request(self) -> Result<zg_engine::LexicalSearchRequest, String> {
         let root = absolute_root(&self.root)?;
         validate_text("command", &self.command, 1, MAX_QUERY_CHARS)?;
         let (args, limit) = parse_rg_command(&self.command)?;
@@ -995,7 +988,8 @@ impl RgInput {
         validate_scoped_paths(&root, &request.paths, "search path")?;
         validate_scoped_paths(&root, &request.pattern_files, "pattern file")?;
         validate_scoped_paths(&root, &request.options.ignore_files, "ignore file")?;
-        Ok(Operation::lexical(root, request))
+        request.root = Some(root);
+        Ok(request)
     }
 }
 
@@ -1263,23 +1257,12 @@ fn epoch_millis(value: i64, name: &str) -> Result<u64, String> {
     u64::try_from(value).map_err(|_| format!("{name} must not be before the Unix epoch"))
 }
 
-async fn execute(
-    executor: &Arc<dyn OperationExecutor>,
-    operation: Operation,
-    context: &RequestContext<RoleServer>,
-) -> Result<Outcome, CallToolResult> {
-    executor
-        .execute(operation, RunControl::local(context.ct.child_token()))
-        .await
-        .map_err(|error| error_result(&error))
-}
-
-fn error_result(error: &zg_engine::ErrorReply) -> CallToolResult {
+fn error_result(error: &EngineError) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(format!(
         "error_code: {}\nerror_message: {}\nretryable: {}",
-        error_code_label(error.code),
-        error.message,
-        error.retryable
+        error_code_label(error.code()),
+        error,
+        false
     ))])
 }
 
@@ -1297,34 +1280,12 @@ fn structured_result(value: impl Serialize) -> CallToolResult {
     }
 }
 
-fn index_outcome_to_result(root: &Path, is_drop: bool, outcome: Outcome) -> CallToolResult {
-    match outcome {
-        Outcome::Completed(reply) => match *reply {
-            Reply::Index(reply) if !is_drop => structured_result(completed_index(root, &reply)),
-            Reply::ChangeIndex(reply) if is_drop => structured_result(IndexOutput {
-                root: root.display().to_string(),
-                job_id: "drop".to_owned(),
-                state: IndexJobState::Succeeded,
-                reused: false,
-                action: Some(IndexActionOutput::Drop),
-                dropped: Some(reply.changed),
-            }),
-            reply => unexpected_reply("index", &reply),
-        },
-        Outcome::Accepted(receipt) => structured_result(IndexOutput {
-            root: root.display().to_string(),
-            job_id: receipt.id,
-            state: IndexJobState::Queued,
-            reused: false,
-            action: Some(if is_drop {
-                IndexActionOutput::Drop
-            } else {
-                IndexActionOutput::Index
-            }),
-            dropped: None,
-        }),
-        Outcome::InputRequired(challenge) => authorization_result(&challenge.reason),
-    }
+fn request_root(root: Option<&Path>) -> PathBuf {
+    root.map_or_else(|| PathBuf::from("."), Path::to_path_buf)
+}
+
+fn index_reply_to_result(root: &Path, reply: &IndexReply) -> CallToolResult {
+    structured_result(completed_index(root, reply))
 }
 
 fn completed_index(root: &Path, reply: &IndexReply) -> IndexOutput {
@@ -1338,64 +1299,30 @@ fn completed_index(root: &Path, reply: &IndexReply) -> IndexOutput {
     }
 }
 
-fn drop_outcome_to_result(root: &Path, outcome: Outcome) -> CallToolResult {
-    match outcome {
-        Outcome::Completed(reply) => match *reply {
-            Reply::ChangeIndex(reply) => structured_result(IndexDropOutput {
-                root: root.display().to_string(),
-                removed: reply.changed,
-            }),
-            reply => unexpected_reply("change_index", &reply),
-        },
-        Outcome::Accepted(receipt) => CallToolResult::success(vec![ContentBlock::text(format!(
-            "job_id: {}\nstate: queued",
-            receipt.id
-        ))]),
-        Outcome::InputRequired(challenge) => authorization_result(&challenge.reason),
-    }
+fn drop_reply_to_index_result(root: &Path, reply: &ChangeIndexReply) -> CallToolResult {
+    structured_result(IndexOutput {
+        root: root.display().to_string(),
+        job_id: "drop".to_owned(),
+        state: IndexJobState::Succeeded,
+        reused: false,
+        action: Some(IndexActionOutput::Drop),
+        dropped: Some(reply.changed),
+    })
 }
 
-fn lexical_outcome_to_result(outcome: Outcome) -> CallToolResult {
-    match outcome {
-        Outcome::Completed(reply) => match *reply {
-            Reply::LexicalSearch(reply) => {
-                CallToolResult::success(vec![ContentBlock::text(format_lexical_reply(&reply))])
-            }
-            reply => unexpected_reply("lexical_search", &reply),
-        },
-        Outcome::Accepted(receipt) => CallToolResult::success(vec![ContentBlock::text(format!(
-            "job_id: {}\nstate: queued",
-            receipt.id
-        ))]),
-        Outcome::InputRequired(challenge) => authorization_result(&challenge.reason),
-    }
+fn drop_reply_to_result(root: &Path, reply: &ChangeIndexReply) -> CallToolResult {
+    structured_result(IndexDropOutput {
+        root: root.display().to_string(),
+        removed: reply.changed,
+    })
 }
 
-fn inspect_outcome_to_result(outcome: Outcome) -> CallToolResult {
-    match outcome {
-        Outcome::Completed(reply) => match *reply {
-            Reply::Inspect(reply) => structured_result(IndexStatusOutput::from(*reply)),
-            reply => unexpected_reply("inspect", &reply),
-        },
-        Outcome::Accepted(receipt) => CallToolResult::success(vec![ContentBlock::text(format!(
-            "job_id: {}\nstate: queued",
-            receipt.id
-        ))]),
-        Outcome::InputRequired(challenge) => authorization_result(&challenge.reason),
-    }
+fn lexical_reply_to_result(reply: &LexicalSearchReply) -> CallToolResult {
+    CallToolResult::success(vec![ContentBlock::text(format_lexical_reply(reply))])
 }
 
-fn authorization_result(reason: &str) -> CallToolResult {
-    CallToolResult::error(vec![ContentBlock::text(format!(
-        "error_code: authorization_required\nerror_message: {reason}"
-    ))])
-}
-
-fn unexpected_reply(expected: &str, reply: &Reply) -> CallToolResult {
-    CallToolResult::error(vec![ContentBlock::text(format!(
-        "error_code: internal\nerror_message: {expected} returned unexpected reply {}",
-        reply_name(reply)
-    ))])
+fn inspect_reply_to_result(reply: InspectReply) -> CallToolResult {
+    structured_result(IndexStatusOutput::from(reply))
 }
 
 fn format_lexical_reply(reply: &LexicalSearchReply) -> String {
@@ -1532,50 +1459,18 @@ const fn is_false(value: &bool) -> bool {
     !*value
 }
 
-fn outcome_to_result(outcome: Outcome) -> CallToolResult {
-    match outcome {
-        Outcome::Completed(reply) => match *reply {
-            Reply::Query(reply) => {
-                CallToolResult::success(vec![ContentBlock::text(format_query_reply(&reply))])
-            }
-            reply => CallToolResult::error(vec![ContentBlock::text(format!(
-                "error_code: internal\nerror_message: query returned unexpected reply {}",
-                reply_name(&reply)
-            ))]),
-        },
-        Outcome::Accepted(receipt) => CallToolResult::success(vec![ContentBlock::text(format!(
-            "job_id: {}\nstate: accepted",
-            receipt.id
-        ))]),
-        Outcome::InputRequired(challenge) => {
-            CallToolResult::error(vec![ContentBlock::text(format!(
-                "error_code: authorization_required\nerror_message: {}",
-                challenge.reason
-            ))])
-        }
-    }
-}
-
-fn reply_name(reply: &Reply) -> &'static str {
-    match reply {
-        Reply::Query(_) => "query",
-        Reply::LexicalSearch(_) => "lexical_search",
-        Reply::Index(_) => "index",
-        Reply::Inspect(_) => "inspect",
-        Reply::ChangeIndex(_) => "change_index",
-        Reply::Job(_) => "job",
-    }
+fn query_reply_to_result(reply: &QueryReply) -> CallToolResult {
+    CallToolResult::success(vec![ContentBlock::text(format_query_reply(reply))])
 }
 
 fn error_code_label(code: ErrorCode) -> &'static str {
     match code {
         ErrorCode::InvalidInput => "invalid_input",
-        ErrorCode::UnsupportedProtocol => "unsupported_protocol",
         ErrorCode::CapabilityUnavailable => "capability_unavailable",
         ErrorCode::BackendFailure => "backend_failure",
         ErrorCode::Cancelled => "cancelled",
         ErrorCode::DeadlineExceeded => "deadline_exceeded",
-        ErrorCode::ShuttingDown => "shutting_down",
+        ErrorCode::Closed => "closed",
         ErrorCode::Internal => "internal",
     }
 }
@@ -1668,13 +1563,12 @@ mod tests {
     use std::{path::PathBuf, sync::Arc};
 
     use rmcp::ServerHandler;
-    use zg_engine::{Command, RefreshMode};
-    use zg_testkit::fakes::ScriptedExecutor;
+    use zg_engine::{RefreshMode, ZvecGrep};
 
     use super::{
-        AGENT_TOOL_NAME, FULL_TOOL_NAMES, FreshnessInput, IndexInput, PathListInput,
-        QueryListInput, RgInput, SearchInput, ServerStatusProvider, ServerStatusSnapshot,
-        ZvecGrepMcpServer,
+        AGENT_TOOL_NAME, FULL_TOOL_NAMES, FreshnessInput, IndexInput, IndexToolRequest,
+        PathListInput, QueryListInput, RgInput, SearchInput, ServerStatusProvider,
+        ServerStatusSnapshot, ZvecGrepMcpServer,
     };
 
     struct FixedStatus;
@@ -1721,12 +1615,9 @@ mod tests {
     }
 
     #[test]
-    fn maps_agent_search_to_canonical_query_operation() {
-        let operation = input().into_operation().expect("search input should map");
-        assert_eq!(operation.root, PathBuf::from("/workspace"));
-        let Command::Query(request) = operation.command else {
-            panic!("search must map to query");
-        };
+    fn maps_agent_search_to_query_request() {
+        let request = input().into_request().expect("search input should map");
+        assert_eq!(request.root, Some(PathBuf::from("/workspace")));
         assert_eq!(request.queries, ["call chain"]);
         assert_eq!(request.routes.len(), 1);
         assert_eq!(request.refresh, RefreshMode::Background);
@@ -1738,7 +1629,7 @@ mod tests {
 
     #[test]
     fn agent_server_exposes_only_search() {
-        let server = ZvecGrepMcpServer::agent(Arc::new(ScriptedExecutor::default()));
+        let server = ZvecGrepMcpServer::agent(Arc::new(ZvecGrep::new()));
         let tools = server.listed_tools();
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].name, AGENT_TOOL_NAME);
@@ -1747,8 +1638,7 @@ mod tests {
 
     #[test]
     fn full_server_exposes_all_six_tools() {
-        let server =
-            ZvecGrepMcpServer::full(Arc::new(ScriptedExecutor::default()), Arc::new(FixedStatus));
+        let server = ZvecGrepMcpServer::full(Arc::new(ZvecGrep::new()), Arc::new(FixedStatus));
         let names = server
             .listed_tools()
             .into_iter()
@@ -1764,13 +1654,14 @@ mod tests {
     }
 
     #[test]
-    fn maps_full_index_to_canonical_operation() {
-        let operation = index_input()
-            .into_operation()
+    fn maps_full_index_to_index_request() {
+        let request = index_input()
+            .into_request()
             .expect("index input should map");
-        let Command::Index(request) = operation.command else {
-            panic!("index tool must create an index operation");
+        let IndexToolRequest::Index(request) = request else {
+            panic!("index tool must create an index request");
         };
+        assert_eq!(request.root, Some(PathBuf::from("/workspace")));
         assert_eq!(request.roots.len(), 1);
         assert_eq!(request.discovery.globs, ["*.rs"]);
         assert_eq!(
@@ -1786,15 +1677,13 @@ mod tests {
 
     #[test]
     fn maps_full_rg_without_using_a_shell_and_enforces_root_scope() {
-        let operation = RgInput {
+        let request = RgInput {
             root: "/workspace".to_owned(),
             command: "rg -n -F 'resident manager' src | head -5".to_owned(),
         }
-        .into_operation()
+        .into_request()
         .expect("managed rg should map");
-        let Command::LexicalSearch(request) = operation.command else {
-            panic!("rg tool must create a lexical operation");
-        };
+        assert_eq!(request.root, Some(PathBuf::from("/workspace")));
         assert_eq!(request.patterns, ["resident manager"]);
         assert_eq!(request.paths, [PathBuf::from("src")]);
         assert_eq!(request.limit, Some(5));
@@ -1805,7 +1694,7 @@ mod tests {
                 root: "/workspace".to_owned(),
                 command: "rg needle ../secret".to_owned(),
             }
-            .into_operation()
+            .into_request()
             .is_err()
         );
         assert!(
@@ -1813,7 +1702,7 @@ mod tests {
                 root: "/workspace".to_owned(),
                 command: "rg $(whoami)".to_owned(),
             }
-            .into_operation()
+            .into_request()
             .is_err()
         );
     }
@@ -1822,12 +1711,12 @@ mod tests {
     fn rejects_relative_roots_and_empty_queries() {
         let mut relative = input();
         relative.root = PathBuf::from("workspace").display().to_string();
-        assert!(relative.into_operation().is_err());
+        assert!(relative.into_request().is_err());
 
         let mut empty = input();
         empty.query = Some("  ".to_owned());
         empty.fts = None;
-        assert!(empty.into_operation().is_err());
+        assert!(empty.into_request().is_err());
     }
 
     fn index_input() -> IndexInput {

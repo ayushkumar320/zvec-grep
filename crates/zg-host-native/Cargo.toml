@@ -20,7 +20,6 @@ zg-engine = { path = "../zg-engine" }
 [dev-dependencies]
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
-zg-testkit = { path = "../zg-testkit" }
 
 [lints]
 workspace = true

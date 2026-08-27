@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use globset::{GlobBuilder, GlobMatcher};
-use zg_engine::CoreError;
+use zg_engine::EngineError;
 
 #[derive(Clone, Debug)]
 pub(crate) struct PathPattern {
@@ -11,18 +11,22 @@ pub(crate) struct PathPattern {
 }
 
 impl PathPattern {
-    pub fn path(pattern: &str) -> Result<Self, CoreError> {
+    pub fn path(pattern: &str) -> Result<Self, EngineError> {
         Self::build(pattern, false, false)
     }
 
-    pub fn rg(pattern: &str, case_insensitive: bool) -> Result<Self, CoreError> {
+    pub fn rg(pattern: &str, case_insensitive: bool) -> Result<Self, EngineError> {
         Self::build(pattern, case_insensitive, true)
     }
 
-    fn build(pattern: &str, case_insensitive: bool, rg_semantics: bool) -> Result<Self, CoreError> {
+    fn build(
+        pattern: &str,
+        case_insensitive: bool,
+        rg_semantics: bool,
+    ) -> Result<Self, EngineError> {
         let normalized = normalize_path_pattern(pattern);
         if normalized.is_empty() {
-            return Err(CoreError::invalid_input("glob pattern must not be empty"));
+            return Err(EngineError::invalid_input("glob pattern must not be empty"));
         }
         let matcher = if rg_semantics || has_path_glob(&normalized) {
             Some(compile_matcher(&normalized, case_insensitive)?)
@@ -104,7 +108,7 @@ pub(crate) fn is_hidden_name(name: &str) -> bool {
     name.starts_with('.') && name != "." && name != ".."
 }
 
-fn compile_matcher(pattern: &str, case_insensitive: bool) -> Result<GlobMatcher, CoreError> {
+fn compile_matcher(pattern: &str, case_insensitive: bool) -> Result<GlobMatcher, EngineError> {
     let compiled_pattern = if !pattern.contains('/') && pattern != "**" {
         format!("**/{pattern}")
     } else {
@@ -119,7 +123,7 @@ fn compile_matcher(pattern: &str, case_insensitive: bool) -> Result<GlobMatcher,
     builder
         .build()
         .map(|glob| glob.compile_matcher())
-        .map_err(|error| CoreError::invalid_input(format!("invalid glob {pattern:?}: {error}")))
+        .map_err(|error| EngineError::invalid_input(format!("invalid glob {pattern:?}: {error}")))
 }
 
 fn normalize_path_for_match(path: &str) -> String {
