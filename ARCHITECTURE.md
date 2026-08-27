@@ -17,8 +17,9 @@ selection. The one-method `OperationExecutor` seam returns transport-stable
 `ErrorReply` values and is implemented by in-process `Core`,
 `zg-testkit::ScriptedExecutor`, and the future daemon client.
 
-In resident mode the daemon is the only process that owns a Core. MCP stdio is
-a thin proxy:
+In resident mode the daemon is the only process that owns a Core. The current
+Streamable HTTP endpoint calls that resident Core through `OperationExecutor`.
+The planned MCP stdio entry point is a thin proxy:
 
 ```text
 MCP stdio -> DaemonClient -> versioned local wire -> DaemonServer -> Core::run
@@ -140,23 +141,25 @@ The framework contains only crates with an executable responsibility:
 | `zg-host-native` | metadata-first scanning and normalized filesystem watch sessions |
 | `zg-cli` | argument-to-Operation translation and terminal formatting |
 | `zg-testkit` | fakes, fixture readers and reusable contract suites |
+| `zg-transport-mcp` | agent-only MCP schema, Core operation translation and compact output |
+| `zg-daemon` | loopback HTTP host, instance lock and background process lifecycle |
 | `zg` | single binary and production composition root |
 
 ```text
-                       zg-cli
-                          |
-zg-testkit -------> zg-engine <------- production adapters
-                       ^  ^                    |
-                       |  +-- zg-daemon-protocol
-                       +---------- zg ---------+
-                               composition root
+zg-testkit ----------> zg-engine <---------- production adapters
+                          ^  ^                         |
+                          |  +---- zg-daemon-protocol  |
+                          +------- zg-transport-mcp <-- zg-daemon
+                          ^               ^               ^
+                          |               |               |
+                       zg-cli <-----------+----- zg ------+
+                                             composition root
 ```
 
-Future owners add `zg-extract-native`, `zg-storage-zvec`, `zg-model-*`,
-`zg-daemon` or `zg-transport-mcp` only with their first real
-proof. The workspace member glob avoids central member-list edits. A crate
-isolates a native dependency or independently testable policy seam; it does not
-mirror a TypeScript class.
+Future owners add `zg-extract-native`, `zg-storage-zvec`, or `zg-model-*` only
+with their first real proof. The workspace member glob avoids central
+member-list edits. A crate isolates a native dependency or independently
+testable policy seam; it does not mirror a TypeScript class.
 
 ## 6. Parallel change protocol
 

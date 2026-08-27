@@ -20,6 +20,60 @@ pub struct Cli {
 pub enum CommandLine {
     /// Search indexed context or run managed ripgrep.
     Query(QueryArgs),
+    /// Manage the resident MCP daemon.
+    Server(ServerArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ServerArgs {
+    #[command(subcommand)]
+    pub action: ServerAction,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ServerAction {
+    /// Start the resident daemon in the background.
+    On(ServerStartArgs),
+    /// Stop the resident daemon.
+    Off(ServerHomeArgs),
+    /// Print resident daemon status.
+    Status(ServerHomeArgs),
+    /// Run the resident daemon in the foreground (internal).
+    #[command(hide = true)]
+    Run(ServerStartArgs),
+}
+
+#[derive(Clone, Debug, Args)]
+pub struct ServerStartArgs {
+    /// Loopback HTTP listen address.
+    #[arg(long, default_value = "127.0.0.1:7999")]
+    pub listen: String,
+
+    /// zvec-grep state home. Defaults to `ZVEC_GREP_HOME` or `~/.zvec-grep`.
+    #[arg(long, env = "ZVEC_GREP_HOME")]
+    pub home: Option<PathBuf>,
+
+    /// Public MCP tool profile. The Rust MVP intentionally exposes agent only.
+    #[arg(
+        long,
+        env = "ZVEC_GREP_MCP_TOOLSET",
+        value_enum,
+        default_value = "agent"
+    )]
+    pub mcp_toolset: McpToolset,
+}
+
+#[derive(Clone, Debug, Args)]
+pub struct ServerHomeArgs {
+    /// zvec-grep state home. Defaults to `ZVEC_GREP_HOME` or `~/.zvec-grep`.
+    #[arg(long, env = "ZVEC_GREP_HOME")]
+    pub home: Option<PathBuf>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
+pub enum McpToolset {
+    #[default]
+    Agent,
 }
 
 #[derive(Debug, Args)]
@@ -49,9 +103,20 @@ pub enum ClientMode {
 }
 
 #[derive(Debug)]
-pub struct CliPlan {
-    pub mode: ClientMode,
-    pub operation: Operation,
+pub enum CliPlan {
+    Execute {
+        mode: ClientMode,
+        operation: Box<Operation>,
+    },
+    Server(ServerPlan),
+}
+
+#[derive(Debug)]
+pub enum ServerPlan {
+    On(ServerStartArgs),
+    Off(ServerHomeArgs),
+    Status(ServerHomeArgs),
+    Run(ServerStartArgs),
 }
 
 #[derive(Debug, Error)]
@@ -77,11 +142,17 @@ impl Cli {
     /// argument is not supported by the current POC.
     pub fn into_plan(self, root: PathBuf) -> Result<CliPlan, CliError> {
         match self.command {
-            CommandLine::Query(args) if args.rg => Ok(CliPlan {
+            CommandLine::Query(args) if args.rg => Ok(CliPlan::Execute {
                 mode: args.mode,
-                operation: Operation::lexical(root, parse_rg_args(&args.rg_args)?),
+                operation: Box::new(Operation::lexical(root, parse_rg_args(&args.rg_args)?)),
             }),
             CommandLine::Query(_) => Err(CliError::UnsupportedSlice),
+            CommandLine::Server(args) => Ok(CliPlan::Server(match args.action {
+                ServerAction::On(args) => ServerPlan::On(args),
+                ServerAction::Off(args) => ServerPlan::Off(args),
+                ServerAction::Status(args) => ServerPlan::Status(args),
+                ServerAction::Run(args) => ServerPlan::Run(args),
+            })),
         }
     }
 }
@@ -282,7 +353,7 @@ mod tests {
 
     use clap::Parser;
 
-    use super::Cli;
+    use super::{Cli, CliPlan, McpToolset, ServerPlan};
     use zg_engine::Command;
 
     #[test]
@@ -294,11 +365,43 @@ mod tests {
         let plan = cli
             .into_plan(PathBuf::from("/workspace"))
             .expect("plan should be valid");
-        let Command::LexicalSearch(request) = plan.operation.command else {
+        let CliPlan::Execute { operation, .. } = plan else {
+            panic!("query must create an execute plan");
+        };
+        let Command::LexicalSearch(request) = operation.command else {
             panic!("query --rg must create a lexical operation");
         };
         assert_eq!(request.patterns, ["needle"]);
         assert_eq!(request.paths, [PathBuf::from("src")]);
         assert!(request.options.fixed_strings);
+    }
+
+    #[test]
+    fn parses_server_on_with_agent_toolset() {
+        let cli = Cli::try_parse_from([
+            "zg",
+            "server",
+            "on",
+            "--listen",
+            "127.0.0.1:8123",
+            "--mcp-toolset",
+            "agent",
+        ])
+        .expect("server command should parse");
+        let plan = cli
+            .into_plan(PathBuf::from("/workspace"))
+            .expect("plan should be valid");
+        let CliPlan::Server(ServerPlan::On(args)) = plan else {
+            panic!("server on must create a server plan");
+        };
+        assert_eq!(args.listen, "127.0.0.1:8123");
+        assert_eq!(args.mcp_toolset, McpToolset::Agent);
+    }
+
+    #[test]
+    fn rejects_full_mcp_toolset() {
+        let error = Cli::try_parse_from(["zg", "server", "on", "--mcp-toolset", "full"])
+            .expect_err("full toolset must not be accepted");
+        assert!(error.to_string().contains("invalid value 'full'"));
     }
 }

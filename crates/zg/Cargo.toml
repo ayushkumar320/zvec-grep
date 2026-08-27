@@ -14,8 +14,13 @@ tokio-util = { workspace = true, features = ["rt"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 zg-cli = { path = "../zg-cli" }
+zg-daemon = { path = "../zg-daemon" }
 zg-engine = { path = "../zg-engine" }
 zg-lexical-rg = { path = "../zg-lexical-rg" }
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

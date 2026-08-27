@@ -1,0 +1,23 @@
+[package]
+name = "zg-transport-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+chrono.workspace = true
+rmcp.workspace = true
+schemars.workspace = true
+serde.workspace = true
+tokio-util = { workspace = true, features = ["rt"] }
+zg-engine = { path = "../zg-engine" }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+zg-testkit = { path = "../zg-testkit" }
+
+[lints]
+workspace = true

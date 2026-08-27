@@ -25,12 +25,32 @@ with the current implementation. Future Direct, daemon-backed and MCP entry
 points must all construct the same typed `Operation` and use the same Core
 execution contract.
 
+The resident daemon and public agent MCP endpoint are also runnable:
+
+```sh
+cargo run -p zg -- server on --mcp-toolset agent
+cargo run -p zg -- server status
+cargo run -p zg -- server off
+```
+
+`server on` starts the same `zg` binary in the background and reports a
+loopback Streamable HTTP URL, normally `http://127.0.0.1:7999/mcp`. The Rust MVP
+accepts only the `agent` toolset and exposes only `zvec_grep_search`. That tool
+already validates and translates the current MCP search contract into the
+canonical Core `Query` operation. Query orchestration is not implemented yet,
+so an invocation currently returns the stable `capability_unavailable` error
+instead of creating an index or fabricating results.
+
 ## Workspace now
 
 - `zg-engine`: the deep Core module, owned domain types, lifecycle, resource
   budget, errors, events and internal ports.
 - `zg-daemon-protocol`: versioned Execute/Cancel/Event envelopes shared by the
   resident daemon and thin clients.
+- `zg-transport-mcp`: the agent-only MCP schema, request translation and compact
+  result formatting around `OperationExecutor`.
+- `zg-daemon`: loopback Streamable HTTP hosting, instance records, health and
+  controlled background process lifecycle.
 - `zg-lexical-rg`: the first production adapter. It owns process invocation and
   ripgrep JSON decoding.
 - `zg-host-native`: the production metadata scanner and daemon-owned filesystem
@@ -48,8 +68,8 @@ materialization, clock and daemon-owned watch sessions. Scanner results retain
 format hints and bounded skip diagnostics; watcher batches preserve scoped
 directory rescans and deletions. New production adapter crates are added only
 when their first real proof starts. Planned names are
-`zg-extract-native`, `zg-storage-zvec`, `zg-model-*`, `zg-daemon`, and
-`zg-transport-mcp`. The workspace uses `crates/*`, so a new
+`zg-extract-native`, `zg-storage-zvec`, and `zg-model-*`. The workspace uses
+`crates/*`, so a new
 owner can add a crate without editing the root member list.
 
 ## Dependency rule
@@ -60,8 +80,10 @@ owner can add a crate without editing the root member list.
 zg-testkit ----> zg-engine <---- zg-lexical-rg
                        ^  ^               |
                        |  +---- zg-host-native
-                       +--------- zg -----+
-                            composition root
+                       +---- zg-transport-mcp <-- zg-daemon
+                                      ^             |
+                                      +----- zg ----+
+                                          composition root
 ```
 
 `zg-engine` must not depend on Clap, Axum, rmcp, zvec, ORT, llama.cpp or a model
@@ -73,6 +95,8 @@ boundaries.
 ```sh
 scripts/check.sh
 cargo run -p zg -- query --rg ivf-rabitq ..
+cargo run -p zg -- server on --mcp-toolset agent
+cargo run -p zg -- server off
 ```
 
 The POC invokes a system `rg`. Bundling the platform ripgrep binary belongs to

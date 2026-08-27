@@ -41,9 +41,11 @@ CLI arguments
   -> terminal rendering
 ```
 
-Only `zg query --rg` is implemented end to end today. Other typed commands are
-present so transports and adapters can compile against stable shapes, but they
-return `capability_unavailable` until their Core orchestration is implemented.
+`zg query --rg` is implemented end to end. `zg server on/status/off` also runs
+the resident daemon and its agent-only Streamable HTTP MCP endpoint. Other
+typed Core commands are present so transports and adapters can compile against
+stable shapes, but they return `capability_unavailable` until their Core
+orchestration is implemented.
 
 ## 2. Read only what your workstream needs
 
@@ -83,7 +85,7 @@ one of these localities:
 | Extraction | new `crates/zg-extract-native` | proving text extraction plus one real parser |
 | Storage | new `crates/zg-storage-zvec` | reading a fixture index and atomically publishing one generation |
 | Model runtime | one new `crates/zg-model-*` crate | producing a golden vector from one real model |
-| Daemon or MCP transport | new `crates/zg-daemon` or `crates/zg-transport-mcp` | completing a successful flow with `ScriptedExecutor` |
+| Daemon or MCP transport | `crates/zg-daemon` or `crates/zg-transport-mcp` | extending the agent search contract or daemon lifecycle with `ScriptedExecutor` |
 | CLI and release | `crates/zg-cli`, packaging files | capturing one CLI case and matching its output and exit status |
 
 Do not create placeholder crates. A new crate starts with its first real native
@@ -152,14 +154,15 @@ Transport development must not wait for storage, extraction, or model runtimes.
 Use `zg_testkit::ScriptedExecutor` as the adapter for the one-method
 `OperationExecutor` interface:
 
-1. Reuse `zg-daemon-protocol` for Hello, Execute, Cancel, Event and Shutdown
-   envelopes; framing stays in the daemon crate.
+1. Reuse `zg-daemon-protocol` for future local thin-client Hello, Execute,
+   Cancel, Event and Shutdown envelopes; framing stays in the daemon crate.
 2. Implement a daemon client that maps local `RunControl` to remaining timeout,
    Cancel frames and event forwarding, then implements `OperationExecutor`.
 3. Make the daemon the only resident Core owner. It holds model and watcher
    sessions and forwards Execute frames to the same `Core::run` used directly.
-4. Give MCP stdio only an injected `OperationExecutor`; it must not open Core,
-   zvec, models or watchers.
+4. Give MCP transports only an injected `OperationExecutor`; they must not open
+   Core, zvec, models or watchers. The implemented HTTP host lives in the daemon;
+   the planned MCP stdio client remains a thin daemon proxy.
 5. Translate each MCP request into the same typed `Operation` used by Direct
    mode and translate canonical `Outcome`/`ErrorReply` back to MCP.
 

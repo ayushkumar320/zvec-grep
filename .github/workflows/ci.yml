@@ -52,7 +52,7 @@ jobs:
       - name: Check packages independently
         shell: bash
         run: |
-          for package in zg-engine zg-cli zg-lexical-rg zg-testkit zg; do
+          for package in zg-engine zg-daemon-protocol zg-cli zg-lexical-rg zg-host-native zg-testkit zg-transport-mcp zg-daemon zg; do
             cargo check --locked --package "${package}" --all-targets
           done
       - name: Run Clippy
