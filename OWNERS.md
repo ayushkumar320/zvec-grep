@@ -9,7 +9,7 @@ one workstream. Ownership is not permission to fork Core behavior.
 | Core integrator | `zg-engine`, `zg` composition policy | `open/run/shutdown`, command envelopes | in-memory end-to-end operation suites |
 | Lexical | `zg-lexical-rg` | `LexicalSearchPort` | managed-rg parity |
 | Extraction | new `zg-extract-native` | `ExtractionPort` | text plus one tree-sitter grammar |
-| Host | new `zg-host-native` | scanner and watch factory/session ports | metadata scan plus normalized change batch |
+| Host | `zg-host-native` | scanner and watch factory/session ports | metadata scan plus normalized change batch |
 | Storage | new `zg-storage-zvec` | `IndexStoragePort`, `IndexWritePort` | file state, replacement and atomic fixture generation |
 | Model base | new `zg-model-model2vec`, artifact implementation | embedding/artifact ports | default model golden vector |
 | ONNX | new `zg-model-onnx` | embedding/artifact ports | one ONNX model golden vector |

@@ -137,6 +137,7 @@ The framework contains only crates with an executable responsibility:
 | `zg-engine` | Core, typed domain, lifecycle, errors, events, budgets and ports |
 | `zg-daemon-protocol` | versioned daemon request/response/event envelopes |
 | `zg-lexical-rg` | official ripgrep process and JSON adapter |
+| `zg-host-native` | metadata-first scanning and normalized filesystem watch sessions |
 | `zg-cli` | argument-to-Operation translation and terminal formatting |
 | `zg-testkit` | fakes, fixture readers and reusable contract suites |
 | `zg` | single binary and production composition root |
@@ -152,7 +153,7 @@ zg-testkit -------> zg-engine <------- production adapters
 ```
 
 Future owners add `zg-extract-native`, `zg-storage-zvec`, `zg-model-*`,
-`zg-host-native`, `zg-daemon` or `zg-transport-mcp` only with their first real
+`zg-daemon` or `zg-transport-mcp` only with their first real
 proof. The workspace member glob avoids central member-list edits. A crate
 isolates a native dependency or independently testable policy seam; it does not
 mirror a TypeScript class.
@@ -190,11 +191,13 @@ workstreams can now begin:
 1. Capture TypeScript oracle cases and implement the differential runner.
 2. Complete managed-rg flags, path security, structure enrichment and formatter
    parity in the lexical/CLI localities.
-3. Add extraction, zvec storage and model adapter crates with their first native
+3. Integrate the proven native scanner into Core indexing and the watcher into
+   daemon composition when those orchestration slices land.
+4. Add extraction, zvec storage and model adapter crates with their first native
    proof and shared contract invocation.
-4. Add the resident daemon client/server and MCP stdio thin proxy against the
+5. Add the resident daemon client/server and MCP stdio thin proxy against the
    scripted executor.
-5. Add model authorization, artifact verification, jobs and resident lifecycle
+6. Add model authorization, artifact verification, jobs and resident lifecycle
    orchestration inside the shared Core.
-6. Add platform binaries and npm canary packaging after the binary contract is
+7. Add platform binaries and npm canary packaging after the binary contract is
    stable.

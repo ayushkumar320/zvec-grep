@@ -11,7 +11,8 @@ use zg_engine::{
 use zg_testkit::{
     contracts::{
         verify_artifact_source_contract, verify_embedding_contract, verify_extraction_contract,
-        verify_lexical_contract, verify_storage_contract,
+        verify_lexical_contract, verify_scanner_contract, verify_storage_contract,
+        verify_watcher_lifecycle_contract,
     },
     fakes::{
         DeterministicEmbeddingFactory, FixtureArtifactSource, FixtureExtraction, FixtureScanner,
@@ -62,6 +63,33 @@ async fn fake_adapters_satisfy_shared_contracts() {
     )
     .await
     .expect("artifact fake must satisfy its contract");
+
+    let scanner = FixtureScanner::default();
+    scanner.insert(SourceFile {
+        root: PathBuf::from("/workspace"),
+        relative_path: PathBuf::from("contract.rs"),
+        bytes: b"fn contract() {}".to_vec(),
+        source_fingerprint: "contract-v1".to_owned(),
+        kind_hint: Some(FileKind::Code),
+        format_hint: Some("rust".to_owned()),
+    });
+    let root = RootSpec {
+        path: PathBuf::from("/workspace"),
+        recursive: true,
+        discovery: DiscoveryOptions::default(),
+    };
+    verify_scanner_contract(
+        &scanner,
+        &ScanRequest {
+            roots: vec![root.clone()],
+            known_files: Vec::new(),
+        },
+    )
+    .await
+    .expect("scanner fake must satisfy its contract");
+    verify_watcher_lifecycle_contract(&ManualWatcher::default(), &WatchRequest { root })
+        .await
+        .expect("watcher fake must satisfy its lifecycle contract");
 }
 
 #[tokio::test]

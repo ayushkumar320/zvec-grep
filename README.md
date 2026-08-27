@@ -33,6 +33,8 @@ execution contract.
   resident daemon and thin clients.
 - `zg-lexical-rg`: the first production adapter. It owns process invocation and
   ripgrep JSON decoding.
+- `zg-host-native`: the production metadata scanner and daemon-owned filesystem
+  watcher. Scanner and watcher share one discovery-policy implementation.
 - `zg-cli`: Clap arguments, translation into an `Operation`, and terminal
   formatting. It contains no search policy.
 - `zg-testkit`: deterministic fakes, compatibility fixture readers and shared
@@ -46,8 +48,8 @@ materialization, clock and daemon-owned watch sessions. Scanner results retain
 format hints and bounded skip diagnostics; watcher batches preserve scoped
 directory rescans and deletions. New production adapter crates are added only
 when their first real proof starts. Planned names are
-`zg-extract-native`, `zg-storage-zvec`, `zg-model-*`, `zg-host-native`,
-`zg-daemon`, and `zg-transport-mcp`. The workspace uses `crates/*`, so a new
+`zg-extract-native`, `zg-storage-zvec`, `zg-model-*`, `zg-daemon`, and
+`zg-transport-mcp`. The workspace uses `crates/*`, so a new
 owner can add a crate without editing the root member list.
 
 ## Dependency rule
@@ -56,8 +58,9 @@ owner can add a crate without editing the root member list.
                     zg-cli
                        |
 zg-testkit ----> zg-engine <---- zg-lexical-rg
-                       ^                 |
-                       +------- zg ------+
+                       ^  ^               |
+                       |  +---- zg-host-native
+                       +--------- zg -----+
                             composition root
 ```
 

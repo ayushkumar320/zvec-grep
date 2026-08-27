@@ -79,6 +79,7 @@ one of these localities:
 | Contract and quality | `compat/`, `benchmarks/`, `zg-testkit` | capturing a TypeScript oracle fixture or extending a shared contract |
 | Core integration | `crates/zg-engine`, composition policy in `crates/zg` | adding an in-memory end-to-end Core test |
 | Lexical search | `crates/zg-lexical-rg` | adding a managed-rg parity case |
+| Scanner and watcher | `crates/zg-host-native` | extending scanner compatibility or normalized watch behavior |
 | Extraction | new `crates/zg-extract-native` | proving text extraction plus one real parser |
 | Storage | new `crates/zg-storage-zvec` | reading a fixture index and atomically publishing one generation |
 | Model runtime | one new `crates/zg-model-*` crate | producing a golden vector from one real model |
@@ -221,6 +222,7 @@ Useful focused commands while iterating:
 cargo test -p zg-engine
 cargo test -p zg-testkit
 cargo test -p zg-lexical-rg
+cargo test -p zg-host-native
 cargo clippy -p zg-lexical-rg --all-targets -- -D warnings
 RUST_LOG=debug cargo run -p zg -- query --mode server --rg needle ..
 ```
