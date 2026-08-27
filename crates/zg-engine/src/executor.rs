@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 
-use crate::{Core, CoreError, Operation, Outcome, RunControl};
+use crate::{Core, ErrorReply, Operation, Outcome, RunControl};
 
 /// Transport-facing execution seam implemented by in-process Core, loopback
 /// HTTP clients and test fakes.
@@ -10,7 +10,7 @@ pub trait OperationExecutor: Send + Sync {
         &self,
         operation: Operation,
         control: RunControl,
-    ) -> Result<Outcome, CoreError>;
+    ) -> Result<Outcome, ErrorReply>;
 }
 
 #[async_trait]
@@ -19,7 +19,9 @@ impl OperationExecutor for Core {
         &self,
         operation: Operation,
         control: RunControl,
-    ) -> Result<Outcome, CoreError> {
-        self.run(operation, control).await
+    ) -> Result<Outcome, ErrorReply> {
+        self.run(operation, control)
+            .await
+            .map_err(|error| error.to_reply())
     }
 }

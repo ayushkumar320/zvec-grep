@@ -28,6 +28,8 @@ all construct the same typed `Operation` and call the same Core.
 
 - `zg-engine`: the deep Core module, owned domain types, lifecycle, resource
   budget, errors, events and internal ports.
+- `zg-daemon-protocol`: versioned Execute/Cancel/Event envelopes shared by the
+  resident daemon and thin clients.
 - `zg-lexical-rg`: the first production adapter. It owns process invocation and
   ripgrep JSON decoding.
 - `zg-cli`: Clap arguments, translation into an `Operation`, and terminal
@@ -37,12 +39,13 @@ all construct the same typed `Operation` and call the same Core.
 - `zg`: the only binary and composition root.
 
 Core-owned command envelopes cover Query, LexicalSearch, Index, Inspect,
-ChangeIndex and Job. Native seams cover lexical, extraction, storage, embedding,
-artifact materialization, clock and watcher behavior. New production adapter
+ChangeIndex and Job. Native seams cover lexical, metadata-first scanning,
+extraction, file-level storage generations, embedding, verified artifact
+materialization, clock and daemon-owned watch sessions. New production adapter
 crates are added only when their first real proof starts. Planned names are
 `zg-extract-native`, `zg-storage-zvec`, `zg-model-*`, `zg-host-native`,
-`zg-transport-http`, and `zg-transport-mcp`. The workspace uses `crates/*`, so a
-new owner can add a crate without editing the root member list.
+`zg-daemon`, and `zg-transport-mcp`. The workspace uses `crates/*`, so a new
+owner can add a crate without editing the root member list.
 
 ## Dependency rule
 

@@ -10,8 +10,9 @@ use std::{
 
 use async_trait::async_trait;
 use zg_engine::{
-    Content, CoreError, IndexMutation, IndexSnapshot, IndexStoragePort, IndexWritePort, RecallHit,
-    RecallQuery, RecallRequest, RunControl, StoredEntity, WriteMode,
+    BeginWriteRequest, Content, CoreError, IndexMutation, IndexSnapshot, IndexStoragePort,
+    IndexWritePort, IndexedFile, IndexedFileState, IndexedModelInfo, RecallHit, RecallQuery,
+    RecallRequest, RunControl, StoredEntity, WriteMode,
 };
 
 #[derive(Clone, Debug, Default)]
@@ -28,6 +29,8 @@ struct StorageInner {
 #[derive(Clone, Debug, Default)]
 struct RootState {
     generation: u64,
+    model: Option<IndexedModelInfo>,
+    files: BTreeMap<PathBuf, IndexedFileState>,
     entities: BTreeMap<String, StoredEntity>,
 }
 
@@ -37,6 +40,28 @@ impl IndexStoragePort for InMemoryStorage {
         Ok(lock(&self.inner.roots)
             .get(root)
             .map(|state| snapshot(root, state)))
+    }
+
+    async fn file_states(
+        &self,
+        root: &Path,
+        paths: &[PathBuf],
+        control: &RunControl,
+    ) -> Result<Vec<IndexedFileState>, CoreError> {
+        if control.cancellation.is_cancelled() {
+            return Err(CoreError::Cancelled);
+        }
+        let roots = lock(&self.inner.roots);
+        let Some(state) = roots.get(root) else {
+            return Ok(Vec::new());
+        };
+        if paths.is_empty() {
+            return Ok(state.files.values().cloned().collect());
+        }
+        Ok(paths
+            .iter()
+            .filter_map(|path| state.files.get(path).cloned())
+            .collect())
     }
 
     async fn recall_batch(
@@ -59,6 +84,7 @@ impl IndexStoragePort for InMemoryStorage {
                 "requested generation is not current",
             ));
         }
+        validate_recall_dimensions(&state, request)?;
 
         let mut hits = Vec::new();
         for route in &request.routes {
@@ -96,15 +122,14 @@ impl IndexStoragePort for InMemoryStorage {
 
     async fn begin_write(
         &self,
-        root: &Path,
-        mode: WriteMode,
+        request: &BeginWriteRequest,
         control: &RunControl,
     ) -> Result<Arc<dyn IndexWritePort>, CoreError> {
         if control.cancellation.is_cancelled() {
             return Err(CoreError::Cancelled);
         }
-        let root = root.to_path_buf();
-        if !lock(&self.inner.writers).insert(root.clone()) {
+        validate_incremental_model(&lock(&self.inner.roots), request)?;
+        if !lock(&self.inner.writers).insert(request.root.clone()) {
             return Err(CoreError::backend(
                 "in-memory-storage",
                 "a writer is already active for this root",
@@ -112,8 +137,7 @@ impl IndexStoragePort for InMemoryStorage {
         }
         Ok(Arc::new(InMemoryWrite {
             inner: Arc::clone(&self.inner),
-            root,
-            mode,
+            request: request.clone(),
             state: Mutex::new(WriteState::default()),
             released: AtomicBool::new(false),
         }))
@@ -129,8 +153,7 @@ struct WriteState {
 #[derive(Debug)]
 struct InMemoryWrite {
     inner: Arc<StorageInner>,
-    root: PathBuf,
-    mode: WriteMode,
+    request: BeginWriteRequest,
     state: Mutex<WriteState>,
     released: AtomicBool,
 }
@@ -139,11 +162,14 @@ struct InMemoryWrite {
 impl IndexWritePort for InMemoryWrite {
     async fn apply_mutations(
         &self,
-        mutations: Vec<IndexMutation>,
+        mut mutations: Vec<IndexMutation>,
         control: &RunControl,
     ) -> Result<(), CoreError> {
         if control.cancellation.is_cancelled() {
             return Err(CoreError::Cancelled);
+        }
+        for mutation in &mut mutations {
+            validate_mutation(mutation, self.request.model.as_ref())?;
         }
         let mut state = lock(&self.state);
         if state.finished {
@@ -174,18 +200,24 @@ impl IndexWritePort for InMemoryWrite {
 
         let snapshot = {
             let mut roots = lock(&self.inner.roots);
-            let previous = roots.get(&self.root).cloned().unwrap_or_default();
-            let mut next = RootState {
-                generation: previous.generation + 1,
-                entities: if self.mode == WriteMode::Rebuild {
-                    BTreeMap::new()
-                } else {
-                    previous.entities
-                },
+            let previous = roots.get(&self.request.root).cloned().unwrap_or_default();
+            let mut next = if self.request.mode == WriteMode::Rebuild {
+                RootState {
+                    generation: previous.generation + 1,
+                    model: self.request.model.clone(),
+                    ..RootState::default()
+                }
+            } else {
+                RootState {
+                    generation: previous.generation + 1,
+                    model: self.request.model.clone().or(previous.model),
+                    files: previous.files,
+                    entities: previous.entities,
+                }
             };
-            apply_mutations(&mut next.entities, mutations);
-            let result = snapshot(&self.root, &next);
-            roots.insert(self.root.clone(), next);
+            apply_mutations(&mut next, mutations);
+            let result = snapshot(&self.request.root, &next);
+            roots.insert(self.request.root.clone(), next);
             result
         };
         self.release_writer();
@@ -202,7 +234,7 @@ impl IndexWritePort for InMemoryWrite {
 impl InMemoryWrite {
     fn release_writer(&self) {
         if !self.released.swap(true, AtomicOrdering::AcqRel) {
-            lock(&self.inner.writers).remove(&self.root);
+            lock(&self.inner.writers).remove(&self.request.root);
         }
     }
 }
@@ -213,17 +245,104 @@ impl Drop for InMemoryWrite {
     }
 }
 
-fn apply_mutations(entities: &mut BTreeMap<String, StoredEntity>, mutations: Vec<IndexMutation>) {
+fn validate_incremental_model(
+    roots: &HashMap<PathBuf, RootState>,
+    request: &BeginWriteRequest,
+) -> Result<(), CoreError> {
+    if request.mode != WriteMode::Incremental {
+        return Ok(());
+    }
+    let Some(existing) = roots
+        .get(&request.root)
+        .and_then(|state| state.model.as_ref())
+    else {
+        return Ok(());
+    };
+    if request
+        .model
+        .as_ref()
+        .is_some_and(|model| model != existing)
+    {
+        return Err(CoreError::invalid_input(
+            "incremental write model does not match the current index",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_mutation(
+    mutation: &mut IndexMutation,
+    model: Option<&IndexedModelInfo>,
+) -> Result<(), CoreError> {
+    let IndexMutation::ReplaceFile(file) = mutation else {
+        return Ok(());
+    };
+    for entity in &file.entities {
+        if entity.file_path != file.relative_path {
+            return Err(CoreError::invalid_input(
+                "replacement entity path does not match its file state",
+            ));
+        }
+        if let (Some(vector), Some(model)) = (&entity.vector, model)
+            && vector.len() != model.dimension
+        {
+            return Err(CoreError::invalid_input(
+                "replacement vector dimension does not match the index model",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn apply_mutations(state: &mut RootState, mutations: Vec<IndexMutation>) {
     for mutation in mutations {
         match mutation {
-            IndexMutation::Upsert(entity) => {
-                entities.insert(entity.entity_id.clone(), *entity);
+            IndexMutation::ReplaceFile(file) => {
+                let IndexedFile {
+                    relative_path,
+                    source_fingerprint,
+                    size_bytes,
+                    modified_epoch_ms,
+                    entities,
+                } = *file;
+                let entity_count = entities.len();
+                state
+                    .entities
+                    .retain(|_, entity| entity.file_path != relative_path);
+                for entity in entities {
+                    state.entities.insert(entity.entity_id.clone(), entity);
+                }
+                state.files.insert(
+                    relative_path.clone(),
+                    IndexedFileState {
+                        relative_path,
+                        source_fingerprint,
+                        size_bytes,
+                        modified_epoch_ms,
+                        entity_count,
+                    },
+                );
             }
             IndexMutation::DeleteFile(path) => {
-                entities.retain(|_, entity| entity.file_path != path);
+                state.files.remove(&path);
+                state.entities.retain(|_, entity| entity.file_path != path);
             }
         }
     }
+}
+
+fn validate_recall_dimensions(state: &RootState, request: &RecallRequest) -> Result<(), CoreError> {
+    let Some(model) = state.model.as_ref() else {
+        return Ok(());
+    };
+    if request.routes.iter().any(|route| {
+        matches!(&route.query, RecallQuery::Vector(vector) if vector.len() != model.dimension)
+    }) {
+        return Err(CoreError::invalid_input(
+            "query vector dimension does not match the index model",
+        ));
+    }
+    Ok(())
 }
 
 fn score(entity: &StoredEntity, query: &RecallQuery) -> Option<f64> {
@@ -247,7 +366,8 @@ fn snapshot(root: &Path, state: &RootState) -> IndexSnapshot {
         root: root.to_path_buf(),
         generation: state.generation,
         index_version: 1,
-        model_fingerprint: None,
+        model: state.model.clone(),
+        file_count: state.files.len(),
         entity_count: state.entities.len(),
     }
 }

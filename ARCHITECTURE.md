@@ -10,13 +10,22 @@ Core::run(Operation, RunControl) -> Outcome
 Core::shutdown(deadline)
 ```
 
-All Direct, HTTP and MCP entry points construct the same typed `Operation` and
-consume the same `Outcome`. Transports translate owned DTOs; they do not perform
-query normalization, ranking, freshness, authorization or model selection.
-The one-method `OperationExecutor` seam is implemented by in-process `Core` and
-`zg-testkit::ScriptedExecutor`; loopback HTTP becomes a third adapter. This lets
-CLI/HTTP/MCP owners implement successful protocol flows before native storage or
-models exist.
+All Direct and daemon-backed entry points construct the same typed `Operation`
+and consume the same `Outcome`. Transports translate owned DTOs; they do not
+perform query normalization, ranking, freshness, authorization or model
+selection. The one-method `OperationExecutor` seam returns transport-stable
+`ErrorReply` values and is implemented by in-process `Core`,
+`zg-testkit::ScriptedExecutor`, and the future daemon client.
+
+In resident mode the daemon is the only process that owns a Core. MCP stdio is
+a thin proxy:
+
+```text
+MCP stdio -> DaemonClient -> versioned local wire -> DaemonServer -> Core::run
+```
+
+`zg-daemon-protocol` owns only the versioned wire envelopes. Local socket/HTTP
+framing, daemon process management and MCP framing remain transport adapters.
 
 The current tracer bullet is executable:
 
@@ -29,8 +38,8 @@ terminal argv
   -> terminal formatter
 ```
 
-Other command envelopes are frozen enough for CLI/HTTP/MCP mapping and return a
-stable `capability_unavailable` result until their Core orchestration lands.
+Other command envelopes are frozen enough for CLI/daemon/MCP mapping and return
+a stable `capability_unavailable` result until their Core orchestration lands.
 
 ## 2. Typed commands
 
@@ -63,16 +72,19 @@ Core-owned coarse seams isolate native dependencies:
 | Port | Responsibility | Test adapter |
 | --- | --- | --- |
 | `LexicalSearchPort` | exhaustive lexical search | `RecordedLexical` |
+| `WorkspaceScannerPort` | metadata discovery and bounded source reads | `FixtureScanner` |
 | `ExtractionPort` | batch document extraction | `FixtureExtraction` |
-| `IndexStoragePort`/`IndexWritePort` | recall and atomic generations | `InMemoryStorage` |
+| `IndexStoragePort`/`IndexWritePort` | file state, recall and atomic generations | `InMemoryStorage` |
 | `EmbeddingFactoryPort`/`EmbeddingSessionPort` | model load/embed/close | deterministic embedding |
 | `ArtifactSourcePort` | verified local materialization | fixture artifact source |
 | `ClockPort` | deterministic time | manual clock |
-| `WorkspaceWatcherPort` | coalesced change batches | manual watcher |
+| `WorkspaceWatcherFactoryPort`/`WorkspaceWatchSessionPort` | daemon-owned normalized changes | manual watcher |
 
-`CorePorts` accepts these dependencies from the binary composition root. A
-missing production capability is explicit and machine-readable. Adapter crates
-depend on `zg-engine`; `zg-engine` never depends on a native adapter.
+`CorePorts` accepts scanner, extraction, storage, embedding and clock
+dependencies from the binary composition root. Model factories receive an
+`ArtifactSourcePort` in their constructor. The daemon owns watch sessions and
+turns each change batch into a normal Index operation. Adapter crates depend on
+`zg-engine`; `zg-engine` never depends on a native adapter.
 
 Every external I/O seam has a fake or deterministic adapter in `zg-testkit`.
 Storage, extraction, embedding, artifact and lexical also have reusable contract
@@ -80,7 +92,8 @@ suites. A production adapter calls the same suite from its integration tests.
 
 ## 4. Invariants
 
-1. Direct, Server and MCP invoke the same `Core::run`.
+1. Direct invokes `Core::run`; MCP invokes the daemon through a client that
+   implements the same `OperationExecutor` interface.
 2. CLI `query --rg` stays local even when mode is Server, matching the current
    implementation, while still using the shared lexical Core path.
 3. A lexical operation does not read a manifest, open zvec or load a model.
@@ -93,12 +106,16 @@ suites. A production adapter calls the same suite from its integration tests.
 8. CPU workers, blocking workers, concurrent operations, lexical processes and
    background jobs have explicit budgets. Adapters cannot create private
    unbounded runtimes or pools.
-9. A storage writer publishes only through `finalize`; readers never observe
-   pending mutations or partial rebuilds.
-10. Native library, Clap, HTTP and MCP types do not cross the Core seam.
+9. A storage writer publishes only through `finalize`; `ReplaceFile` removes all
+   stale entities for that file and readers never observe pending mutations.
+10. Native library, Clap, daemon framing and MCP types do not cross the Core seam.
 11. Remote artifact or embedding work must complete authorization before any
    outbound request.
 12. No Rust dynamic plugin ABI and no Node/Rust SDK are part of the product.
+13. `RunControl` never crosses a process seam. The daemon wire carries remaining
+    timeout, principal and trace; cancellation and events use separate frames.
+14. Native watcher rename and overflow events are normalized to
+    Delete/Upsert/Rescan before they trigger Core operations.
 
 ## 5. Crate policy and dependency direction
 
@@ -107,25 +124,27 @@ The framework contains only crates with an executable responsibility:
 | Crate | Stable responsibility |
 | --- | --- |
 | `zg-engine` | Core, typed domain, lifecycle, errors, events, budgets and ports |
+| `zg-daemon-protocol` | versioned daemon request/response/event envelopes |
 | `zg-lexical-rg` | official ripgrep process and JSON adapter |
 | `zg-cli` | argument-to-Operation translation and terminal formatting |
 | `zg-testkit` | fakes, fixture readers and reusable contract suites |
 | `zg` | single binary and production composition root |
 
 ```text
-                    zg-cli
-                       |
-zg-testkit ----> zg-engine <---- production adapters
-                       ^                 |
-                       +------- zg ------+
-                            composition root
+                       zg-cli
+                          |
+zg-testkit -------> zg-engine <------- production adapters
+                       ^  ^                    |
+                       |  +-- zg-daemon-protocol
+                       +---------- zg ---------+
+                               composition root
 ```
 
 Future owners add `zg-extract-native`, `zg-storage-zvec`, `zg-model-*`,
-`zg-transport-http` or `zg-transport-mcp` only with their first real proof. The
-workspace member glob avoids central member-list edits. A crate isolates a
-native dependency or independently testable policy seam; it does not mirror a
-TypeScript class.
+`zg-host-native`, `zg-daemon` or `zg-transport-mcp` only with their first real
+proof. The workspace member glob avoids central member-list edits. A crate
+isolates a native dependency or independently testable policy seam; it does not
+mirror a TypeScript class.
 
 ## 6. Parallel change protocol
 
@@ -134,7 +153,8 @@ Ownership and merge rules live in `OWNERS.md`; adapter setup is documented in
 
 - Port or command-envelope changes land as dedicated Core contract changes.
 - Adapter work normally modifies only its crate and contract invocation.
-- HTTP/MCP owners work with fake adapters and do not wait for storage/models.
+- Daemon/MCP owners implement against `OperationExecutor` and the versioned
+  protocol; they do not wait for storage or models.
 - Production composition changes land separately after an adapter passes its
   shared contract.
 - Compatibility changes require an oracle fixture and an allowed-difference ID.
@@ -161,7 +181,8 @@ workstreams can now begin:
    parity in the lexical/CLI localities.
 3. Add extraction, zvec storage and model adapter crates with their first native
    proof and shared contract invocation.
-4. Add loopback HTTP and MCP adapters against fake Core dependencies.
+4. Add the resident daemon client/server and MCP stdio thin proxy against the
+   scripted executor.
 5. Add model authorization, artifact verification, jobs and resident lifecycle
    orchestration inside the shared Core.
 6. Add platform binaries and npm canary packaging after the binary contract is

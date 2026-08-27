@@ -9,11 +9,12 @@ one workstream. Ownership is not permission to fork Core behavior.
 | Core integrator | `zg-engine`, `zg` composition policy | `open/run/shutdown`, command envelopes | in-memory end-to-end operation suites |
 | Lexical | `zg-lexical-rg` | `LexicalSearchPort` | managed-rg parity |
 | Extraction | new `zg-extract-native` | `ExtractionPort` | text plus one tree-sitter grammar |
-| Storage | new `zg-storage-zvec` | `IndexStoragePort`, `IndexWritePort` | read current index and atomic fixture generation |
+| Host | new `zg-host-native` | scanner and watch factory/session ports | metadata scan plus normalized change batch |
+| Storage | new `zg-storage-zvec` | `IndexStoragePort`, `IndexWritePort` | file state, replacement and atomic fixture generation |
 | Model base | new `zg-model-model2vec`, artifact implementation | embedding/artifact ports | default model golden vector |
 | ONNX | new `zg-model-onnx` | embedding/artifact ports | one ONNX model golden vector |
 | GGUF | new `zg-model-llama` | embedding/artifact ports | one GGUF model golden vector |
-| Runtime | new `zg-transport-http`, then `zg-transport-mcp` | typed `Operation/Outcome`, `OperationExecutor` | scripted-executor HTTP equivalence |
+| Runtime | new `zg-daemon`, then `zg-transport-mcp` | daemon protocol, typed `Operation/Outcome`, `OperationExecutor` | daemon Execute/Cancel flow plus MCP thin proxy |
 | CLI/release | `zg-cli`, platform/npm packaging | typed `Operation/Outcome` | native CLI parity and package canary |
 
 ## Change protocol
@@ -24,8 +25,8 @@ one workstream. Ownership is not permission to fork Core behavior.
    branches consume it.
 3. An adapter owner normally changes only its crate and adds a call to the
    corresponding `zg-testkit::contracts::verify_*_contract` function.
-4. Transport owners use fake adapters. They do not wait for zvec or model
-   runtimes and do not reproduce Core policy in HTTP/MCP code.
+4. Daemon/MCP owners use `ScriptedExecutor`. The daemon is the sole resident
+   Core owner; MCP stdio remains a thin proxy and neither reproduces Core policy.
 5. The `zg` composition root is updated by an integration change after the
    adapter contract passes; adapter branches do not each invent composition.
 6. Direct/Server behavior differences require a machine-readable entry under

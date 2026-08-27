@@ -4,7 +4,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use zg_engine::{CoreError, Operation, OperationExecutor, Outcome, RunControl};
+use zg_engine::{CoreError, ErrorReply, Operation, OperationExecutor, Outcome, RunControl};
 
 #[derive(Debug, Default)]
 pub struct ScriptedExecutor {
@@ -43,15 +43,15 @@ impl OperationExecutor for ScriptedExecutor {
         &self,
         operation: Operation,
         control: RunControl,
-    ) -> Result<Outcome, CoreError> {
+    ) -> Result<Outcome, ErrorReply> {
         if control.cancellation.is_cancelled() {
-            return Err(CoreError::Cancelled);
+            return Err(CoreError::Cancelled.to_reply());
         }
         let capability = operation.command.capability().to_owned();
         self.lock_operations().push(operation);
         self.lock_replies()
             .get(&capability)
             .cloned()
-            .ok_or(CoreError::CapabilityUnavailable { capability })
+            .ok_or_else(|| CoreError::CapabilityUnavailable { capability }.to_reply())
     }
 }

@@ -2,7 +2,7 @@ use std::{path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
 
-use crate::{Content, ContentRange, CoreError, EntityMetadata, RunControl};
+use crate::{Content, ContentRange, CoreError, EmbeddingMetric, EntityMetadata, RunControl};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct RecallRequest {
@@ -37,17 +37,43 @@ pub struct RecallHit {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IndexedModelInfo {
+    pub fingerprint: String,
+    pub dimension: usize,
+    pub metric: EmbeddingMetric,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IndexSnapshot {
     pub root: PathBuf,
     pub generation: u64,
     pub index_version: u32,
-    pub model_fingerprint: Option<String>,
+    pub model: Option<IndexedModelInfo>,
+    pub file_count: usize,
+    pub entity_count: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IndexedFileState {
+    pub relative_path: PathBuf,
+    pub source_fingerprint: String,
+    pub size_bytes: u64,
+    pub modified_epoch_ms: Option<u64>,
     pub entity_count: usize,
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct IndexedFile {
+    pub relative_path: PathBuf,
+    pub source_fingerprint: String,
+    pub size_bytes: u64,
+    pub modified_epoch_ms: Option<u64>,
+    pub entities: Vec<StoredEntity>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum IndexMutation {
-    Upsert(Box<StoredEntity>),
+    ReplaceFile(Box<IndexedFile>),
     DeleteFile(PathBuf),
 }
 
@@ -67,6 +93,13 @@ pub enum WriteMode {
     Rebuild,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BeginWriteRequest {
+    pub root: PathBuf,
+    pub mode: WriteMode,
+    pub model: Option<IndexedModelInfo>,
+}
+
 /// One isolated generation write. `finalize` is the only publication point.
 #[async_trait]
 pub trait IndexWritePort: Send + Sync {
@@ -81,10 +114,19 @@ pub trait IndexWritePort: Send + Sync {
     async fn abort(&self) -> Result<(), CoreError>;
 }
 
-/// Recall and transactional generation storage seam.
+/// Recall, file-state inspection and transactional generation storage seam.
 #[async_trait]
 pub trait IndexStoragePort: Send + Sync {
     async fn inspect(&self, root: &std::path::Path) -> Result<Option<IndexSnapshot>, CoreError>;
+
+    /// Returns all file states when `paths` is empty, otherwise only matching
+    /// paths. Results must be ordered by relative path.
+    async fn file_states(
+        &self,
+        root: &std::path::Path,
+        paths: &[PathBuf],
+        control: &RunControl,
+    ) -> Result<Vec<IndexedFileState>, CoreError>;
 
     async fn recall_batch(
         &self,
@@ -94,8 +136,7 @@ pub trait IndexStoragePort: Send + Sync {
 
     async fn begin_write(
         &self,
-        root: &std::path::Path,
-        mode: WriteMode,
+        request: &BeginWriteRequest,
         control: &RunControl,
     ) -> Result<Arc<dyn IndexWritePort>, CoreError>;
 }

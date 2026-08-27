@@ -1,15 +1,19 @@
 use std::{
-    collections::VecDeque,
-    path::Path,
+    collections::{BTreeMap, VecDeque},
+    path::PathBuf,
     sync::{
-        Mutex, MutexGuard,
-        atomic::{AtomicU64, Ordering},
+        Arc, Mutex, MutexGuard,
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
 use async_trait::async_trait;
 use tokio::sync::Notify;
-use zg_engine::{ClockPort, CoreError, RunControl, WorkspaceChangeBatch, WorkspaceWatcherPort};
+use zg_engine::{
+    ClockPort, CoreError, DiscoveredFile, ReadBatchRequest, RunControl, ScanRequest, ScanSnapshot,
+    SourceFile, WatchRequest, WorkspaceChangeBatch, WorkspaceScannerPort,
+    WorkspaceWatchSessionPort, WorkspaceWatcherFactoryPort,
+};
 
 #[derive(Debug, Default)]
 pub struct ManualClock {
@@ -32,36 +36,124 @@ impl ClockPort for ManualClock {
     }
 }
 
-#[derive(Debug, Default)]
-pub struct ManualWatcher {
-    batches: Mutex<VecDeque<WorkspaceChangeBatch>>,
-    changed: Notify,
+#[derive(Clone, Debug, Default)]
+pub struct FixtureScanner {
+    files: Arc<Mutex<BTreeMap<(PathBuf, PathBuf), SourceFile>>>,
 }
 
-impl ManualWatcher {
-    pub fn push(&self, batch: WorkspaceChangeBatch) {
-        self.lock_batches().push_back(batch);
-        self.changed.notify_one();
-    }
-
-    fn lock_batches(&self) -> MutexGuard<'_, VecDeque<WorkspaceChangeBatch>> {
-        match self.batches.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        }
+impl FixtureScanner {
+    pub fn insert(&self, file: SourceFile) {
+        let key = (file.root.clone(), file.relative_path.clone());
+        lock(&self.files).insert(key, file);
     }
 }
 
 #[async_trait]
-impl WorkspaceWatcherPort for ManualWatcher {
-    async fn next_changes(
+impl WorkspaceScannerPort for FixtureScanner {
+    async fn discover(
         &self,
-        _root: &Path,
+        request: &ScanRequest,
         control: &RunControl,
-    ) -> Result<WorkspaceChangeBatch, CoreError> {
+    ) -> Result<ScanSnapshot, CoreError> {
+        if control.cancellation.is_cancelled() {
+            return Err(CoreError::Cancelled);
+        }
+        let roots: Vec<_> = request.roots.iter().map(|root| &root.path).collect();
+        let files = lock(&self.files)
+            .values()
+            .filter(|file| roots.is_empty() || roots.contains(&&file.root))
+            .map(|file| DiscoveredFile {
+                root: file.root.clone(),
+                relative_path: file.relative_path.clone(),
+                size_bytes: file.bytes.len() as u64,
+                modified_epoch_ms: None,
+                source_fingerprint: file.source_fingerprint.clone(),
+                kind_hint: file.kind_hint,
+            })
+            .collect();
+        Ok(ScanSnapshot {
+            files,
+            skipped: Vec::new(),
+        })
+    }
+
+    async fn read_batch(
+        &self,
+        request: &ReadBatchRequest,
+        control: &RunControl,
+    ) -> Result<Vec<SourceFile>, CoreError> {
+        if control.cancellation.is_cancelled() {
+            return Err(CoreError::Cancelled);
+        }
+        let files = lock(&self.files);
+        request
+            .files
+            .iter()
+            .map(|file| {
+                files
+                    .get(&(file.root.clone(), file.relative_path.clone()))
+                    .cloned()
+                    .ok_or_else(|| {
+                        CoreError::invalid_input(format!(
+                            "fixture source is missing: {}",
+                            file.relative_path.display()
+                        ))
+                    })
+            })
+            .collect()
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ManualWatcher {
+    inner: Arc<ManualWatcherInner>,
+}
+
+#[derive(Debug, Default)]
+struct ManualWatcherInner {
+    batches: Mutex<VecDeque<WorkspaceChangeBatch>>,
+    requests: Mutex<Vec<WatchRequest>>,
+    changed: Notify,
+    closed: AtomicBool,
+}
+
+impl ManualWatcher {
+    pub fn push(&self, batch: WorkspaceChangeBatch) {
+        lock(&self.inner.batches).push_back(batch);
+        self.inner.changed.notify_one();
+    }
+
+    #[must_use]
+    pub fn requests(&self) -> Vec<WatchRequest> {
+        lock(&self.inner.requests).clone()
+    }
+}
+
+#[async_trait]
+impl WorkspaceWatcherFactoryPort for ManualWatcher {
+    async fn watch(
+        &self,
+        request: &WatchRequest,
+        control: &RunControl,
+    ) -> Result<Arc<dyn WorkspaceWatchSessionPort>, CoreError> {
+        if control.cancellation.is_cancelled() {
+            return Err(CoreError::Cancelled);
+        }
+        self.inner.closed.store(false, Ordering::Release);
+        lock(&self.inner.requests).push(request.clone());
+        Ok(Arc::new(self.clone()))
+    }
+}
+
+#[async_trait]
+impl WorkspaceWatchSessionPort for ManualWatcher {
+    async fn next_changes(&self, control: &RunControl) -> Result<WorkspaceChangeBatch, CoreError> {
         loop {
-            let notified = self.changed.notified();
-            if let Some(batch) = self.lock_batches().pop_front() {
+            if self.inner.closed.load(Ordering::Acquire) {
+                return Err(CoreError::ShuttingDown);
+            }
+            let notified = self.inner.changed.notified();
+            if let Some(batch) = lock(&self.inner.batches).pop_front() {
                 return Ok(batch);
             }
             tokio::select! {
@@ -69,5 +161,18 @@ impl WorkspaceWatcherPort for ManualWatcher {
                 () = notified => {}
             }
         }
+    }
+
+    async fn close(&self) -> Result<(), CoreError> {
+        self.inner.closed.store(true, Ordering::Release);
+        self.inner.changed.notify_waiters();
+        Ok(())
+    }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
     }
 }

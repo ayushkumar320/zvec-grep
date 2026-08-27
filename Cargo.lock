@@ -698,6 +698,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "zg-daemon-protocol"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "zg-engine",
+]
+
+[[package]]
 name = "zg-engine"
 version = "0.0.1"
 dependencies = [

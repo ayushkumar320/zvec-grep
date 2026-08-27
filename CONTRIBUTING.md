@@ -145,19 +145,22 @@ Adapter implementations accept dependencies and return Core-owned results.
 They must handle cancellation, deterministic output, explicit concurrency
 limits, and cleanup of partially completed work.
 
-## 6. Adding HTTP or MCP transport
+## 6. Adding daemon or MCP transport
 
 Transport development must not wait for storage, extraction, or model runtimes.
 Use `zg_testkit::ScriptedExecutor` as the adapter for the one-method
 `OperationExecutor` interface:
 
-1. Define versioned transport DTOs inside the transport crate.
-2. Translate each request into the same typed `Operation` used by Direct mode.
-3. Call `OperationExecutor` and translate `Outcome` or `ErrorReply` back to the
-   protocol.
-4. Test success, stable errors, cancellation, and shutdown against the scripted
-   adapter.
-5. Add equivalence tests that compare canonical Direct and Server results.
+1. Reuse `zg-daemon-protocol` for Hello, Execute, Cancel, Event and Shutdown
+   envelopes; framing stays in the daemon crate.
+2. Implement a daemon client that maps local `RunControl` to remaining timeout,
+   Cancel frames and event forwarding, then implements `OperationExecutor`.
+3. Make the daemon the only resident Core owner. It holds model and watcher
+   sessions and forwards Execute frames to the same `Core::run` used directly.
+4. Give MCP stdio only an injected `OperationExecutor`; it must not open Core,
+   zvec, models or watchers.
+5. Translate each MCP request into the same typed `Operation` used by Direct
+   mode and translate canonical `Outcome`/`ErrorReply` back to MCP.
 
 Transport-specific status codes and framing stay in the transport crate. The
 transport must not invent a second error taxonomy or reimplement Core policy.

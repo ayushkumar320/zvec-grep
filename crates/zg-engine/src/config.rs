@@ -1,8 +1,8 @@
 use std::{fmt, sync::Arc, thread};
 
 use crate::{
-    ArtifactSourcePort, ClockPort, CoreError, EmbeddingFactoryPort, ExtractionPort,
-    IndexStoragePort, LexicalSearchPort, WorkspaceWatcherPort,
+    ClockPort, CoreError, EmbeddingFactoryPort, ExtractionPort, IndexStoragePort,
+    LexicalSearchPort, WorkspaceScannerPort,
 };
 
 /// Coarse process-level limits shared by Direct and Server hosts.
@@ -50,12 +50,11 @@ impl Default for ResourceBudget {
 #[derive(Clone, Default)]
 pub struct CorePorts {
     lexical: Option<Arc<dyn LexicalSearchPort>>,
+    scanner: Option<Arc<dyn WorkspaceScannerPort>>,
     extraction: Option<Arc<dyn ExtractionPort>>,
     storage: Option<Arc<dyn IndexStoragePort>>,
     embedding: Option<Arc<dyn EmbeddingFactoryPort>>,
-    artifacts: Option<Arc<dyn ArtifactSourcePort>>,
     clock: Option<Arc<dyn ClockPort>>,
-    watcher: Option<Arc<dyn WorkspaceWatcherPort>>,
 }
 
 impl CorePorts {
@@ -67,6 +66,12 @@ impl CorePorts {
     #[must_use]
     pub fn with_lexical(mut self, port: Arc<dyn LexicalSearchPort>) -> Self {
         self.lexical = Some(port);
+        self
+    }
+
+    #[must_use]
+    pub fn with_scanner(mut self, port: Arc<dyn WorkspaceScannerPort>) -> Self {
+        self.scanner = Some(port);
         self
     }
 
@@ -89,20 +94,8 @@ impl CorePorts {
     }
 
     #[must_use]
-    pub fn with_artifacts(mut self, port: Arc<dyn ArtifactSourcePort>) -> Self {
-        self.artifacts = Some(port);
-        self
-    }
-
-    #[must_use]
     pub fn with_clock(mut self, port: Arc<dyn ClockPort>) -> Self {
         self.clock = Some(port);
-        self
-    }
-
-    #[must_use]
-    pub fn with_watcher(mut self, port: Arc<dyn WorkspaceWatcherPort>) -> Self {
-        self.watcher = Some(port);
         self
     }
 
@@ -111,6 +104,9 @@ impl CorePorts {
         let mut capabilities = Vec::new();
         if self.lexical.is_some() {
             capabilities.push("lexical_search");
+        }
+        if self.scanner.is_some() {
+            capabilities.push("scanner");
         }
         if self.extraction.is_some() {
             capabilities.push("extraction");
@@ -121,14 +117,8 @@ impl CorePorts {
         if self.embedding.is_some() {
             capabilities.push("embedding");
         }
-        if self.artifacts.is_some() {
-            capabilities.push("artifacts");
-        }
         if self.clock.is_some() {
             capabilities.push("clock");
-        }
-        if self.watcher.is_some() {
-            capabilities.push("watcher");
         }
         capabilities
     }

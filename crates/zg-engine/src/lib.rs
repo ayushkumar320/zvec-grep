@@ -1,6 +1,6 @@
 //! Shared zvec-grep engine.
 //!
-//! CLI, HTTP and MCP are adapters around this crate. Search policy and native
+//! CLI, daemon and MCP are adapters around this crate. Search policy and native
 //! dependency selection must not leak into those adapters.
 
 mod config;
