@@ -10,9 +10,9 @@ use std::{
 use async_trait::async_trait;
 use tokio::sync::Notify;
 use zg_engine::{
-    ClockPort, CoreError, DiscoveredFile, ReadBatchRequest, RunControl, ScanRequest, ScanSnapshot,
-    SourceFile, WatchRequest, WorkspaceChangeBatch, WorkspaceScannerPort,
-    WorkspaceWatchSessionPort, WorkspaceWatcherFactoryPort,
+    ClockPort, CoreError, DiscoveredFile, ReadBatchRequest, RunControl, ScanDiagnostics,
+    ScanRequest, ScanSnapshot, SourceFile, WatchRequest, WorkspaceChangeBatch,
+    WorkspaceScannerPort, WorkspaceWatchSessionPort, WorkspaceWatcherFactoryPort,
 };
 
 #[derive(Debug, Default)]
@@ -69,11 +69,12 @@ impl WorkspaceScannerPort for FixtureScanner {
                 modified_epoch_ms: None,
                 source_fingerprint: file.source_fingerprint.clone(),
                 kind_hint: file.kind_hint,
+                format_hint: file.format_hint.clone(),
             })
             .collect();
         Ok(ScanSnapshot {
             files,
-            skipped: Vec::new(),
+            diagnostics: ScanDiagnostics::default(),
         })
     }
 

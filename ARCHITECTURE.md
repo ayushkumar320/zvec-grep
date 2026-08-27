@@ -86,6 +86,14 @@ dependencies from the binary composition root. Model factories receive an
 turns each change batch into a normal Index operation. Adapter crates depend on
 `zg-engine`; `zg-engine` never depends on a native adapter.
 
+Each `RootSpec` is the only discovery-policy source consumed by scanner and
+watcher adapters. `ScanRequest` additionally carries opaque known source
+fingerprints so unchanged indexed files can avoid repeated binary sniffing.
+Discovery returns kind and format hints plus bounded skip diagnostics; complete
+file bytes are read only through `read_batch`. Watch changes use paths relative
+to their `RootSpec` and preserve directory scope through `RescanDirectory` and
+`DeletePrefix`.
+
 Every external I/O seam has a fake or deterministic adapter in `zg-testkit`.
 Storage, extraction, embedding, artifact and lexical also have reusable contract
 suites. A production adapter calls the same suite from its integration tests.
@@ -114,8 +122,11 @@ suites. A production adapter calls the same suite from its integration tests.
 12. No Rust dynamic plugin ABI and no Node/Rust SDK are part of the product.
 13. `RunControl` never crosses a process seam. The daemon wire carries remaining
     timeout, principal and trace; cancellation and events use separate frames.
-14. Native watcher rename and overflow events are normalized to
-    Delete/Upsert/Rescan before they trigger Core operations.
+14. Native file rename events are normalized to Delete/Upsert, directory
+    changes retain RescanDirectory/DeletePrefix scope, and overflow or watcher
+    recovery becomes Rescan before triggering Core operations.
+15. Source fingerprints are adapter-owned opaque values. Core and storage may
+    compare or persist them but must not parse their representation.
 
 ## 5. Crate policy and dependency direction
 

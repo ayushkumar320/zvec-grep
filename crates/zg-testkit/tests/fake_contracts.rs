@@ -3,10 +3,10 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
 use zg_engine::{
     ArtifactRequest, Command, Core, CoreConfig, CoreError, CoreEventKind, CorePorts, Device,
-    DiscoveryOptions, EmbeddingModelSpec, ErrorCode, FileKind, JobReceipt, LexicalSearchRequest,
-    MaterializedArtifact, Operation, OperationExecutor, Outcome, QueryRequest, ReadBatchRequest,
-    RootSpec, RunControl, ScanRequest, SourceFile, WatchRequest, WorkspaceChange,
-    WorkspaceChangeBatch, WorkspaceScannerPort, WorkspaceWatcherFactoryPort,
+    DiscoveryOptions, EmbeddingModelSpec, ErrorCode, FileKind, JobReceipt, KnownSourceFile,
+    LexicalSearchRequest, MaterializedArtifact, Operation, OperationExecutor, Outcome,
+    QueryRequest, ReadBatchRequest, RootSpec, RunControl, ScanRequest, SourceFile, WatchRequest,
+    WorkspaceChange, WorkspaceChangeBatch, WorkspaceScannerPort, WorkspaceWatcherFactoryPort,
 };
 use zg_testkit::{
     contracts::{
@@ -193,6 +193,7 @@ async fn host_interfaces_support_metadata_first_scans_and_resident_watch_session
         bytes: b"fn main() {}".to_vec(),
         source_fingerprint: "source-v1".to_owned(),
         kind_hint: Some(FileKind::Code),
+        format_hint: Some("rust".to_owned()),
     });
     let control = RunControl::local(CancellationToken::new());
     let request = ScanRequest {
@@ -201,7 +202,11 @@ async fn host_interfaces_support_metadata_first_scans_and_resident_watch_session
             recursive: true,
             discovery: DiscoveryOptions::default(),
         }],
-        discovery: DiscoveryOptions::default(),
+        known_files: vec![KnownSourceFile {
+            root: root.clone(),
+            relative_path: PathBuf::from("src/lib.rs"),
+            source_fingerprint: "source-v1".to_owned(),
+        }],
     };
     let snapshot = scanner
         .discover(&request, &control)
@@ -209,6 +214,8 @@ async fn host_interfaces_support_metadata_first_scans_and_resident_watch_session
         .expect("fixture scan should discover metadata");
     assert_eq!(snapshot.files.len(), 1);
     assert_eq!(snapshot.files[0].source_fingerprint, "source-v1");
+    assert_eq!(snapshot.files[0].format_hint.as_deref(), Some("rust"));
+    assert_eq!(snapshot.diagnostics.skipped_files, 0);
     let sources = scanner
         .read_batch(
             &ReadBatchRequest {
@@ -222,21 +229,28 @@ async fn host_interfaces_support_metadata_first_scans_and_resident_watch_session
 
     let watcher = ManualWatcher::default();
     let watch_request = WatchRequest {
-        root,
-        discovery: DiscoveryOptions::default(),
+        root: RootSpec {
+            path: root,
+            recursive: true,
+            discovery: DiscoveryOptions::default(),
+        },
     };
     let session = watcher
         .watch(&watch_request, &control)
         .await
         .expect("watch session should open");
     watcher.push(WorkspaceChangeBatch {
-        changes: vec![WorkspaceChange::Upsert(PathBuf::from("src/lib.rs"))],
+        changes: vec![
+            WorkspaceChange::Upsert(PathBuf::from("src/lib.rs")),
+            WorkspaceChange::RescanDirectory(PathBuf::from("docs")),
+            WorkspaceChange::DeletePrefix(PathBuf::from("generated")),
+        ],
     });
     let changes = session
         .next_changes(&control)
         .await
         .expect("watch session should yield a normalized batch");
-    assert_eq!(changes.changes.len(), 1);
+    assert_eq!(changes.changes.len(), 3);
     assert_eq!(watcher.requests(), [watch_request]);
     session.close().await.expect("watch session should close");
     let error = session

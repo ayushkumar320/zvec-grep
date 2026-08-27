@@ -42,8 +42,10 @@ execution contract.
 Core-owned command envelopes cover Query, LexicalSearch, Index, Inspect,
 ChangeIndex and Job. Native seams cover lexical, metadata-first scanning,
 extraction, file-level storage generations, embedding, verified artifact
-materialization, clock and daemon-owned watch sessions. New production adapter
-crates are added only when their first real proof starts. Planned names are
+materialization, clock and daemon-owned watch sessions. Scanner results retain
+format hints and bounded skip diagnostics; watcher batches preserve scoped
+directory rescans and deletions. New production adapter crates are added only
+when their first real proof starts. Planned names are
 `zg-extract-native`, `zg-storage-zvec`, `zg-model-*`, `zg-host-native`,
 `zg-daemon`, and `zg-transport-mcp`. The workspace uses `crates/*`, so a new
 owner can add a crate without editing the root member list.
