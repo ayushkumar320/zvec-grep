@@ -72,9 +72,9 @@ pub struct NativeWatcherFactory {
 
 impl NativeWatcherFactory {
     #[must_use]
-    pub fn new(ripgrep_executable: impl Into<PathBuf>) -> Self {
+    pub fn new() -> Self {
         Self {
-            resolver: FileTypeResolver::new(ripgrep_executable.into()),
+            resolver: FileTypeResolver::new(),
             config: NativeWatcherConfig::default(),
         }
     }
@@ -88,7 +88,7 @@ impl NativeWatcherFactory {
 
 impl Default for NativeWatcherFactory {
     fn default() -> Self {
-        Self::new("rg")
+        Self::new()
     }
 }
 

@@ -30,6 +30,9 @@ Only `zg query --rg` is implemented end to end today. The other methods already
 have their final typed shape and return `capability_unavailable` until their
 service implementations land.
 
+Lexical search runs in-process with ripgrep's `grep` and `ignore` crates; the
+binary and ordinary CI jobs do not require a system `rg` executable.
+
 ## Crates
 
 - `zg-engine`: high-level requests, replies, errors and `ZvecGrep`; lexical

@@ -29,8 +29,8 @@ absent: an in-process call returns the reply it requested.
 The implemented lexical path is:
 
 ```text
-CLI -> ZvecGrep::lexical_search -> private lexical service -> rg
-MCP -> ZvecGrep::lexical_search -> private lexical service -> rg
+CLI -> ZvecGrep::lexical_search -> private embedded grep service
+MCP -> ZvecGrep::lexical_search -> private embedded grep service
 ```
 
 ## Internal services
@@ -39,9 +39,10 @@ Implementation modules live in `zg-engine` and remain private. A service may
 own concurrency, cancellation or resource cleanup required by its native
 resource, but those policies do not justify a second generic dispatcher.
 
-The lexical service owns ripgrep invocation, process admission, JSON parsing,
-filtering and deterministic ordering. Dropping an in-flight future kills its
-child process.
+The lexical service owns admission, `grep` matcher/searcher construction,
+`ignore` traversal, filtering and deterministic ordering. It runs blocking
+filesystem search work outside Tokio's async workers and does not spawn a
+ripgrep executable.
 
 `ZvecGrep` also owns one private model runtime manager. Its cache key includes
 the model reference and resource-affecting runtime options (credential

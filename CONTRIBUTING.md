@@ -7,8 +7,9 @@ bash scripts/check.sh
 cargo run -p zg -- query --rg needle .
 ```
 
-The workspace pins its Rust toolchain in `rust-toolchain.toml`. A system `rg`
-executable is required for lexical-search tests.
+The workspace pins its Rust toolchain in `rust-toolchain.toml`. Lexical search
+uses embedded `grep` and `ignore` crates, so a system `rg` executable is not
+required for builds or tests.
 
 ## Engine changes
 

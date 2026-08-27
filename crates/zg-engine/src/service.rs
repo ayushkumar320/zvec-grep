@@ -12,7 +12,7 @@ use crate::{
     QueryRequest, lexical::LexicalSearchService, models::runtime::ModelRuntimeManager,
 };
 
-const DEFAULT_MAX_LEXICAL_PROCESSES: usize = 2;
+const DEFAULT_MAX_CONCURRENT_LEXICAL_SEARCHES: usize = 2;
 
 /// Reusable zvec-grep engine serving workspace roots supplied by each request.
 #[derive(Clone, Debug)]
@@ -29,7 +29,7 @@ impl ZvecGrep {
     pub fn new() -> Self {
         Self {
             lexical: LexicalSearchService::default()
-                .with_max_processes(DEFAULT_MAX_LEXICAL_PROCESSES),
+                .with_max_searches(DEFAULT_MAX_CONCURRENT_LEXICAL_SEARCHES),
             models: ModelRuntimeManager::new(),
             closed: Arc::new(AtomicBool::new(false)),
         }
@@ -50,7 +50,7 @@ impl ZvecGrep {
     ///
     /// # Errors
     ///
-    /// Returns an engine error when the request is invalid or ripgrep fails.
+    /// Returns an engine error when the request is invalid or embedded grep fails.
     pub async fn lexical_search(
         &self,
         request: LexicalSearchRequest,

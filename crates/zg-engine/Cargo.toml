@@ -10,7 +10,9 @@ publish.workspace = true
 [dependencies]
 async-trait.workspace = true
 futures-util = "0.3.34"
+grep.workspace = true
 half = "2.7.1"
+ignore.workspace = true
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "stream"] }
 rayon = "1.11.0"
 serde.workspace = true

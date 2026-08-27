@@ -10,6 +10,7 @@ publish.workspace = true
 [dependencies]
 async-trait.workspace = true
 globset.workspace = true
+ignore.workspace = true
 notify.workspace = true
 same-file.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "time"] }

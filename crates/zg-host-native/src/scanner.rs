@@ -34,9 +34,9 @@ pub struct NativeScanner {
 
 impl NativeScanner {
     #[must_use]
-    pub fn new(ripgrep_executable: impl Into<PathBuf>) -> Self {
+    pub fn new() -> Self {
         Self {
-            resolver: FileTypeResolver::new(ripgrep_executable.into()),
+            resolver: FileTypeResolver::new(),
             scan_slots: Arc::new(Semaphore::new(1)),
         }
     }
@@ -50,7 +50,7 @@ impl NativeScanner {
 
 impl Default for NativeScanner {
     fn default() -> Self {
-        Self::new("rg")
+        Self::new()
     }
 }
 

@@ -1,9 +1,13 @@
-//! Private lexical search service backed by ripgrep.
+//! Private lexical search service backed by ripgrep's embedded `grep` crates.
 
 use std::{
-    collections::HashMap,
-    ffi::OsString,
-    path::{Path, PathBuf},
+    collections::{HashMap, HashSet},
+    io,
+    path::{Component, Path, PathBuf},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::UNIX_EPOCH,
 };
 
@@ -11,37 +15,52 @@ use crate::{
     EngineError, LexicalCoverage, LexicalDiagnostics, LexicalMatch, LexicalSearchReply,
     LexicalSearchRequest, TextRange,
 };
-use serde::Deserialize;
-use tokio::{process::Command, sync::Semaphore};
+use grep::{
+    matcher::Matcher,
+    regex::{RegexMatcher, RegexMatcherBuilder},
+    searcher::{BinaryDetection, SearcherBuilder, sinks::Bytes},
+};
+use ignore::{WalkBuilder, WalkState, overrides::OverrideBuilder, types::TypesBuilder};
+use tokio::sync::Semaphore;
 use tracing::debug;
 
+const EMBEDDED_BACKEND: &str = "grep";
+const EMBEDDED_COMMAND: &str = "[embedded-grep]";
 const HARD_IGNORED_DIRECTORIES: [&str; 2] = [".git", ".zvec-grep"];
+const DEFAULT_MAX_SEARCH_THREADS: usize = 12;
 
 #[derive(Clone, Debug)]
 pub(crate) struct LexicalSearchService {
-    executable: PathBuf,
-    process_slots: std::sync::Arc<Semaphore>,
+    search_slots: Arc<Semaphore>,
+    worker_threads: usize,
 }
 
 impl LexicalSearchService {
     #[must_use]
-    pub(crate) fn new(executable: impl Into<PathBuf>) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
-            executable: executable.into(),
-            process_slots: std::sync::Arc::new(Semaphore::new(1)),
+            search_slots: Arc::new(Semaphore::new(1)),
+            worker_threads: default_worker_threads(),
         }
     }
 
     #[must_use]
-    pub(crate) fn with_max_processes(mut self, max_processes: usize) -> Self {
-        self.process_slots = std::sync::Arc::new(Semaphore::new(max_processes.max(1)));
+    pub(crate) fn with_max_searches(mut self, maximum: usize) -> Self {
+        self.search_slots = Arc::new(Semaphore::new(maximum.max(1)));
+        self
+    }
+
+    #[must_use]
+    #[cfg(test)]
+    fn with_worker_threads(mut self, worker_threads: usize) -> Self {
+        self.worker_threads = worker_threads.max(1);
         self
     }
 }
 
 impl Default for LexicalSearchService {
     fn default() -> Self {
-        Self::new("rg")
+        Self::new()
     }
 }
 
@@ -57,90 +76,423 @@ impl LexicalSearchService {
             ));
         }
 
-        let _process_slot = self
-            .process_slots
+        let _search_slot = self
+            .search_slots
             .acquire()
             .await
             .map_err(|_| EngineError::Closed)?;
-
         let checked_paths = check_paths(root, &request.paths);
-        let args = build_args(request, &checked_paths.existing);
         if !request.paths.is_empty() && checked_paths.existing.is_empty() {
-            return Ok(empty_reply(
-                root,
-                &self.executable,
-                &args,
-                request,
-                &checked_paths,
-            ));
+            return Ok(empty_reply(root, request, &checked_paths));
         }
 
-        debug!(command = %self.executable.display(), ?args, "running ripgrep");
-        let mut command = Command::new(&self.executable);
-        command
-            .args(&args)
-            .current_dir(root)
-            .kill_on_drop(true)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-
-        let output = command.output().await.map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                EngineError::CapabilityUnavailable {
-                    capability: format!("ripgrep executable {}", self.executable.display()),
-                }
-            } else {
-                EngineError::backend("ripgrep", error.to_string())
-            }
-        })?;
-
-        if !matches!(output.status.code(), Some(0 | 1)) {
-            return Err(EngineError::backend(
-                "ripgrep",
-                format!(
-                    "exit status {}: {}",
-                    output.status,
-                    String::from_utf8_lossy(&output.stderr).trim()
-                ),
-            ));
-        }
-
-        let mut matches = parse_output(root, &output.stdout);
-        expand_context(&mut matches, request);
-        matches.retain(|item| matches_modified_time(&item.absolute_path, request));
-        matches.sort_by(|left, right| {
-            left.relative_path
-                .cmp(&right.relative_path)
-                .then(left.range.start_line.cmp(&right.range.start_line))
-                .then(left.range.start_offset.cmp(&right.range.start_offset))
-        });
-
-        let truncated = request.limit.is_some_and(|limit| matches.len() > limit);
-        if let Some(limit) = request.limit {
-            matches.truncate(limit);
-        }
-        for (index, item) in matches.iter_mut().enumerate() {
-            item.rank = index + 1;
-        }
-
-        Ok(LexicalSearchReply {
-            root: root.to_path_buf(),
-            coverage: if truncated {
-                LexicalCoverage::Truncated
-            } else {
-                LexicalCoverage::Exhaustive
-            },
-            matches,
-            diagnostics: diagnostics(&self.executable, &args, request, &checked_paths, truncated),
-        })
+        let worker_threads = worker_threads_for_search(root, request, self.worker_threads);
+        let root = root.to_path_buf();
+        let request = request.clone();
+        run_blocking(move || search_sync(&root, &request, &checked_paths, worker_threads)).await
     }
 }
 
-#[derive(Debug)]
+fn default_worker_threads() -> usize {
+    // Match ripgrep's automatic search-thread heuristic.
+    std::thread::available_parallelism()
+        .map_or(1, std::num::NonZeroUsize::get)
+        .min(DEFAULT_MAX_SEARCH_THREADS)
+}
+
+fn worker_threads_for_search(
+    root: &Path,
+    request: &LexicalSearchRequest,
+    configured: usize,
+) -> usize {
+    if is_single_file_search(root, &request.paths) {
+        1
+    } else {
+        configured.max(1)
+    }
+}
+
+fn is_single_file_search(root: &Path, paths: &[PathBuf]) -> bool {
+    match paths {
+        [] => !root.is_dir(),
+        [path] => !resolve_path(root, path).is_dir(),
+        _ => false,
+    }
+}
+
+#[derive(Clone, Debug)]
 struct CheckedPaths {
     existing: Vec<PathBuf>,
     missing: Vec<PathBuf>,
+}
+
+async fn run_blocking<T, F>(function: F) -> Result<T, EngineError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, EngineError> + Send + 'static,
+{
+    tokio::task::spawn_blocking(function)
+        .await
+        .map_err(|error| EngineError::Internal {
+            message: format!("embedded grep worker failed: {error}"),
+        })?
+}
+
+fn search_sync(
+    root: &Path,
+    request: &LexicalSearchRequest,
+    checked_paths: &CheckedPaths,
+    worker_threads: usize,
+) -> Result<LexicalSearchReply, EngineError> {
+    let patterns = load_patterns(root, request)?;
+    if patterns.is_empty() {
+        return Ok(empty_reply(root, request, checked_paths));
+    }
+    let matcher = build_matcher(&patterns, request)?;
+    let walker = build_walker(root, request, checked_paths, worker_threads)?;
+    debug!(
+        patterns = patterns.len(),
+        paths = checked_paths.existing.len(),
+        worker_threads,
+        "running embedded grep"
+    );
+    let mut lexical_matches = if worker_threads == 1 {
+        search_paths_serial(root, request, &matcher, &walker)?
+    } else {
+        search_paths_parallel(root, request, &matcher, &walker)?
+    };
+
+    expand_context(&mut lexical_matches, request);
+    lexical_matches.sort_by(|left, right| {
+        left.relative_path
+            .cmp(&right.relative_path)
+            .then(left.range.start_line.cmp(&right.range.start_line))
+            .then(left.range.start_offset.cmp(&right.range.start_offset))
+    });
+
+    let truncated = request
+        .limit
+        .is_some_and(|limit| lexical_matches.len() > limit);
+    if let Some(limit) = request.limit {
+        lexical_matches.truncate(limit);
+    }
+    for (index, item) in lexical_matches.iter_mut().enumerate() {
+        item.rank = index + 1;
+    }
+
+    Ok(LexicalSearchReply {
+        root: root.to_path_buf(),
+        coverage: if truncated {
+            LexicalCoverage::Truncated
+        } else {
+            LexicalCoverage::Exhaustive
+        },
+        matches: lexical_matches,
+        diagnostics: diagnostics(request, checked_paths, truncated),
+    })
+}
+
+fn search_paths_serial(
+    root: &Path,
+    request: &LexicalSearchRequest,
+    matcher: &RegexMatcher,
+    walker: &WalkBuilder,
+) -> Result<Vec<LexicalMatch>, EngineError> {
+    let mut lexical_matches = Vec::new();
+    let mut searcher = build_searcher();
+    for result in walker.build() {
+        let entry =
+            result.map_err(|error| EngineError::backend(EMBEDDED_BACKEND, error.to_string()))?;
+        if !entry
+            .file_type()
+            .is_some_and(|file_type| file_type.is_file())
+        {
+            continue;
+        }
+        let path = entry.into_path();
+        if !matches_modified_time(&path, request) {
+            continue;
+        }
+        search_file(root, &path, matcher, &mut searcher, &mut lexical_matches)?;
+    }
+    Ok(lexical_matches)
+}
+
+fn search_paths_parallel(
+    root: &Path,
+    request: &LexicalSearchRequest,
+    matcher: &RegexMatcher,
+    walker: &WalkBuilder,
+) -> Result<Vec<LexicalMatch>, EngineError> {
+    let lexical_matches = Mutex::new(Vec::new());
+    let first_error = Mutex::new(None);
+    let stopped = AtomicBool::new(false);
+    walker.build_parallel().run(|| {
+        let lexical_matches = &lexical_matches;
+        let first_error = &first_error;
+        let stopped = &stopped;
+        let mut searcher = build_searcher();
+        Box::new(move |result| {
+            if stopped.load(Ordering::Acquire) {
+                return WalkState::Quit;
+            }
+            let entry = match result {
+                Ok(entry) => entry,
+                Err(error) => {
+                    return stop_parallel_search(
+                        first_error,
+                        stopped,
+                        EngineError::backend(EMBEDDED_BACKEND, error.to_string()),
+                    );
+                }
+            };
+            if !entry
+                .file_type()
+                .is_some_and(|file_type| file_type.is_file())
+            {
+                return WalkState::Continue;
+            }
+            let path = entry.into_path();
+            if !matches_modified_time(&path, request) {
+                return WalkState::Continue;
+            }
+
+            let mut file_matches = Vec::new();
+            if let Err(error) = search_file(root, &path, matcher, &mut searcher, &mut file_matches)
+            {
+                return stop_parallel_search(first_error, stopped, error);
+            }
+            if file_matches.is_empty() {
+                return WalkState::Continue;
+            }
+            let Ok(mut all_matches) = lexical_matches.lock() else {
+                return stop_parallel_search(
+                    first_error,
+                    stopped,
+                    EngineError::Internal {
+                        message: "embedded grep result collector was poisoned".to_owned(),
+                    },
+                );
+            };
+            all_matches.extend(file_matches);
+            WalkState::Continue
+        })
+    });
+
+    let first_error = first_error
+        .into_inner()
+        .map_err(|_| EngineError::Internal {
+            message: "embedded grep error collector was poisoned".to_owned(),
+        })?;
+    if let Some(error) = first_error {
+        return Err(error);
+    }
+    lexical_matches
+        .into_inner()
+        .map_err(|_| EngineError::Internal {
+            message: "embedded grep result collector was poisoned".to_owned(),
+        })
+}
+
+fn build_searcher() -> grep::searcher::Searcher {
+    SearcherBuilder::new()
+        .binary_detection(BinaryDetection::quit(b'\0'))
+        .line_number(true)
+        .build()
+}
+
+fn stop_parallel_search(
+    first_error: &Mutex<Option<EngineError>>,
+    stopped: &AtomicBool,
+    error: EngineError,
+) -> WalkState {
+    if let Ok(mut first_error) = first_error.lock()
+        && first_error.is_none()
+    {
+        *first_error = Some(error);
+    }
+    stopped.store(true, Ordering::Release);
+    WalkState::Quit
+}
+
+fn load_patterns(root: &Path, request: &LexicalSearchRequest) -> Result<Vec<String>, EngineError> {
+    let mut patterns = request.patterns.clone();
+    for pattern_file in &request.pattern_files {
+        let path = resolve_path(root, pattern_file);
+        let file_patterns = grep::cli::patterns_from_path(&path).map_err(|error| {
+            EngineError::invalid_input(format!(
+                "pattern file {} could not be read: {error}",
+                pattern_file.display()
+            ))
+        })?;
+        patterns.extend(file_patterns);
+    }
+    let mut seen = HashSet::new();
+    patterns.retain(|pattern| seen.insert(pattern.clone()));
+    Ok(patterns)
+}
+
+fn build_matcher(
+    patterns: &[String],
+    request: &LexicalSearchRequest,
+) -> Result<RegexMatcher, EngineError> {
+    let mut builder = RegexMatcherBuilder::new();
+    builder
+        .multi_line(true)
+        .line_terminator(Some(b'\n'))
+        .case_insensitive(request.options.ignore_case)
+        .fixed_strings(request.options.fixed_strings)
+        .word(request.options.word_regexp);
+    builder.build_many(patterns).map_err(|error| {
+        EngineError::invalid_input(format!("invalid lexical search pattern: {error}"))
+    })
+}
+
+fn build_walker(
+    root: &Path,
+    request: &LexicalSearchRequest,
+    checked_paths: &CheckedPaths,
+    worker_threads: usize,
+) -> Result<WalkBuilder, EngineError> {
+    let paths = if request.paths.is_empty() {
+        vec![root.to_path_buf()]
+    } else {
+        checked_paths
+            .existing
+            .iter()
+            .map(|path| resolve_path(root, path))
+            .collect()
+    };
+    let mut walker = WalkBuilder::from_iter(paths);
+    walker
+        .current_dir(root)
+        .hidden(!request.options.hidden)
+        .follow_links(request.options.follow)
+        .threads(worker_threads)
+        .max_depth(request.options.max_depth)
+        .max_filesize(request.options.max_file_size_bytes);
+
+    if request.options.hidden {
+        let filter_root = root.to_path_buf();
+        walker.filter_entry(move |entry| {
+            let path = entry
+                .path()
+                .strip_prefix(&filter_root)
+                .unwrap_or_else(|_| entry.path());
+            !is_hard_ignored_path(path)
+        });
+    }
+
+    if request.options.no_ignore {
+        walker
+            .parents(false)
+            .ignore(false)
+            .git_ignore(false)
+            .git_global(false)
+            .git_exclude(false);
+    } else {
+        walker.add_custom_ignore_filename(".rgignore");
+    }
+
+    for ignore_file in &request.options.ignore_files {
+        let path = resolve_path(root, ignore_file);
+        if let Some(error) = walker.add_ignore(&path) {
+            return Err(EngineError::invalid_input(format!(
+                "ignore file {} could not be loaded: {error}",
+                ignore_file.display()
+            )));
+        }
+    }
+
+    if !request.options.globs.is_empty() {
+        let mut overrides = OverrideBuilder::new(root);
+        for glob in &request.options.globs {
+            overrides.add(glob).map_err(|error| {
+                EngineError::invalid_input(format!("invalid glob {glob:?}: {error}"))
+            })?;
+        }
+        walker.overrides(overrides.build().map_err(|error| {
+            EngineError::invalid_input(format!("invalid glob override: {error}"))
+        })?);
+    }
+
+    if !request.options.file_types.is_empty() || !request.options.excluded_file_types.is_empty() {
+        walker.types(build_file_types(request)?);
+    }
+    Ok(walker)
+}
+
+fn build_file_types(request: &LexicalSearchRequest) -> Result<ignore::types::Types, EngineError> {
+    let mut builder = TypesBuilder::new();
+    builder.add_defaults();
+    for name in &request.options.file_types {
+        builder.select(name);
+    }
+    for name in &request.options.excluded_file_types {
+        builder.negate(name);
+    }
+    builder.build().map_err(|error| {
+        EngineError::invalid_input(format!("invalid ripgrep file type selection: {error}"))
+    })
+}
+
+fn search_file(
+    root: &Path,
+    path: &Path,
+    matcher: &RegexMatcher,
+    searcher: &mut grep::searcher::Searcher,
+    results: &mut Vec<LexicalMatch>,
+) -> Result<(), EngineError> {
+    let absolute_path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let relative_path = absolute_path
+        .strip_prefix(root)
+        .map_or_else(|_| absolute_path.clone(), Path::to_path_buf);
+    let search_result = searcher.search_path(
+        matcher,
+        &absolute_path,
+        Bytes(|line_number, bytes| {
+            let first = matcher.find(bytes).map_err(io::Error::other)?;
+            let Some(first) = first else {
+                return Ok(true);
+            };
+            let content_bytes = trim_line_terminator(bytes);
+            let Ok(content) = std::str::from_utf8(content_bytes) else {
+                return Ok(true);
+            };
+            let line_number = usize::try_from(line_number)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            let start = text_position_at_byte_offset(content, first.start());
+            let end = text_position_at_byte_offset(content, first.end());
+            results.push(LexicalMatch {
+                rank: 0,
+                absolute_path: absolute_path.clone(),
+                relative_path: relative_path.clone(),
+                range: TextRange {
+                    start_line: line_number + start.0,
+                    end_line: line_number + end.0,
+                    start_offset: start.1,
+                    end_offset: end.1,
+                },
+                excerpt_range: None,
+                content: content.to_owned(),
+            });
+            Ok(true)
+        }),
+    );
+    if let Err(error) = search_result {
+        return Err(EngineError::backend(
+            EMBEDDED_BACKEND,
+            format!("{}: {error}", absolute_path.display()),
+        ));
+    }
+    Ok(())
+}
+
+fn trim_line_terminator(mut bytes: &[u8]) -> &[u8] {
+    if let Some(stripped) = bytes.strip_suffix(b"\n") {
+        bytes = stripped;
+    }
+    bytes.strip_suffix(b"\r").unwrap_or(bytes)
 }
 
 fn check_paths(root: &Path, paths: &[PathBuf]) -> CheckedPaths {
@@ -159,90 +511,19 @@ fn resolve_path(root: &Path, path: &Path) -> PathBuf {
     }
 }
 
-fn build_args(request: &LexicalSearchRequest, paths: &[PathBuf]) -> Vec<OsString> {
-    let mut args = [
-        "--json",
-        "--line-number",
-        "--column",
-        "--with-filename",
-        "--color",
-        "never",
-    ]
-    .map(OsString::from)
-    .to_vec();
-
-    push_switch(&mut args, request.options.fixed_strings, "--fixed-strings");
-    push_switch(&mut args, request.options.ignore_case, "--ignore-case");
-    push_switch(&mut args, request.options.word_regexp, "--word-regexp");
-    push_switch(&mut args, request.options.hidden, "--hidden");
-    push_switch(&mut args, request.options.no_ignore, "--no-ignore");
-    push_switch(&mut args, request.options.follow, "--follow");
-    push_value(
-        &mut args,
-        "--max-depth",
-        request.options.max_depth.map(|value| value.to_string()),
-    );
-    push_value(
-        &mut args,
-        "--max-filesize",
-        request
-            .options
-            .max_file_size_bytes
-            .map(|value| value.to_string()),
-    );
-
-    for path in &request.options.ignore_files {
-        args.extend([OsString::from("--ignore-file"), path.as_os_str().to_owned()]);
-    }
-    for glob in &request.options.globs {
-        args.extend([OsString::from("--glob"), OsString::from(glob)]);
-    }
-    for file_type in &request.options.file_types {
-        args.extend([OsString::from("--type"), OsString::from(file_type)]);
-    }
-    for file_type in &request.options.excluded_file_types {
-        args.extend([OsString::from("--type-not"), OsString::from(file_type)]);
-    }
-    for directory in HARD_IGNORED_DIRECTORIES {
-        args.extend([
-            OsString::from("--glob"),
-            OsString::from(format!("!**/{directory}/**")),
-        ]);
-    }
-    for pattern in &request.patterns {
-        args.extend([OsString::from("--regexp"), OsString::from(pattern)]);
-    }
-    for pattern_file in &request.pattern_files {
-        args.extend([
-            OsString::from("--file"),
-            pattern_file.as_os_str().to_owned(),
-        ]);
-    }
-    args.push(OsString::from("--"));
-    if paths.is_empty() {
-        args.push(OsString::from("."));
-    } else {
-        args.extend(paths.iter().map(|path| path.as_os_str().to_owned()));
-    }
-    args
-}
-
-fn push_switch(args: &mut Vec<OsString>, enabled: bool, name: &str) {
-    if enabled {
-        args.push(OsString::from(name));
-    }
-}
-
-fn push_value(args: &mut Vec<OsString>, name: &str, value: Option<String>) {
-    if let Some(value) = value {
-        args.extend([OsString::from(name), OsString::from(value)]);
-    }
+fn is_hard_ignored_path(path: &Path) -> bool {
+    path.components().any(|component| {
+        let Component::Normal(name) = component else {
+            return false;
+        };
+        HARD_IGNORED_DIRECTORIES
+            .iter()
+            .any(|directory| name == *directory)
+    })
 }
 
 fn empty_reply(
     root: &Path,
-    executable: &Path,
-    args: &[OsString],
     request: &LexicalSearchRequest,
     checked_paths: &CheckedPaths,
 ) -> LexicalSearchReply {
@@ -250,24 +531,19 @@ fn empty_reply(
         root: root.to_path_buf(),
         coverage: LexicalCoverage::Exhaustive,
         matches: Vec::new(),
-        diagnostics: diagnostics(executable, args, request, checked_paths, false),
+        diagnostics: diagnostics(request, checked_paths, false),
     }
 }
 
 fn diagnostics(
-    executable: &Path,
-    args: &[OsString],
     request: &LexicalSearchRequest,
     checked_paths: &CheckedPaths,
     truncated: bool,
 ) -> LexicalDiagnostics {
     LexicalDiagnostics {
-        backend: "rg".to_owned(),
-        command: executable.to_path_buf(),
-        args: args
-            .iter()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect(),
+        backend: EMBEDDED_BACKEND.to_owned(),
+        command: PathBuf::from(EMBEDDED_COMMAND),
+        args: diagnostic_args(request),
         ignored_directories: HARD_IGNORED_DIRECTORIES
             .into_iter()
             .map(PathBuf::from)
@@ -276,6 +552,60 @@ fn diagnostics(
         searched_paths: checked_paths.existing.clone(),
         limit: request.limit,
         truncated,
+    }
+}
+
+fn diagnostic_args(request: &LexicalSearchRequest) -> Vec<String> {
+    let mut args = Vec::new();
+    push_diagnostic_switch(&mut args, request.options.fixed_strings, "--fixed-strings");
+    push_diagnostic_switch(&mut args, request.options.ignore_case, "--ignore-case");
+    push_diagnostic_switch(&mut args, request.options.word_regexp, "--word-regexp");
+    push_diagnostic_switch(&mut args, request.options.hidden, "--hidden");
+    push_diagnostic_switch(&mut args, request.options.no_ignore, "--no-ignore");
+    push_diagnostic_switch(&mut args, request.options.follow, "--follow");
+    push_diagnostic_value(
+        &mut args,
+        "--max-depth",
+        request.options.max_depth.map(|value| value.to_string()),
+    );
+    push_diagnostic_value(
+        &mut args,
+        "--max-filesize",
+        request
+            .options
+            .max_file_size_bytes
+            .map(|value| value.to_string()),
+    );
+    for glob in &request.options.globs {
+        args.extend(["--glob".to_owned(), glob.clone()]);
+    }
+    for file_type in &request.options.file_types {
+        args.extend(["--type".to_owned(), file_type.clone()]);
+    }
+    for file_type in &request.options.excluded_file_types {
+        args.extend(["--type-not".to_owned(), file_type.clone()]);
+    }
+    for pattern in &request.patterns {
+        args.extend(["--regexp".to_owned(), pattern.clone()]);
+    }
+    for pattern_file in &request.pattern_files {
+        args.extend([
+            "--file".to_owned(),
+            pattern_file.to_string_lossy().into_owned(),
+        ]);
+    }
+    args
+}
+
+fn push_diagnostic_switch(args: &mut Vec<String>, enabled: bool, name: &str) {
+    if enabled {
+        args.push(name.to_owned());
+    }
+}
+
+fn push_diagnostic_value(args: &mut Vec<String>, name: &str, value: Option<String>) {
+    if let Some(value) = value {
+        args.extend([name.to_owned(), value]);
     }
 }
 
@@ -343,71 +673,6 @@ fn modified_epoch_ms(path: &Path) -> Option<u64> {
         .and_then(|duration| u64::try_from(duration.as_millis()).ok())
 }
 
-#[derive(Debug, Deserialize)]
-struct RipgrepEvent {
-    #[serde(rename = "type")]
-    kind: String,
-    data: Option<RipgrepMatchData>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RipgrepMatchData {
-    path: TextValue,
-    lines: TextValue,
-    line_number: usize,
-    #[serde(default)]
-    submatches: Vec<RipgrepSubmatch>,
-}
-
-#[derive(Debug, Deserialize)]
-struct TextValue {
-    text: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RipgrepSubmatch {
-    start: usize,
-    end: usize,
-}
-
-fn parse_output(root: &Path, stdout: &[u8]) -> Vec<LexicalMatch> {
-    stdout
-        .split(|byte| *byte == b'\n')
-        .filter_map(|line| serde_json::from_slice::<RipgrepEvent>(line).ok())
-        .filter_map(|event| parse_event(root, event))
-        .collect()
-}
-
-fn parse_event(root: &Path, event: RipgrepEvent) -> Option<LexicalMatch> {
-    if event.kind != "match" {
-        return None;
-    }
-    let data = event.data?;
-    let path = PathBuf::from(data.path.text?);
-    let absolute_path = resolve_path(root, &path);
-    let relative_path = absolute_path
-        .strip_prefix(root)
-        .map_or_else(|_| absolute_path.clone(), Path::to_path_buf);
-    let content = data.lines.text?.trim_end_matches(['\r', '\n']).to_owned();
-    let first = data.submatches.first();
-    let start = text_position_at_byte_offset(&content, first.map_or(0, |item| item.start));
-    let end = text_position_at_byte_offset(&content, first.map_or(content.len(), |item| item.end));
-
-    Some(LexicalMatch {
-        rank: 0,
-        absolute_path,
-        relative_path,
-        range: TextRange {
-            start_line: data.line_number + start.0,
-            end_line: data.line_number + end.0,
-            start_offset: start.1,
-            end_offset: end.1,
-        },
-        excerpt_range: None,
-        content,
-    })
-}
-
 fn text_position_at_byte_offset(value: &str, byte_offset: usize) -> (usize, usize) {
     let end = byte_offset.min(value.len());
     let prefix = String::from_utf8_lossy(&value.as_bytes()[..end]);
@@ -421,15 +686,230 @@ fn text_position_at_byte_offset(value: &str, byte_offset: usize) -> (usize, usiz
 
 #[cfg(test)]
 mod tests {
-    use super::parse_output;
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+    };
+
+    use crate::{LexicalOptions, LexicalSearchReply, LexicalSearchRequest};
+    use tempfile::TempDir;
+
+    use super::{
+        DEFAULT_MAX_SEARCH_THREADS, LexicalSearchService, default_worker_threads,
+        worker_threads_for_search,
+    };
+
+    fn request(pattern: &str) -> LexicalSearchRequest {
+        LexicalSearchRequest {
+            patterns: vec![pattern.to_owned()],
+            ..LexicalSearchRequest::default()
+        }
+    }
+
+    async fn search(
+        service: &LexicalSearchService,
+        root: &Path,
+        request: &LexicalSearchRequest,
+    ) -> LexicalSearchReply {
+        service
+            .search(root, request)
+            .await
+            .expect("embedded search")
+    }
 
     #[test]
-    fn parses_match_events_and_uses_utf16_columns() {
-        let line = r#"{"type":"match","data":{"path":{"text":"src/a.rs"},"lines":{"text":"let x = \"你好\";\n"},"line_number":7,"absolute_offset":0,"submatches":[{"match":{"text":"你好"},"start":9,"end":15}]}}"#;
-        let matches = parse_output(std::path::Path::new("/workspace"), line.as_bytes());
-        assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].range.start_line, 7);
-        assert_eq!(matches[0].range.start_offset, 9);
-        assert_eq!(matches[0].range.end_offset, 11);
+    fn default_threads_match_ripgrep_heuristic() {
+        let expected = std::thread::available_parallelism()
+            .map_or(1, std::num::NonZeroUsize::get)
+            .min(DEFAULT_MAX_SEARCH_THREADS);
+        assert_eq!(default_worker_threads(), expected);
+    }
+
+    #[test]
+    fn single_file_search_forces_one_worker() {
+        let root = TempDir::new().expect("temp dir");
+        fs::write(root.path().join("a.txt"), "needle\n").expect("fixture");
+        fs::create_dir(root.path().join("src")).expect("fixture directory");
+
+        let mut single_file = request("needle");
+        single_file.paths = vec![PathBuf::from("a.txt")];
+        assert_eq!(worker_threads_for_search(root.path(), &single_file, 8), 1);
+
+        let mut single_directory = request("needle");
+        single_directory.paths = vec![PathBuf::from("src")];
+        assert_eq!(
+            worker_threads_for_search(root.path(), &single_directory, 8),
+            8
+        );
+
+        let mut multiple_paths = request("needle");
+        multiple_paths.paths = vec![PathBuf::from("a.txt"), PathBuf::from("src")];
+        assert_eq!(
+            worker_threads_for_search(root.path(), &multiple_paths, 8),
+            8
+        );
+        assert_eq!(
+            worker_threads_for_search(&root.path().join("a.txt"), &request("needle"), 8),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn searches_in_process_and_reports_utf16_columns() {
+        let root = TempDir::new().expect("temp dir");
+        std::fs::write(
+            root.path().join("a.txt"),
+            "before\nlet x = \"你好\";\nafter\n",
+        )
+        .expect("fixture");
+        let reply = search(&LexicalSearchService::new(), root.path(), &request("你好")).await;
+
+        assert_eq!(reply.diagnostics.backend, "grep");
+        assert_eq!(reply.matches.len(), 1);
+        assert_eq!(reply.matches[0].relative_path, Path::new("a.txt"));
+        assert_eq!(reply.matches[0].range.start_line, 2);
+        assert_eq!(reply.matches[0].range.start_offset, 9);
+        assert_eq!(reply.matches[0].range.end_offset, 11);
+    }
+
+    #[tokio::test]
+    async fn honors_ignore_hidden_glob_type_and_hard_exclusions() {
+        let root = TempDir::new().expect("temp dir");
+        fs::create_dir_all(root.path().join(".git")).expect("git dir");
+        fs::create_dir_all(root.path().join(".hidden")).expect("hidden dir");
+        fs::write(root.path().join(".git/config"), "needle").expect("git fixture");
+        fs::write(root.path().join(".hidden/keep.rs"), "needle").expect("hidden fixture");
+        fs::write(root.path().join("keep.rs"), "needle").expect("rust fixture");
+        fs::write(root.path().join("drop.txt"), "needle").expect("text fixture");
+        fs::write(root.path().join(".gitignore"), "ignored.rs\n").expect("ignore fixture");
+        fs::write(root.path().join("ignored.rs"), "needle").expect("ignored fixture");
+
+        let mut typed = request("needle");
+        typed.options = LexicalOptions {
+            hidden: true,
+            file_types: vec!["rust".to_owned()],
+            ..LexicalOptions::default()
+        };
+        let reply = search(&LexicalSearchService::new(), root.path(), &typed).await;
+        let paths = reply
+            .matches
+            .iter()
+            .map(|item| item.relative_path.as_path())
+            .collect::<Vec<_>>();
+        assert_eq!(paths, [Path::new(".hidden/keep.rs"), Path::new("keep.rs")]);
+
+        typed.options.globs = vec!["!/keep.rs".to_owned()];
+        let reply = search(&LexicalSearchService::new(), root.path(), &typed).await;
+        assert_eq!(reply.matches.len(), 1);
+        assert_eq!(reply.matches[0].relative_path, Path::new(".hidden/keep.rs"));
+    }
+
+    #[tokio::test]
+    async fn supports_fixed_word_case_patterns_files_context_and_limits() {
+        let root = TempDir::new().expect("temp dir");
+        fs::write(
+            root.path().join("a.txt"),
+            "before\nNeedle.+ exact\nneedle.+ suffix\nafter\n",
+        )
+        .expect("fixture");
+        fs::write(root.path().join("patterns"), "needle.+\n").expect("patterns");
+        let mut request = LexicalSearchRequest {
+            pattern_files: vec![Path::new("patterns").to_path_buf()],
+            limit: Some(1),
+            ..LexicalSearchRequest::default()
+        };
+        request.options = LexicalOptions {
+            fixed_strings: true,
+            ignore_case: true,
+            word_regexp: true,
+            before_context: 1,
+            after_context: 1,
+            ..LexicalOptions::default()
+        };
+
+        let reply = search(&LexicalSearchService::new(), root.path(), &request).await;
+        assert_eq!(reply.matches.len(), 1);
+        assert!(reply.diagnostics.truncated);
+        assert_eq!(reply.matches[0].range.start_line, 1);
+        assert_eq!(
+            reply.matches[0]
+                .excerpt_range
+                .as_ref()
+                .expect("excerpt")
+                .start_line,
+            2
+        );
+        assert_eq!(
+            reply.matches[0].content,
+            "before\nNeedle.+ exact\nneedle.+ suffix"
+        );
+    }
+
+    #[tokio::test]
+    async fn supports_line_anchors_and_deduplicates_patterns() {
+        let root = TempDir::new().expect("temp dir");
+        fs::write(root.path().join("a.txt"), "prefix foo\nfoo\nfoo suffix\n").expect("fixture");
+        fs::write(root.path().join("patterns"), "^foo$\n^foo$\n").expect("patterns");
+        let request = LexicalSearchRequest {
+            patterns: vec!["^foo$".to_owned()],
+            pattern_files: vec![Path::new("patterns").to_path_buf()],
+            ..LexicalSearchRequest::default()
+        };
+
+        let reply = search(&LexicalSearchService::new(), root.path(), &request).await;
+        assert_eq!(reply.matches.len(), 1);
+        assert_eq!(reply.matches[0].range.start_line, 2);
+        assert_eq!(reply.matches[0].content, "foo");
+    }
+
+    #[tokio::test]
+    async fn parallel_search_keeps_results_in_deterministic_path_order() {
+        let root = TempDir::new().expect("temp dir");
+        for index in (0..32).rev() {
+            let directory = root.path().join(format!("dir-{index:02}"));
+            fs::create_dir(&directory).expect("fixture directory");
+            fs::write(directory.join("match.txt"), "needle\n").expect("fixture file");
+        }
+
+        let reply = search(
+            &LexicalSearchService::new().with_worker_threads(4),
+            root.path(),
+            &request("needle"),
+        )
+        .await;
+        let actual = reply
+            .matches
+            .iter()
+            .map(|item| item.relative_path.clone())
+            .collect::<Vec<_>>();
+        let expected = (0..32)
+            .map(|index| PathBuf::from(format!("dir-{index:02}/match.txt")))
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
+    }
+
+    #[tokio::test]
+    async fn no_ignore_disables_gitignore_ignore_and_rgignore_files() {
+        let root = TempDir::new().expect("temp dir");
+        fs::create_dir(root.path().join(".git")).expect("git repository marker");
+        fs::write(root.path().join(".gitignore"), "git.txt\n").expect("gitignore");
+        fs::write(root.path().join(".ignore"), "ignore.txt\n").expect("ignore");
+        fs::write(root.path().join(".rgignore"), "rg.txt\n").expect("rgignore");
+        for name in ["git.txt", "ignore.txt", "rg.txt"] {
+            fs::write(root.path().join(name), "needle\n").expect("fixture");
+        }
+
+        let ignored = search(
+            &LexicalSearchService::new(),
+            root.path(),
+            &request("needle"),
+        )
+        .await;
+        assert!(ignored.matches.is_empty());
+
+        let mut unfiltered = request("needle");
+        unfiltered.options.no_ignore = true;
+        let reply = search(&LexicalSearchService::new(), root.path(), &unfiltered).await;
+        assert_eq!(reply.matches.len(), 3);
     }
 }

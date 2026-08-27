@@ -1,11 +1,11 @@
 use std::{
     collections::{HashMap, HashSet},
     fs,
-    path::{Path, PathBuf},
-    process::Command,
+    path::Path,
     sync::{Arc, OnceLock},
 };
 
+use ignore::types::TypesBuilder;
 use zg_engine::{DiscoveryOptions, EngineError, RootSpec};
 
 use crate::pattern::{
@@ -107,18 +107,16 @@ const RIPGREP_FILE_TYPE_ALIASES: [(&str, &str); 24] = [
 ];
 
 type FileTypeMap = HashMap<String, Vec<String>>;
-type FileTypeCache = OnceLock<Result<FileTypeMap, String>>;
+type FileTypeCache = OnceLock<FileTypeMap>;
 
 #[derive(Clone, Debug)]
 pub(crate) struct FileTypeResolver {
-    executable: PathBuf,
     cache: Arc<FileTypeCache>,
 }
 
 impl FileTypeResolver {
-    pub fn new(executable: PathBuf) -> Self {
+    pub fn new() -> Self {
         Self {
-            executable,
             cache: Arc::new(OnceLock::new()),
         }
     }
@@ -131,15 +129,7 @@ impl FileTypeResolver {
         if included.is_empty() && excluded.is_empty() {
             return Ok(FileTypePatterns::default());
         }
-        let result = self
-            .cache
-            .get_or_init(|| load_ripgrep_type_map(&self.executable));
-        let type_map = result.as_ref().map_err(|message| {
-            EngineError::backend(
-                "native-scanner",
-                format!("unable to load ripgrep file types: {message}"),
-            )
-        })?;
+        let type_map = self.cache.get_or_init(load_default_type_map);
         Ok(FileTypePatterns {
             include: resolve_type_names(included, type_map)?,
             exclude: resolve_type_names(excluded, type_map)?,
@@ -677,35 +667,14 @@ fn is_nested_git_repository_directory(path: &Path) -> bool {
     fs::metadata(path.join(".git")).is_ok_and(|metadata| metadata.is_file() || metadata.is_dir())
 }
 
-fn load_ripgrep_type_map(executable: &Path) -> Result<HashMap<String, Vec<String>>, String> {
-    let output = Command::new(executable)
-        .arg("--type-list")
-        .output()
-        .map_err(|error| error.to_string())?;
-    if !output.status.success() {
-        return Err(format!(
-            "{} exited with {}: {}",
-            executable.display(),
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    let mut types = HashMap::new();
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
-        let Some((name, patterns)) = line.split_once(':') else {
-            continue;
-        };
-        let patterns: Vec<_> = patterns
-            .split(',')
-            .map(str::trim)
-            .filter(|pattern| !pattern.is_empty())
-            .map(str::to_owned)
-            .collect();
-        if !name.trim().is_empty() && !patterns.is_empty() {
-            types.insert(name.trim().to_lowercase(), patterns);
-        }
-    }
-    Ok(types)
+fn load_default_type_map() -> HashMap<String, Vec<String>> {
+    let mut builder = TypesBuilder::new();
+    builder.add_defaults();
+    builder
+        .definitions()
+        .into_iter()
+        .map(|definition| (definition.name().to_owned(), definition.globs().to_vec()))
+        .collect()
 }
 
 fn resolve_type_names(
@@ -764,7 +733,7 @@ mod tests {
 
     #[test]
     fn gitignore_negation_and_explicit_include_match_typescript() {
-        let resolver = FileTypeResolver::new(PathBuf::from("rg"));
+        let resolver = FileTypeResolver::new();
         let policy = RootPolicy::new(
             root(DiscoveryOptions {
                 include_paths: vec!["vendor/keep.ts".to_owned()],
@@ -781,7 +750,7 @@ mod tests {
 
     #[test]
     fn hidden_directories_require_hidden_or_an_explicit_include() {
-        let resolver = FileTypeResolver::new(PathBuf::from("rg"));
+        let resolver = FileTypeResolver::new();
         let defaults =
             RootPolicy::new(root(DiscoveryOptions::default()), &resolver).expect("default policy");
         assert!(!defaults.path_can_be_scanned(".vscode", ".vscode", true, &[]));
