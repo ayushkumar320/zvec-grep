@@ -6,7 +6,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::error::ModelError;
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct CreateEmbeddingModelOptions {
     pub api_key: Option<String>,
     pub endpoint: Option<String>,
@@ -238,5 +238,148 @@ const fn kind_name(kind: EmbeddingInputKind) -> &'static str {
     match kind {
         EmbeddingInputKind::Text => "text",
         EmbeddingInputKind::Image => "image",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{Content, ImageContent, ImageFormat};
+
+    use super::*;
+
+    #[test]
+    fn validates_all_representable_input_failures_from_the_typescript_base_class() {
+        let mut info = fixture_info();
+
+        assert_error_code(
+            validate_contents(&info, &[]),
+            "ZVEC_GREP.ENGINE.MODELS.EMBEDDING_EMPTY_INPUT",
+        );
+        assert_error_code(
+            validate_contents(
+                &info,
+                &[
+                    Content::Text("one".to_owned()),
+                    Content::Text("two".to_owned()),
+                    Content::Text("three".to_owned()),
+                ],
+            ),
+            "ZVEC_GREP.ENGINE.MODELS.EMBEDDING_BATCH_TOO_LARGE",
+        );
+        assert_error_code(
+            validate_contents(&info, &[Content::Text("  ".to_owned())]),
+            "ZVEC_GREP.ENGINE.MODELS.EMBEDDING_EMPTY_TEXT",
+        );
+        assert_error_code(
+            validate_contents(
+                &info,
+                &[Content::Image(ImageContent {
+                    data: Vec::new(),
+                    format: ImageFormat::Png,
+                })],
+            ),
+            "ZVEC_GREP.ENGINE.MODELS.EMBEDDING_EMPTY_IMAGE",
+        );
+        assert_error_code(
+            validate_contents(
+                &info,
+                &[Content::Image(ImageContent {
+                    data: vec![1, 2, 3, 4],
+                    format: ImageFormat::Png,
+                })],
+            ),
+            "ZVEC_GREP.ENGINE.MODELS.EMBEDDING_IMAGE_TOO_LARGE",
+        );
+
+        info.input_kinds = vec![EmbeddingInputKind::Text];
+        assert_error_code(
+            validate_contents(
+                &info,
+                &[Content::Image(ImageContent {
+                    data: vec![1],
+                    format: ImageFormat::Png,
+                })],
+            ),
+            "ZVEC_GREP.ENGINE.MODELS.EMBEDDING_UNSUPPORTED_CONTENT",
+        );
+    }
+
+    #[test]
+    fn validates_all_representable_provider_output_failures() {
+        let info = fixture_info();
+
+        assert_error_code(
+            validate_result(
+                &info,
+                1,
+                &EmbeddingResult {
+                    vectors: Vec::new(),
+                    truncated: Vec::new(),
+                },
+            ),
+            "ZVEC_GREP.ENGINE.MODELS.EMBEDDING_VECTOR_COUNT_MISMATCH",
+        );
+        assert_error_code(
+            validate_result(
+                &info,
+                1,
+                &EmbeddingResult {
+                    vectors: vec![vec![1.0]],
+                    truncated: Vec::new(),
+                },
+            ),
+            "ZVEC_GREP.ENGINE.MODELS.EMBEDDING_DIMENSION_MISMATCH",
+        );
+        assert_error_code(
+            validate_result(
+                &info,
+                1,
+                &EmbeddingResult {
+                    vectors: vec![vec![1.0, f32::NAN]],
+                    truncated: Vec::new(),
+                },
+            ),
+            "ZVEC_GREP.ENGINE.MODELS.EMBEDDING_NON_FINITE_VECTOR_VALUE",
+        );
+        for truncated in [vec![1], vec![0, 0]] {
+            assert_error_code(
+                validate_result(
+                    &info,
+                    1,
+                    &EmbeddingResult {
+                        vectors: vec![vec![1.0, 0.0]],
+                        truncated,
+                    },
+                ),
+                "ZVEC_GREP.ENGINE.MODELS.EMBEDDING_INVALID_TRUNCATED_INPUT_INDEX",
+            );
+        }
+    }
+
+    fn fixture_info() -> EmbeddingModelInfo {
+        EmbeddingModelInfo {
+            reference: "test/stub".to_owned(),
+            provider: "test".to_owned(),
+            name: "stub".to_owned(),
+            dimension: 2,
+            metric: EmbeddingMetric::Cosine,
+            endpoint: None,
+            default_concurrency: Some(2),
+            input_kinds: vec![EmbeddingInputKind::Text, EmbeddingInputKind::Image],
+            limits: EmbeddingModelLimits {
+                max_batch_size: 2,
+                max_input_tokens: None,
+                max_image_bytes: Some(3),
+            },
+        }
+    }
+
+    fn assert_error_code(result: Result<(), ModelError>, expected: &'static str) {
+        assert_eq!(
+            result
+                .expect_err("validation should reject the fixture")
+                .code(),
+            Some(expected)
+        );
     }
 }

@@ -1,6 +1,6 @@
-//! Index lifecycle requests and replies.
+//! Index lifecycle requests, progress and replies.
 
-use std::path::PathBuf;
+use std::{fmt, path::PathBuf, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 
@@ -24,6 +24,84 @@ pub struct IndexRequest {
     pub wait: bool,
     /// Include bounded skipped-file diagnostics in a completed response.
     pub debug: bool,
+    /// Receives in-process indexing and model download progress.
+    ///
+    /// Reporters are runtime-only and are deliberately omitted from serialized
+    /// daemon and transport requests.
+    #[serde(skip)]
+    pub on_progress: Option<IndexProgressReporter>,
+}
+
+/// Thread-safe callback used by the in-process [`crate::ZvecGrep::index`] API.
+#[derive(Clone)]
+pub struct IndexProgressReporter(Arc<dyn Fn(IndexProgress) + Send + Sync + 'static>);
+
+impl IndexProgressReporter {
+    #[must_use]
+    pub fn new(reporter: impl Fn(IndexProgress) + Send + Sync + 'static) -> Self {
+        Self(Arc::new(reporter))
+    }
+
+    pub(crate) fn report(&self, progress: IndexProgress) {
+        (self.0)(progress);
+    }
+}
+
+impl fmt::Debug for IndexProgressReporter {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("IndexProgressReporter(..)")
+    }
+}
+
+impl PartialEq for IndexProgressReporter {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for IndexProgressReporter {}
+
+/// Current phase of an index operation.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IndexProgressPhase {
+    Scanning,
+    Indexing,
+    Done,
+}
+
+/// Current lifecycle stage of the embedding model used by indexing.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IndexEmbeddingStage {
+    Preparing,
+    Downloading,
+    Ready,
+    Warning,
+}
+
+/// Model runtime and download progress nested in [`IndexProgress`].
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct IndexEmbeddingProgress {
+    pub concurrency: Option<usize>,
+    pub max_concurrency: Option<usize>,
+    pub retryable_failures: Option<usize>,
+    pub stage: Option<IndexEmbeddingStage>,
+    pub model: Option<String>,
+    pub downloaded_bytes: Option<u64>,
+    pub total_bytes: Option<u64>,
+    pub message: Option<String>,
+}
+
+/// Progress emitted by an index operation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct IndexProgress {
+    pub phase: IndexProgressPhase,
+    pub files_total: Option<usize>,
+    pub files_indexed: Option<usize>,
+    pub files_failed: Option<usize>,
+    pub detail: Option<String>,
+    pub embedding: Option<IndexEmbeddingProgress>,
 }
 
 /// A normalized filesystem change relative to its [`RootSpec`].
@@ -102,4 +180,25 @@ pub enum IndexPolicy {
     Enabled,
     Disabled,
     Undecided,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{IndexProgressReporter, IndexRequest};
+
+    #[test]
+    fn index_progress_reporter_is_runtime_only() {
+        let request = IndexRequest {
+            root: Some("/workspace".into()),
+            on_progress: Some(IndexProgressReporter::new(|_| {})),
+            ..IndexRequest::default()
+        };
+
+        let encoded = serde_json::to_string(&request).expect("index request should serialize");
+        assert!(!encoded.contains("on_progress"));
+        let decoded: IndexRequest =
+            serde_json::from_str(&encoded).expect("index request should deserialize");
+        assert!(decoded.on_progress.is_none());
+        assert_eq!(decoded.root, request.root);
+    }
 }

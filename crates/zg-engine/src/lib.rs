@@ -14,9 +14,10 @@ mod service;
 pub use domain::{
     ChangeIndexAction, ChangeIndexReply, ChangeIndexRequest, Content, ContentRange, Device,
     DiscoveryOptions, EmbeddingInputKind, EmbeddingMetric, EmbeddingModelSpec, EmptyReason,
-    EntityMetadata, FileKind, Freshness, ImageContent, ImageFormat, IndexPolicy, IndexReply,
-    IndexRequest, InspectReply, InspectRequest, InspectSource, JobAction, JobInfo, JobReceipt,
-    JobReply, JobRequest, JobState, LexicalCoverage, LexicalDiagnostics, LexicalMatch,
+    EntityMetadata, FileKind, Freshness, ImageContent, ImageFormat, IndexEmbeddingProgress,
+    IndexEmbeddingStage, IndexPolicy, IndexProgress, IndexProgressPhase, IndexProgressReporter,
+    IndexReply, IndexRequest, InspectReply, InspectRequest, InspectSource, JobAction, JobInfo,
+    JobReceipt, JobReply, JobRequest, JobState, LexicalCoverage, LexicalDiagnostics, LexicalMatch,
     LexicalOptions, LexicalSearchReply, LexicalSearchRequest, ManagedRgArgumentError, MatchedBy,
     QueryCoverage, QueryDiagnostics, QueryItem, QueryItemKind, QueryReply, QueryRequest,
     QueryRoute, QueryRouteMode, QuerySource, RefreshMode, RootSpec, SkippedFile, SkippedFileReason,

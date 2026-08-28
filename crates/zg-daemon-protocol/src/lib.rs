@@ -6,9 +6,9 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use zg_engine::{
-    ChangeIndexReply, ChangeIndexRequest, ErrorCode, IndexReply, IndexRequest, InspectReply,
-    InspectRequest, JobReply, JobRequest, LexicalSearchReply, LexicalSearchRequest, QueryReply,
-    QueryRequest,
+    ChangeIndexReply, ChangeIndexRequest, ErrorCode, IndexProgress, IndexReply, IndexRequest,
+    InspectReply, InspectRequest, JobReply, JobRequest, LexicalSearchReply, LexicalSearchRequest,
+    QueryReply, QueryRequest,
 };
 
 pub const CURRENT_DAEMON_PROTOCOL_VERSION: u32 = 1;
@@ -154,6 +154,7 @@ pub struct RequestEvent {
 pub enum RequestEventKind {
     Started,
     Progress { completed: u64, total: Option<u64> },
+    IndexProgress { progress: IndexProgress },
     Warning { code: String, message: String },
     Completed { result_count: usize },
     Failed { code: ErrorCode },
@@ -192,11 +193,15 @@ pub struct ErrorReply {
 
 #[cfg(test)]
 mod tests {
-    use zg_engine::QueryRequest;
+    use zg_engine::{
+        IndexEmbeddingProgress, IndexEmbeddingStage, IndexProgress, IndexProgressPhase,
+        QueryRequest,
+    };
 
     use super::{
         CURRENT_DAEMON_PROTOCOL_VERSION, DaemonCommand, DaemonRequest, DaemonRequestKind,
-        ExecuteRequest, HelloRequest, Principal, RequestId, TraceContext,
+        DaemonResponse, DaemonResponseKind, ExecuteRequest, HelloRequest, Principal, RequestEvent,
+        RequestEventKind, RequestId, TraceContext,
     };
 
     #[test]
@@ -226,5 +231,37 @@ mod tests {
         let decoded: DaemonRequest =
             serde_json::from_str(&encoded).expect("daemon request should deserialize");
         assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn detailed_index_progress_round_trips() {
+        let response = DaemonResponse {
+            message_id: 8,
+            kind: DaemonResponseKind::Event(RequestEvent {
+                request_id: RequestId::new(),
+                sequence: 2,
+                kind: RequestEventKind::IndexProgress {
+                    progress: IndexProgress {
+                        phase: IndexProgressPhase::Indexing,
+                        files_total: Some(10),
+                        files_indexed: Some(3),
+                        files_failed: Some(1),
+                        detail: Some("downloading local/fixture".to_owned()),
+                        embedding: Some(IndexEmbeddingProgress {
+                            stage: Some(IndexEmbeddingStage::Downloading),
+                            model: Some("local/fixture".to_owned()),
+                            downloaded_bytes: Some(4),
+                            total_bytes: Some(8),
+                            ..IndexEmbeddingProgress::default()
+                        }),
+                    },
+                },
+            }),
+        };
+
+        let encoded = serde_json::to_string(&response).expect("progress should serialize");
+        let decoded: DaemonResponse =
+            serde_json::from_str(&encoded).expect("progress should deserialize");
+        assert_eq!(decoded, response);
     }
 }

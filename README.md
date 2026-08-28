@@ -19,6 +19,13 @@ typed `query`, `lexical_search`, `index`, `inspect`,
 is no public command dispatcher, operation envelope, adapter registry or Core
 layer between a method and its implementation.
 
+The engine owns a private process-level model runtime manager. Workspaces using
+the same model configuration share one runtime and its loaded weights/tokenizer;
+embedding calls may execute concurrently against those shared resources.
+`IndexRequest::on_progress` accepts an in-process `IndexProgressReporter` and
+surfaces model downloads through `IndexProgress::embedding`. The reporter is
+runtime-only and is omitted from serialized daemon requests.
+
 Only `zg query --rg` is implemented end to end today. The other methods already
 have their final typed shape and return `capability_unavailable` until their
 service implementations land.

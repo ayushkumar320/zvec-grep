@@ -43,6 +43,20 @@ The lexical service owns ripgrep invocation, process admission, JSON parsing,
 filtering and deterministic ordering. Dropping an in-flight future kills its
 child process.
 
+`ZvecGrep` also owns one private model runtime manager. Its cache key includes
+the model reference and resource-affecting runtime options (credential
+fingerprint, endpoint, cache directory and device). Acquiring the same key
+returns counted leases over one shared model instance. Concurrent embedding
+calls share the instance's lazily loaded tokenizer and weights rather than
+loading independent copies. Closing `ZvecGrep` rejects new leases, immediately
+retires idle runtimes and lets active leases finish before their runtime is
+released.
+
+Embedding model lifecycle events stay private until a runtime lease maps them
+into the public `IndexProgress::embedding` shape. In-process callers attach an
+`IndexProgressReporter` to `IndexRequest`; daemon protocol events carry the
+serializable `IndexProgress` value instead of the runtime-only callback.
+
 ## Process transport
 
 The daemon owns one process-level `Arc<ZvecGrep>`. `zg-transport-mcp` translates

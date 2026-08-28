@@ -593,7 +593,7 @@ mod tests {
     use std::{
         path::Path,
         sync::{
-            Arc, Mutex as StdMutex,
+            Arc, Barrier, Mutex as StdMutex,
             atomic::{AtomicUsize, Ordering},
         },
     };
@@ -729,6 +729,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concurrent_embeddings_share_one_lazy_loaded_runtime() {
+        let root = TempDir::new().expect("temporary directory should be created");
+        let dependencies = Arc::new(FixtureDependencies::new_concurrent());
+        let model = Model2VecEmbeddingModel::with_dependencies(
+            fixture_entry(),
+            CreateEmbeddingModelOptions {
+                model_cache_dir: Some(root.path().to_path_buf()),
+                ..CreateEmbeddingModelOptions::default()
+            },
+            dependencies.clone(),
+        );
+        let first = [Content::Text("first".to_owned())];
+        let second = [Content::Text("second".to_owned())];
+
+        let (first_result, second_result) = tokio::join!(
+            model.embed(&first, EmbeddingOptions::default()),
+            model.embed(&second, EmbeddingOptions::default()),
+        );
+
+        assert_eq!(
+            first_result
+                .expect("first concurrent embedding should complete")
+                .vectors
+                .len(),
+            1
+        );
+        assert_eq!(
+            second_result
+                .expect("second concurrent embedding should complete")
+                .vectors
+                .len(),
+            1
+        );
+        assert_eq!(dependencies.downloads.load(Ordering::Relaxed), 2);
+        assert_eq!(dependencies.tokenizer_loads.load(Ordering::Relaxed), 1);
+        assert_eq!(dependencies.table_loads.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            dependencies
+                .tokenizer
+                .maximum_active
+                .load(Ordering::Acquire),
+            2
+        );
+    }
+
+    #[tokio::test]
     async fn reports_truncation_and_validates_inputs_like_typescript() {
         let root = TempDir::new().expect("temporary directory should be created");
         let dependencies = Arc::new(FixtureDependencies::new(FixtureTokenizerMode::Truncated));
@@ -775,6 +821,155 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn excludes_cached_artifacts_from_download_progress_like_typescript() {
+        let root = TempDir::new().expect("temporary directory should be created");
+        let tokenizer_path = root
+            .path()
+            .join("model2vec")
+            .join("test--potion")
+            .join("0123456789abcdef")
+            .join("tokenizer")
+            .join("tokenizer.json");
+        tokio::fs::create_dir_all(
+            tokenizer_path
+                .parent()
+                .expect("tokenizer path should have a parent"),
+        )
+        .await
+        .expect("tokenizer cache directory should be created");
+        tokio::fs::write(&tokenizer_path, b"{}")
+            .await
+            .expect("cached tokenizer should be written");
+
+        let dependencies = Arc::new(FixtureDependencies::new(FixtureTokenizerMode::Oracle));
+        let model = Model2VecEmbeddingModel::with_dependencies(
+            fixture_entry(),
+            CreateEmbeddingModelOptions {
+                model_cache_dir: Some(root.path().to_path_buf()),
+                ..CreateEmbeddingModelOptions::default()
+            },
+            dependencies.clone(),
+        );
+        let progress = Arc::new(StdMutex::new(Vec::new()));
+        let captured = Arc::clone(&progress);
+
+        model
+            .embed(
+                &[Content::Text("cached tokenizer".to_owned())],
+                EmbeddingOptions {
+                    on_progress: Some(Arc::new(move |event| {
+                        captured
+                            .lock()
+                            .expect("progress lock should not be poisoned")
+                            .push(event);
+                    })),
+                    ..EmbeddingOptions::default()
+                },
+            )
+            .await
+            .expect("cached tokenizer fixture should embed");
+
+        assert_eq!(dependencies.downloads.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            *progress
+                .lock()
+                .expect("progress lock should not be poisoned"),
+            [
+                EmbeddingModelProgress::Preparing {
+                    model: "local/test-potion".to_owned(),
+                },
+                EmbeddingModelProgress::Downloading {
+                    model: "local/test-potion".to_owned(),
+                    downloaded_bytes: Some(4),
+                    total_bytes: Some(8),
+                },
+                EmbeddingModelProgress::Ready {
+                    model: "local/test-potion".to_owned(),
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_out_of_range_token_ids_like_typescript() {
+        let root = TempDir::new().expect("temporary directory should be created");
+        let dependencies = Arc::new(FixtureDependencies::new(FixtureTokenizerMode::OutOfRange));
+        let model = Model2VecEmbeddingModel::with_dependencies(
+            fixture_entry(),
+            CreateEmbeddingModelOptions {
+                model_cache_dir: Some(root.path().to_path_buf()),
+                ..CreateEmbeddingModelOptions::default()
+            },
+            dependencies,
+        );
+
+        let error = model
+            .embed(
+                &[Content::Text("invalid token".to_owned())],
+                EmbeddingOptions::default(),
+            )
+            .await
+            .expect_err("out-of-range token id should fail");
+
+        assert_eq!(
+            error.code(),
+            Some("ZVEC_GREP.ENGINE.MODELS.MODEL2VEC_EMBED_FAILED")
+        );
+        assert!(
+            error
+                .cause()
+                .is_some_and(|cause| cause.contains("out-of-range token id"))
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_cancelled_embeddings_without_corrupting_the_loaded_runtime() {
+        let root = TempDir::new().expect("temporary directory should be created");
+        let dependencies = Arc::new(FixtureDependencies::new(FixtureTokenizerMode::Oracle));
+        let model = Model2VecEmbeddingModel::with_dependencies(
+            fixture_entry(),
+            CreateEmbeddingModelOptions {
+                model_cache_dir: Some(root.path().to_path_buf()),
+                ..CreateEmbeddingModelOptions::default()
+            },
+            dependencies.clone(),
+        );
+        let signal = tokio_util::sync::CancellationToken::new();
+        signal.cancel();
+
+        let error = model
+            .embed(
+                &[Content::Text("cancelled".to_owned())],
+                EmbeddingOptions {
+                    signal: Some(signal),
+                    ..EmbeddingOptions::default()
+                },
+            )
+            .await
+            .expect_err("cancelled embedding should fail");
+
+        assert_eq!(
+            error.code(),
+            Some("ZVEC_GREP.ENGINE.MODELS.MODEL2VEC_EMBED_FAILED")
+        );
+        assert!(
+            error
+                .cause()
+                .is_some_and(|cause| cause.contains("cancelled"))
+        );
+        model
+            .embed(
+                &[Content::Text("after cancellation".to_owned())],
+                EmbeddingOptions::default(),
+            )
+            .await
+            .expect("cancellation should not poison the shared runtime");
+        assert_eq!(dependencies.downloads.load(Ordering::Relaxed), 2);
+        assert_eq!(dependencies.tokenizer_loads.load(Ordering::Relaxed), 1);
+        assert_eq!(dependencies.table_loads.load(Ordering::Relaxed), 1);
+    }
+
     fn fixture_entry() -> Model2VecConfig {
         Model2VecConfig {
             reference: "local/test-potion",
@@ -799,12 +994,16 @@ mod tests {
     #[derive(Clone, Copy)]
     enum FixtureTokenizerMode {
         Oracle,
+        OutOfRange,
         Truncated,
     }
 
     struct FixtureTokenizer {
         mode: FixtureTokenizerMode,
         texts: StdMutex<Vec<String>>,
+        barrier: Option<Barrier>,
+        active: AtomicUsize,
+        maximum_active: AtomicUsize,
     }
 
     impl TokenizerRuntime for FixtureTokenizer {
@@ -813,8 +1012,15 @@ mod tests {
                 .lock()
                 .expect("tokenizer lock should not be poisoned")
                 .push(text.to_owned());
+            let active = self.active.fetch_add(1, Ordering::AcqRel) + 1;
+            self.maximum_active.fetch_max(active, Ordering::AcqRel);
+            if let Some(barrier) = &self.barrier {
+                barrier.wait();
+            }
+            self.active.fetch_sub(1, Ordering::AcqRel);
             Ok(match self.mode {
                 FixtureTokenizerMode::Truncated => vec![0, 1, 2],
+                FixtureTokenizerMode::OutOfRange => vec![3],
                 FixtureTokenizerMode::Oracle if text.contains("unknown-only") => vec![99],
                 FixtureTokenizerMode::Oracle if text.contains("both") => vec![0, 1],
                 FixtureTokenizerMode::Oracle => vec![2],
@@ -839,6 +1045,24 @@ mod tests {
                 tokenizer: Arc::new(FixtureTokenizer {
                     mode,
                     texts: StdMutex::new(Vec::new()),
+                    barrier: None,
+                    active: AtomicUsize::new(0),
+                    maximum_active: AtomicUsize::new(0),
+                }),
+                downloads: AtomicUsize::new(0),
+                tokenizer_loads: AtomicUsize::new(0),
+                table_loads: AtomicUsize::new(0),
+            }
+        }
+
+        fn new_concurrent() -> Self {
+            Self {
+                tokenizer: Arc::new(FixtureTokenizer {
+                    mode: FixtureTokenizerMode::Oracle,
+                    texts: StdMutex::new(Vec::new()),
+                    barrier: Some(Barrier::new(2)),
+                    active: AtomicUsize::new(0),
+                    maximum_active: AtomicUsize::new(0),
                 }),
                 downloads: AtomicUsize::new(0),
                 tokenizer_loads: AtomicUsize::new(0),

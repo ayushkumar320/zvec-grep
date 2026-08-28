@@ -9,7 +9,7 @@ use std::{
 use crate::{
     ChangeIndexReply, ChangeIndexRequest, EngineError, IndexReply, IndexRequest, InspectReply,
     InspectRequest, JobReply, JobRequest, LexicalSearchReply, LexicalSearchRequest, QueryReply,
-    QueryRequest, lexical::LexicalSearchService,
+    QueryRequest, lexical::LexicalSearchService, models::runtime::ModelRuntimeManager,
 };
 
 const DEFAULT_MAX_LEXICAL_PROCESSES: usize = 2;
@@ -18,6 +18,7 @@ const DEFAULT_MAX_LEXICAL_PROCESSES: usize = 2;
 #[derive(Clone, Debug)]
 pub struct ZvecGrep {
     lexical: LexicalSearchService,
+    models: ModelRuntimeManager,
     closed: Arc<AtomicBool>,
 }
 
@@ -29,6 +30,7 @@ impl ZvecGrep {
         Self {
             lexical: LexicalSearchService::default()
                 .with_max_processes(DEFAULT_MAX_LEXICAL_PROCESSES),
+            models: ModelRuntimeManager::new(),
             closed: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -108,6 +110,7 @@ impl ZvecGrep {
     /// Closes this service and rejects subsequent requests.
     pub fn close(&self) {
         self.closed.store(true, Ordering::Release);
+        self.models.close();
     }
 
     fn ensure_open(&self) -> Result<(), EngineError> {
