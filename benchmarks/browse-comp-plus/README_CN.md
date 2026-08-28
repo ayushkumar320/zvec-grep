@@ -17,6 +17,8 @@ Benchmark 记录回答质量、Token 用量、Agent 执行耗时、工具调用�
 
 ## 评测结果
 
+[最新完整报告](./LATEST_REPORT.md)提供了完整结果和复现信息。以下是本次 study 的摘要：在 300 组配对 trial 中，zvec-grep 在保持回答质量的同时，将平均 Input Token 减少 **37.56%**、工具调用次数减少 **43.52%**、Agent 执行时间减少 **38.58%**。
+
 ### 评测配置
 
 Study 选取 100 个 case，以兼顾覆盖范围、运行时间和成本。样本并非随机抽取，而是按照锁定的 Hugging Face `test` split 原始顺序选择。我们没有在这部分数据中发现明显的顺序偏置。采用公开且固定的顺序，也能尽量减少人为选择空间，避免挑选更有利于 zvec-grep 的 case。
@@ -25,47 +27,22 @@ Study 选取 100 个 case，以兼顾覆盖范围、运行时间和成本。样�
 
 | 配置项 | 值 |
 | --- | --- |
-| Suite | TBD |
-| 数据集版本 | TBD |
-| 模型 | TBD |
-| Reasoning effort | TBD |
-| Case 数 | TBD |
-| 每个 case 的 trial 数 | TBD |
-| zvec-grep 版本 | TBD |
-| Embedding 模型 | TBD |
-| FTS tokenizer | TBD |
+| 评测规模 | 100 个 case · 300 组配对 trial |
+| Agent | `gpt-5.6-sol` · `high` reasoning |
+| Embedding 模型 | `qwen/qwen3.7-text-embedding` |
 
 ### 主要结果
 
-计算均值时会纳入 Baseline 和 Treatment 中所有已完成的 trial。变化量均以 Baseline 为基准，表示 Treatment 相对 Baseline 的变化。
+所有 300 组配对 trial 均纳入均值。变化表示 zvec-grep 相对 Baseline 的差异。
 
-| 指标 | Baseline | Treatment（zvec-grep） | 绝对变化 | 相对变化 |
-| --- | ---: | ---: | ---: | ---: |
-| 准确率 | TBD | TBD | TBD | TBD |
-| Input Token | TBD | TBD | TBD | TBD |
-| 工具调用次数 | TBD | TBD | TBD | TBD |
-| Agent 执行时间 | TBD | TBD | TBD | TBD |
+| 指标 | Baseline | zvec-grep | 变化 |
+| --- | ---: | ---: | ---: |
+| 回答准确率 | 98.67% | 99.00% | +0.33 pp |
+| Input Token | 1.68M | 1.05M | **−37.56%** |
+| 工具调用次数 | 25.42 | 14.36 | **−43.52%** |
+| Agent 执行时间 | 259.4 秒 | 159.3 秒 | **−38.58%** |
 
-### 回答结果分布
-
-| 结果 | 配对 trial 数 |
-| --- | ---: |
-| 两组均正确 | TBD |
-| 仅 Baseline 正确 | TBD |
-| 仅 Treatment 正确 | TBD |
-| 两组均错误 | TBD |
-
-### 两组均正确时的分析
-
-这一视角只比较 Baseline 和 Treatment 均正确的配对 trial，用于观察两组都能完成任务时的资源使用情况，是对上述主要结果的补充，不会取代主要结果。
-
-| 指标 | Baseline | Treatment（zvec-grep） | 绝对变化 | 相对变化 |
-| --- | ---: | ---: | ---: | ---: |
-| Input Token | TBD | TBD | TBD | TBD |
-| 工具调用次数 | TBD | TBD | TBD | TBD |
-| Agent 执行时间 | TBD | TBD | TBD | TBD |
-
-zvec-grep 索引准备过程与 Agent 执行过程分开测量和报告。完整的 case 级结果与诊断信息可在对应 run 生成的报告中查看。
+zvec-grep 索引准备过程与 Agent 执行过程分开测量和报告。
 
 ## 前置条件
 

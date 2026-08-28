@@ -677,8 +677,20 @@ def _environment_rows(environment: dict[str, Any]) -> str:
         ("Codex sandbox", environment["codex_sandbox"]),
         ("Web search", environment["web_search"]),
         ("History persistence", environment["history_persistence"]),
+        (
+            "Query dataset",
+            f"{environment['query_dataset_repo']}@"
+            f"{environment['query_dataset_revision']}",
+        ),
+        ("Query split", environment["query_dataset_split"]),
+        (
+            "Corpus",
+            f"{environment['corpus_repo']}@{environment['corpus_revision']}",
+        ),
+        ("Corpus split", environment["corpus_split"]),
         ("zvec-grep", environment["zg_version"]),
         ("Embedding", environment["embedding"]),
+        ("FTS tokenizer", environment["fts_tokenizer"]),
         ("Index embedding concurrency", environment["embedding_concurrency"]),
         ("Configured embedding device", environment["embedding_device"]),
         ("Maximum indexed file size", environment["max_filesize"]),

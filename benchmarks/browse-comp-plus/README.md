@@ -23,6 +23,11 @@ and complete Codex trajectories.
 
 ## Results
 
+The [latest full report](./LATEST_REPORT.md) contains the complete results and
+reproduction details. The sections below summarize the study: across 300 paired
+trials, zvec-grep maintained answer quality while reducing average input tokens
+by **37.56%**, tool calls by **43.52%**, and Agent time by **38.58%**.
+
 ### Study configuration
 
 The study uses 100 cases to balance coverage, runtime, and cost. Cases are
@@ -37,52 +42,24 @@ answer are excluded. Each exclusion is documented in
 
 | Setting | Value |
 | --- | --- |
-| Suite | TBD |
-| Dataset revision | TBD |
-| Model | TBD |
-| Reasoning effort | TBD |
-| Cases | TBD |
-| Trials per case | TBD |
-| zvec-grep version | TBD |
-| Embedding model | TBD |
-| FTS tokenizer | TBD |
+| Evaluation scale | 100 cases · 300 paired trials |
+| Agent | `gpt-5.6-sol` · `high` reasoning |
+| Embedding model | `qwen/qwen3.7-text-embedding` |
 
 ### Primary results
 
-Every completed Baseline and Treatment trial is included in the averages.
-Changes are calculated as Treatment relative to Baseline.
+All 300 paired trials are included in the averages. Changes show zvec-grep
+relative to Baseline.
 
-| Metric | Baseline | Treatment (zvec-grep) | Absolute change | Relative change |
-| --- | ---: | ---: | ---: | ---: |
-| Accuracy | TBD | TBD | TBD | TBD |
-| Input tokens | TBD | TBD | TBD | TBD |
-| Tool calls | TBD | TBD | TBD | TBD |
-| Agent time | TBD | TBD | TBD | TBD |
-
-### Quality outcomes
-
-| Outcome | Paired trials |
-| --- | ---: |
-| Both correct | TBD |
-| Baseline only correct | TBD |
-| Treatment only correct | TBD |
-| Neither correct | TBD |
-
-### Both-correct analysis
-
-This view compares resource use on paired trials where both Baseline and
-Treatment answered correctly. It supplements rather than replaces the primary
-results above.
-
-| Metric | Baseline | Treatment (zvec-grep) | Absolute change | Relative change |
-| --- | ---: | ---: | ---: | ---: |
-| Input tokens | TBD | TBD | TBD | TBD |
-| Tool calls | TBD | TBD | TBD | TBD |
-| Agent time | TBD | TBD | TBD | TBD |
+| Metric | Baseline | zvec-grep | Change |
+| --- | ---: | ---: | ---: |
+| Answer accuracy | 98.67% | 99.00% | +0.33 pp |
+| Input tokens | 1.68M | 1.05M | **−37.56%** |
+| Tool calls | 25.42 | 14.36 | **−43.52%** |
+| Agent time | 259.4 s | 159.3 s | **−38.58%** |
 
 zvec-grep index preparation is measured and reported separately from Agent
-execution. Full case-level results and diagnostics are available in the
-generated run report.
+execution.
 
 ## Prerequisites
 
