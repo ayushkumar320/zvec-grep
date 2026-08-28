@@ -17,6 +17,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::models::{
     catalog::Model2VecConfig,
+    compute::ModelComputeRuntime,
     embedding::{
         CreateEmbeddingModelOptions, EmbeddingModel, EmbeddingModelInfo, EmbeddingModelLimits,
         EmbeddingModelProgress, EmbeddingOptions, EmbeddingPurpose, EmbeddingResult,
@@ -37,6 +38,7 @@ pub(crate) struct Model2VecEmbeddingModel {
     entry: Model2VecConfig,
     info: EmbeddingModelInfo,
     model_cache_dir: PathBuf,
+    compute_runtime: ModelComputeRuntime,
     dependencies: Arc<dyn Model2VecDependencies>,
     state: Mutex<ModelState>,
     disposed: AtomicBool,
@@ -70,6 +72,7 @@ impl Model2VecEmbeddingModel {
             .model_cache_dir
             .or_else(|| env::var_os("ZVEC_GREP_MODEL_CACHE").map(PathBuf::from))
             .unwrap_or_else(default_model_cache_dir);
+        let compute_runtime = options.compute_runtime.unwrap_or_default();
         Self {
             entry,
             info: EmbeddingModelInfo {
@@ -88,6 +91,7 @@ impl Model2VecEmbeddingModel {
                 },
             },
             model_cache_dir,
+            compute_runtime,
             dependencies,
             state: Mutex::new(ModelState::default()),
             disposed: AtomicBool::new(false),
@@ -122,6 +126,8 @@ impl Model2VecEmbeddingModel {
             ],
         );
         reporter.start();
+        self.exclude_cached_artifacts_from_progress(&reporter)
+            .await?;
         let (model_path, tokenizer_source) = tokio::join!(
             self.resolve_model_path(&reporter),
             self.resolve_tokenizer_source(&reporter)
@@ -140,6 +146,26 @@ impl Model2VecEmbeddingModel {
         self.ensure_not_disposed()?;
         reporter.finish();
         Ok(LoadedModel { tokenizer, table })
+    }
+
+    async fn exclude_cached_artifacts_from_progress(
+        &self,
+        reporter: &ModelDownloadProgressReporter,
+    ) -> Result<(), ModelError> {
+        let model_artifact = file_name(self.entry.model_file)?;
+        if is_usable_model_file(&self.model_directory().join(model_artifact)).await {
+            reporter.skip(model_artifact);
+        }
+
+        let tokenizer_artifact = file_name(self.entry.tokenizer_file)?;
+        let tokenizer_path = self
+            .model_directory()
+            .join("tokenizer")
+            .join("tokenizer.json");
+        if is_usable_model_file(&tokenizer_path).await {
+            reporter.skip(tokenizer_artifact);
+        }
+        Ok(())
     }
 
     async fn resolve_model_path(
@@ -286,18 +312,19 @@ impl EmbeddingModel for Model2VecEmbeddingModel {
             .collect::<Vec<_>>();
         let signal = options.signal;
         let entry = self.entry;
-        let computation = tokio::task::spawn_blocking(move || {
-            embed_model2vec_texts(
-                &texts,
-                loaded.tokenizer.as_ref(),
-                &loaded.table,
-                entry.max_input_tokens,
-                entry.normalize,
-                signal.as_ref(),
-            )
-        })
-        .await
-        .map_err(|error| ModelError::uncoded(format!("Model2Vec worker failed: {error}")))?;
+        let computation = self
+            .compute_runtime
+            .run(move || {
+                embed_model2vec_texts(
+                    &texts,
+                    loaded.tokenizer.as_ref(),
+                    &loaded.table,
+                    entry.max_input_tokens,
+                    entry.normalize,
+                    signal.as_ref(),
+                )
+            })
+            .await?;
         let result = computation.map_err(|cause| {
             ModelError::coded(
                 "ZVEC_GREP.ENGINE.MODELS.MODEL2VEC_EMBED_FAILED",
@@ -451,6 +478,7 @@ fn embed_model2vec_texts(
 ) -> Result<EmbeddingResult, ModelError> {
     let mut vectors = Vec::with_capacity(texts.len());
     let mut truncated = Vec::new();
+    let unknown_token_id = tokenizer.unknown_token_id();
     for (index, text) in texts.iter().enumerate() {
         check_cancelled(signal)?;
         let encoded = tokenizer.encode(text)?;
@@ -460,7 +488,7 @@ fn embed_model2vec_texts(
         let token_ids = encoded
             .into_iter()
             .take(max_input_tokens)
-            .filter(|token_id| Some(*token_id) != tokenizer.unknown_token_id())
+            .filter(|token_id| Some(*token_id) != unknown_token_id)
             .collect::<Vec<_>>();
         vectors.push(embed_static_token_list(&token_ids, table, normalize)?);
     }

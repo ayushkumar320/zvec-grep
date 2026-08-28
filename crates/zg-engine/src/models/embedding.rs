@@ -4,6 +4,7 @@ use crate::{Content, Device, EmbeddingInputKind, EmbeddingMetric};
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
+use super::compute::ModelComputeRuntime;
 use super::error::ModelError;
 
 #[derive(Clone, Default)]
@@ -12,6 +13,7 @@ pub struct CreateEmbeddingModelOptions {
     pub endpoint: Option<String>,
     pub model_cache_dir: Option<PathBuf>,
     pub device: Option<Device>,
+    pub(crate) compute_runtime: Option<ModelComputeRuntime>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

@@ -3230,6 +3230,7 @@ dependencies = [
  "async-trait",
  "futures-util",
  "half",
+ "rayon",
  "reqwest",
  "serde",
  "serde_json",

@@ -10,6 +10,8 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
 };
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     Content, Device, IndexEmbeddingProgress, IndexEmbeddingStage, IndexProgress,
@@ -17,6 +19,7 @@ use crate::{
 };
 
 use super::{
+    compute::ModelComputeRuntime,
     embedding::{
         CreateEmbeddingModelOptions, EmbeddingModel, EmbeddingModelInfo, EmbeddingOptions,
         EmbeddingResult,
@@ -37,6 +40,7 @@ pub(crate) struct ModelRuntimeManager {
 
 struct ManagerInner {
     factory: Arc<ModelFactory>,
+    compute_runtime: ModelComputeRuntime,
     state: Mutex<ManagerState>,
 }
 
@@ -60,13 +64,19 @@ struct ModelRuntime {
 pub(crate) struct ModelRuntimeRequest {
     reference: String,
     options: CreateEmbeddingModelOptions,
+    embedding_concurrency: Option<usize>,
 }
 
 impl ModelRuntimeRequest {
-    pub(crate) fn new(reference: impl Into<String>, options: CreateEmbeddingModelOptions) -> Self {
+    pub(crate) fn new(
+        reference: impl Into<String>,
+        options: CreateEmbeddingModelOptions,
+        embedding_concurrency: Option<usize>,
+    ) -> Self {
         Self {
             reference: reference.into(),
             options,
+            embedding_concurrency,
         }
     }
 }
@@ -106,6 +116,12 @@ pub(crate) struct ModelRuntimeLease {
     key: ModelRuntimeKey,
     entry: Arc<ModelRuntimeEntry>,
     manager: Weak<ManagerInner>,
+    operation: Arc<OperationConcurrency>,
+}
+
+struct OperationConcurrency {
+    limit: usize,
+    permits: Arc<Semaphore>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -129,9 +145,11 @@ impl ModelRuntimeManager {
         + Sync
         + 'static,
     ) -> Self {
+        let compute_runtime = ModelComputeRuntime::shared();
         Self {
             inner: Arc::new(ManagerInner {
                 factory: Arc::new(factory),
+                compute_runtime,
                 state: Mutex::new(ManagerState::default()),
             }),
         }
@@ -142,7 +160,12 @@ impl ModelRuntimeManager {
         &self,
         request: ModelRuntimeRequest,
     ) -> Result<ModelRuntimeLease, ModelError> {
-        let ModelRuntimeRequest { reference, options } = request;
+        let ModelRuntimeRequest {
+            reference,
+            mut options,
+            embedding_concurrency,
+        } = request;
+        validate_embedding_concurrency(embedding_concurrency)?;
         let key = ModelRuntimeKey::new(&reference, &options);
         let mut state = self.lock_state();
         if state.closed {
@@ -155,6 +178,7 @@ impl ModelRuntimeManager {
             // Model construction is intentionally performed while holding the
             // short-lived manager lock. Backends load heavy resources lazily,
             // so this guarantees a single instance without blocking on I/O.
+            options.compute_runtime = Some(self.inner.compute_runtime.clone());
             let model = (self.inner.factory)(&reference, options)?;
             let entry = Arc::new(ModelRuntimeEntry {
                 runtime: Arc::new(ModelRuntime {
@@ -166,11 +190,20 @@ impl ModelRuntimeManager {
             state.entries.insert(key.clone(), Arc::clone(&entry));
             entry
         };
+        let concurrency = resolve_embedding_concurrency(
+            embedding_concurrency,
+            entry.runtime.model.info().default_concurrency,
+            self.inner.compute_runtime.capacity(),
+        );
         entry.leases.fetch_add(1, Ordering::AcqRel);
         Ok(ModelRuntimeLease {
             key,
             entry,
             manager: Arc::downgrade(&self.inner),
+            operation: Arc::new(OperationConcurrency {
+                limit: concurrency,
+                permits: Arc::new(Semaphore::new(concurrency)),
+            }),
         })
     }
 
@@ -234,29 +267,58 @@ impl ModelRuntimeLease {
         mut options: EmbeddingOptions,
         index_progress: Option<IndexProgressReporter>,
     ) -> Result<EmbeddingResult, ModelError> {
+        let _permit = self
+            .acquire_operation_permit(options.signal.as_ref())
+            .await?;
         let _active = ActiveEmbeddingGuard::new(&self.entry.runtime.active_embeddings);
         if let Some(reporter) = index_progress {
             let model_progress = options.on_progress.take();
-            let runtime = Arc::clone(&self.entry.runtime);
+            let operation = Arc::clone(&self.operation);
             options.on_progress = Some(Arc::new(move |progress| {
                 if let Some(model_progress) = &model_progress {
                     model_progress(progress.clone());
                 }
-                reporter.report(index_progress_from_model(&runtime, progress));
+                reporter.report(index_progress_from_model(&operation, progress));
             }));
         }
         self.entry.runtime.model.embed(contents, options).await
     }
+
+    async fn acquire_operation_permit(
+        &self,
+        signal: Option<&CancellationToken>,
+    ) -> Result<OwnedSemaphorePermit, ModelError> {
+        if let Some(signal) = signal {
+            tokio::select! {
+                permit = Arc::clone(&self.operation.permits).acquire_owned() => {
+                    permit.map_err(|error| {
+                        ModelError::uncoded("Embedding concurrency limiter is closed")
+                            .with_cause(error)
+                    })
+                }
+                () = signal.cancelled() => {
+                    Err(ModelError::uncoded(
+                        "Embedding was cancelled while waiting for compute capacity",
+                    ))
+                }
+            }
+        } else {
+            Arc::clone(&self.operation.permits)
+                .acquire_owned()
+                .await
+                .map_err(|error| {
+                    ModelError::uncoded("Embedding concurrency limiter is closed").with_cause(error)
+                })
+        }
+    }
 }
 
 fn index_progress_from_model(
-    runtime: &ModelRuntime,
+    operation: &OperationConcurrency,
     progress: super::embedding::EmbeddingModelProgress,
 ) -> IndexProgress {
     use super::embedding::EmbeddingModelProgress;
 
-    let active = runtime.active_embeddings.load(Ordering::Acquire);
-    let maximum = runtime.model.info().default_concurrency;
     let (stage, model, downloaded_bytes, total_bytes, message) = match progress {
         EmbeddingModelProgress::Preparing { model } => {
             (IndexEmbeddingStage::Preparing, model, None, None, None)
@@ -290,8 +352,8 @@ fn index_progress_from_model(
         files_failed: None,
         detail: Some(format!("downloading {model}")),
         embedding: Some(IndexEmbeddingProgress {
-            concurrency: Some(active),
-            max_concurrency: maximum,
+            concurrency: Some(operation.limit),
+            max_concurrency: Some(operation.limit),
             retryable_failures: None,
             stage: Some(stage),
             model: Some(model),
@@ -360,6 +422,29 @@ fn secret_fingerprint(secret: &str) -> u64 {
     hasher.finish()
 }
 
+fn validate_embedding_concurrency(concurrency: Option<usize>) -> Result<(), ModelError> {
+    if concurrency == Some(0) {
+        return Err(ModelError::coded(
+            "ZVEC_GREP.ENGINE.MODELS.INVALID_EMBEDDING_CONCURRENCY",
+            "Embedding concurrency must be greater than zero",
+            None,
+        ));
+    }
+    Ok(())
+}
+
+fn resolve_embedding_concurrency(
+    requested: Option<usize>,
+    model_default: Option<usize>,
+    compute_capacity: usize,
+) -> usize {
+    requested
+        .or(model_default)
+        .unwrap_or(1)
+        .max(1)
+        .min(compute_capacity.max(1))
+}
+
 fn manager_closed() -> ModelError {
     ModelError::coded(
         "ZVEC_GREP.ENGINE.MODELS.RUNTIME_MANAGER_CLOSED",
@@ -376,7 +461,7 @@ mod tests {
     };
 
     use async_trait::async_trait;
-    use tokio::sync::Barrier;
+    use tokio::sync::{Barrier, Semaphore as TokioSemaphore};
 
     use crate::{Content, EmbeddingInputKind, EmbeddingMetric};
 
@@ -443,6 +528,59 @@ mod tests {
 
     struct ProgressFixtureModel {
         info: EmbeddingModelInfo,
+    }
+
+    struct GatedFixtureModel {
+        info: EmbeddingModelInfo,
+        active: AtomicUsize,
+        maximum_active: AtomicUsize,
+        started: AtomicUsize,
+        release: TokioSemaphore,
+    }
+
+    impl GatedFixtureModel {
+        fn new() -> Self {
+            let model = ConcurrentFixtureModel::new();
+            Self {
+                info: model.info,
+                active: AtomicUsize::new(0),
+                maximum_active: AtomicUsize::new(0),
+                started: AtomicUsize::new(0),
+                release: TokioSemaphore::new(0),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl EmbeddingModel for GatedFixtureModel {
+        fn info(&self) -> &EmbeddingModelInfo {
+            &self.info
+        }
+
+        async fn embed(
+            &self,
+            contents: &[Content],
+            _options: EmbeddingOptions,
+        ) -> Result<EmbeddingResult, ModelError> {
+            let active = self.active.fetch_add(1, Ordering::AcqRel) + 1;
+            self.maximum_active.fetch_max(active, Ordering::AcqRel);
+            self.started.fetch_add(1, Ordering::AcqRel);
+            let permit = self
+                .release
+                .acquire()
+                .await
+                .map_err(|error| ModelError::uncoded(error.to_string()))?;
+            permit.forget();
+            self.active.fetch_sub(1, Ordering::AcqRel);
+            Ok(EmbeddingResult {
+                vectors: contents.iter().map(|_| vec![1.0]).collect(),
+                truncated: Vec::new(),
+            })
+        }
+
+        async fn dispose(&self) -> Result<(), ModelError> {
+            Ok(())
+        }
     }
 
     impl ProgressFixtureModel {
@@ -513,12 +651,14 @@ mod tests {
                 first_manager.acquire(ModelRuntimeRequest::new(
                     "local/fixture",
                     CreateEmbeddingModelOptions::default(),
+                    None,
                 ))
             });
             let second = scope.spawn(move || {
                 second_manager.acquire(ModelRuntimeRequest::new(
                     "local/fixture",
                     CreateEmbeddingModelOptions::default(),
+                    None,
                 ))
             });
             (
@@ -582,6 +722,7 @@ mod tests {
             .acquire(ModelRuntimeRequest::new(
                 "local/fixture",
                 CreateEmbeddingModelOptions::default(),
+                None,
             ))
             .err()
             .expect("closed manager should reject acquisition");
@@ -601,6 +742,7 @@ mod tests {
             .acquire(ModelRuntimeRequest::new(
                 "local/fixture",
                 CreateEmbeddingModelOptions::default(),
+                Some(1),
             ))
             .expect("fixture runtime should be acquired");
         let model_events = Arc::new(StdMutex::new(Vec::new()));
@@ -667,7 +809,7 @@ mod tests {
                 .as_ref()
                 .expect("model progress should be nested under embedding");
             assert_eq!(embedding.concurrency, Some(1));
-            assert_eq!(embedding.max_concurrency, Some(2));
+            assert_eq!(embedding.max_concurrency, Some(1));
             assert_eq!(embedding.model.as_deref(), Some("local/fixture"));
         }
         let downloading = events[1]
@@ -685,6 +827,124 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn user_concurrency_limits_tasks_without_splitting_the_shared_runtime() {
+        let fixture = Arc::new(GatedFixtureModel::new());
+        let manager = ModelRuntimeManager::with_factory({
+            let fixture = Arc::clone(&fixture);
+            move |_reference, _options| Ok(Arc::clone(&fixture) as Arc<dyn EmbeddingModel>)
+        });
+        let lease = manager
+            .acquire(ModelRuntimeRequest::new(
+                "local/fixture",
+                CreateEmbeddingModelOptions::default(),
+                Some(2),
+            ))
+            .expect("fixture runtime should be acquired");
+        let contents = [Content::Text("fixture".to_owned())];
+
+        let embeddings = async {
+            futures_util::future::join_all(
+                (0..4).map(|_| lease.embed(&contents, EmbeddingOptions::default(), None)),
+            )
+            .await
+        };
+        let observe_limit = async {
+            while fixture.started.load(Ordering::Acquire) < 2 {
+                tokio::task::yield_now().await;
+            }
+            for _ in 0..8 {
+                tokio::task::yield_now().await;
+            }
+            assert_eq!(fixture.started.load(Ordering::Acquire), 2);
+            assert_eq!(fixture.maximum_active.load(Ordering::Acquire), 2);
+            fixture.release.add_permits(4);
+        };
+        let (results, ()) = tokio::join!(embeddings, observe_limit);
+
+        assert!(results.into_iter().all(|result| result.is_ok()));
+        assert_eq!(fixture.started.load(Ordering::Acquire), 4);
+        assert_eq!(fixture.maximum_active.load(Ordering::Acquire), 2);
+        assert_eq!(manager.snapshot().cached_runtimes, 1);
+    }
+
+    #[tokio::test]
+    async fn cancelled_task_does_not_wait_for_an_operation_permit() {
+        let fixture = Arc::new(GatedFixtureModel::new());
+        let manager = ModelRuntimeManager::with_factory({
+            let fixture = Arc::clone(&fixture);
+            move |_reference, _options| Ok(Arc::clone(&fixture) as Arc<dyn EmbeddingModel>)
+        });
+        let lease = manager
+            .acquire(ModelRuntimeRequest::new(
+                "local/fixture",
+                CreateEmbeddingModelOptions::default(),
+                Some(1),
+            ))
+            .expect("fixture runtime should be acquired");
+        let contents = [Content::Text("fixture".to_owned())];
+        let signal = CancellationToken::new();
+
+        let first = lease.embed(&contents, EmbeddingOptions::default(), None);
+        let cancelled = async {
+            while fixture.started.load(Ordering::Acquire) < 1 {
+                tokio::task::yield_now().await;
+            }
+            signal.cancel();
+            let result = lease
+                .embed(
+                    &contents,
+                    EmbeddingOptions {
+                        signal: Some(signal),
+                        ..EmbeddingOptions::default()
+                    },
+                    None,
+                )
+                .await;
+            fixture.release.add_permits(1);
+            result
+        };
+        let (first_result, cancelled_result) = tokio::join!(first, cancelled);
+
+        assert!(first_result.is_ok());
+        let error = cancelled_result.expect_err("queued embedding should be cancelled");
+        assert!(error.to_string().contains("cancelled"));
+        assert_eq!(fixture.started.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn concurrency_policy_prefers_user_then_model_default_and_caps_capacity() {
+        assert_eq!(resolve_embedding_concurrency(Some(4), Some(2), 12), 4);
+        assert_eq!(resolve_embedding_concurrency(None, Some(2), 12), 2);
+        assert_eq!(resolve_embedding_concurrency(None, None, 12), 1);
+        assert_eq!(resolve_embedding_concurrency(Some(24), Some(2), 12), 12);
+    }
+
+    #[test]
+    fn rejects_zero_user_concurrency_before_constructing_a_runtime() {
+        let creations = Arc::new(AtomicUsize::new(0));
+        let captured = Arc::clone(&creations);
+        let manager = ModelRuntimeManager::with_factory(move |_reference, _options| {
+            captured.fetch_add(1, Ordering::AcqRel);
+            Ok(Arc::new(ProgressFixtureModel::new()) as Arc<dyn EmbeddingModel>)
+        });
+
+        let error = manager
+            .acquire(ModelRuntimeRequest::new(
+                "local/fixture",
+                CreateEmbeddingModelOptions::default(),
+                Some(0),
+            ))
+            .err()
+            .expect("zero concurrency should be rejected");
+
+        assert_eq!(
+            error.code(),
+            Some("ZVEC_GREP.ENGINE.MODELS.INVALID_EMBEDDING_CONCURRENCY")
+        );
+        assert_eq!(creations.load(Ordering::Acquire), 0);
+    }
+
     #[test]
     fn runtime_key_separates_resource_affecting_options_without_storing_api_keys() {
         let base = ModelRuntimeKey::new(
@@ -694,6 +954,7 @@ mod tests {
                 endpoint: Some("https://example.test/a".to_owned()),
                 model_cache_dir: Some(PathBuf::from("/cache/a")),
                 device: Some(Device::Cpu),
+                compute_runtime: None,
             },
         );
         let same = ModelRuntimeKey::new(
@@ -703,6 +964,7 @@ mod tests {
                 endpoint: Some("https://example.test/a".to_owned()),
                 model_cache_dir: Some(PathBuf::from("/cache/a")),
                 device: Some(Device::Cpu),
+                compute_runtime: None,
             },
         );
         let different = ModelRuntimeKey::new(
@@ -712,6 +974,7 @@ mod tests {
                 endpoint: Some("https://example.test/a".to_owned()),
                 model_cache_dir: Some(PathBuf::from("/cache/a")),
                 device: Some(Device::Cpu),
+                compute_runtime: None,
             },
         );
 

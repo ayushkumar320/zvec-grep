@@ -479,6 +479,7 @@ pub struct IndexInput {
     #[schemars(range(min = 1))]
     pub max_file_size_bytes: Option<u64>,
     pub follow: Option<bool>,
+    /// Embedding batch tasks processed concurrently during this update.
     #[schemars(range(min = 1))]
     pub embedding_concurrency: Option<usize>,
     /// Include bounded skipped-file diagnostics after completion.

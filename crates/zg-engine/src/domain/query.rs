@@ -21,6 +21,8 @@ pub struct QueryRequest {
     pub discovery: DiscoveryOptions,
     pub modified_after_epoch_ms: Option<u64>,
     pub modified_before_epoch_ms: Option<u64>,
+    /// Maximum embedding batch tasks for this query operation.
+    /// The model default is used when omitted.
     pub embedding_concurrency: Option<usize>,
 }
 

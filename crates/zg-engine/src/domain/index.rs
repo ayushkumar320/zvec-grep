@@ -19,6 +19,8 @@ pub struct IndexRequest {
     pub changes: Vec<WorkspaceChange>,
     pub discovery: DiscoveryOptions,
     pub embedding: Option<EmbeddingModelSpec>,
+    /// Maximum embedding batch tasks for this index operation.
+    /// The model default is used when omitted.
     pub embedding_concurrency: Option<usize>,
     /// Wait for the submitted index job instead of returning an accepted job.
     pub wait: bool,

@@ -1,6 +1,7 @@
 //! Private embedding model implementations matching the TypeScript engine.
 
 mod catalog;
+mod compute;
 mod embedding;
 mod error;
 mod factory;
