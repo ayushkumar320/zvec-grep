@@ -1583,9 +1583,13 @@ mod tests {
         }
     }
 
+    fn test_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("workspace")
+    }
+
     fn input() -> SearchInput {
         SearchInput {
-            root: "/workspace".to_owned(),
+            root: test_root().display().to_string(),
             api_key: None,
             device: None,
             query: Some("call chain".to_owned()),
@@ -1618,7 +1622,7 @@ mod tests {
     #[test]
     fn maps_agent_search_to_query_request() {
         let request = input().into_request().expect("search input should map");
-        assert_eq!(request.root, Some(PathBuf::from("/workspace")));
+        assert_eq!(request.root, Some(test_root()));
         assert_eq!(request.queries, ["call chain"]);
         assert_eq!(request.routes.len(), 1);
         assert_eq!(request.refresh, RefreshMode::Background);
@@ -1662,7 +1666,7 @@ mod tests {
         let IndexToolRequest::Index(request) = request else {
             panic!("index tool must create an index request");
         };
-        assert_eq!(request.root, Some(PathBuf::from("/workspace")));
+        assert_eq!(request.root, Some(test_root()));
         assert_eq!(request.roots.len(), 1);
         assert_eq!(request.discovery.globs, ["*.rs"]);
         assert_eq!(
@@ -1679,12 +1683,12 @@ mod tests {
     #[test]
     fn maps_full_rg_without_using_a_shell_and_enforces_root_scope() {
         let request = RgInput {
-            root: "/workspace".to_owned(),
+            root: test_root().display().to_string(),
             command: "rg -n -F 'resident manager' src | head -5".to_owned(),
         }
         .into_request()
         .expect("managed rg should map");
-        assert_eq!(request.root, Some(PathBuf::from("/workspace")));
+        assert_eq!(request.root, Some(test_root()));
         assert_eq!(request.patterns, ["resident manager"]);
         assert_eq!(request.paths, [PathBuf::from("src")]);
         assert_eq!(request.limit, Some(5));
@@ -1692,7 +1696,7 @@ mod tests {
 
         assert!(
             RgInput {
-                root: "/workspace".to_owned(),
+                root: test_root().display().to_string(),
                 command: "rg needle ../secret".to_owned(),
             }
             .into_request()
@@ -1700,7 +1704,7 @@ mod tests {
         );
         assert!(
             RgInput {
-                root: "/workspace".to_owned(),
+                root: test_root().display().to_string(),
                 command: "rg $(whoami)".to_owned(),
             }
             .into_request()
@@ -1722,7 +1726,7 @@ mod tests {
 
     fn index_input() -> IndexInput {
         IndexInput {
-            root: "/workspace".to_owned(),
+            root: test_root().display().to_string(),
             api_key: None,
             device: None,
             endpoint: None,
