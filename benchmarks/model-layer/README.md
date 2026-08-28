@@ -1,9 +1,10 @@
 # Model-layer benchmark
 
-This compares the pinned `local/potion-code-16m-v2` implementation in
-`origin/main` with the Rust implementation. Downloads are completed before the
-timed rounds. Both harnesses use the same generated texts, batch size, request
-concurrency, warmup count and vector count.
+This compares a catalog model in `origin/main` with the Rust implementation.
+Downloads are completed before the timed rounds. Both harnesses use the same
+model, device, generated texts, batch size, request concurrency, warmup count
+and vector count. Select a model with `--model` and an accelerator with
+`--device`.
 
 The Rust harness passes request concurrency into `ModelRuntimeRequest`, so the
 measurement exercises the same operation-level limit exposed by
@@ -21,7 +22,9 @@ configuration and repeat measurements to detect noise.
 
 `compare.py` automates the comparison and reports medians across independent
 processes. It reports both resident RSS immediately after warmup and peak RSS
-during the throughput rounds. For example:
+during the throughput rounds. On macOS it also disables llama.cpp Metal
+residency sets, matching main's default; set
+`ZVEC_GREP_METAL_KEEP_RESIDENCY=1` to opt out. For example:
 
 ```sh
 python3 benchmarks/model-layer/compare.py \

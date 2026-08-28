@@ -1,4 +1,3 @@
-mod download_progress;
 mod model;
 mod safetensors;
 

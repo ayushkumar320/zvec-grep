@@ -162,6 +162,144 @@ impl EmbeddingCatalogEntry {
             Self::LlamaCpp { .. } | Self::Qwen { .. } | Self::TransformersJs { .. } => None,
         }
     }
+
+    pub(crate) const fn llama_cpp_config(self) -> Option<LlamaCppConfig> {
+        match self {
+            Self::LlamaCpp {
+                reference,
+                provider,
+                model,
+                uri,
+                dimension,
+                metric,
+                format,
+                context_size,
+                max_batch_size,
+            } => Some(LlamaCppConfig {
+                reference,
+                provider,
+                model,
+                uri,
+                dimension,
+                metric,
+                format,
+                context_size,
+                max_batch_size,
+            }),
+            Self::Qwen { .. } | Self::TransformersJs { .. } | Self::Model2Vec { .. } => None,
+        }
+    }
+
+    pub(crate) const fn qwen_config(self) -> Option<QwenConfig> {
+        match self {
+            Self::Qwen {
+                kind,
+                reference,
+                provider,
+                model,
+                dimension,
+                metric,
+                default_endpoint,
+                max_batch_size,
+                max_input_tokens,
+                max_image_bytes,
+            } => Some(QwenConfig {
+                kind,
+                reference,
+                provider,
+                model,
+                dimension,
+                metric,
+                default_endpoint,
+                max_batch_size,
+                max_input_tokens,
+                max_image_bytes,
+            }),
+            Self::LlamaCpp { .. } | Self::TransformersJs { .. } | Self::Model2Vec { .. } => None,
+        }
+    }
+
+    pub(crate) const fn transformers_config(self) -> Option<TransformersConfig> {
+        match self {
+            Self::TransformersJs {
+                reference,
+                provider,
+                model,
+                repo,
+                revision,
+                dtype,
+                dimension,
+                metric,
+                pooling,
+                normalize,
+                query_prefix,
+                document_prefix,
+                max_input_tokens,
+                max_batch_size,
+            } => Some(TransformersConfig {
+                reference,
+                provider,
+                model,
+                repo,
+                revision,
+                dtype,
+                dimension,
+                metric,
+                pooling,
+                normalize,
+                query_prefix,
+                document_prefix,
+                max_input_tokens,
+                max_batch_size,
+            }),
+            Self::LlamaCpp { .. } | Self::Qwen { .. } | Self::Model2Vec { .. } => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct LlamaCppConfig {
+    pub(crate) reference: &'static str,
+    pub(crate) provider: &'static str,
+    pub(crate) model: &'static str,
+    pub(crate) uri: &'static str,
+    pub(crate) dimension: usize,
+    pub(crate) metric: EmbeddingMetric,
+    pub(crate) format: &'static str,
+    pub(crate) context_size: usize,
+    pub(crate) max_batch_size: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct QwenConfig {
+    pub(crate) kind: &'static str,
+    pub(crate) reference: &'static str,
+    pub(crate) provider: &'static str,
+    pub(crate) model: &'static str,
+    pub(crate) dimension: usize,
+    pub(crate) metric: EmbeddingMetric,
+    pub(crate) default_endpoint: &'static str,
+    pub(crate) max_batch_size: usize,
+    pub(crate) max_input_tokens: usize,
+    pub(crate) max_image_bytes: Option<usize>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TransformersConfig {
+    pub(crate) reference: &'static str,
+    pub(crate) provider: &'static str,
+    pub(crate) model: &'static str,
+    pub(crate) repo: &'static str,
+    pub(crate) revision: &'static str,
+    pub(crate) dtype: &'static str,
+    pub(crate) dimension: usize,
+    pub(crate) metric: EmbeddingMetric,
+    pub(crate) pooling: &'static str,
+    pub(crate) normalize: bool,
+    pub(crate) query_prefix: Option<&'static str>,
+    pub(crate) document_prefix: Option<&'static str>,
+    pub(crate) max_input_tokens: usize,
+    pub(crate) max_batch_size: usize,
 }
 
 #[derive(Clone, Copy, Debug)]

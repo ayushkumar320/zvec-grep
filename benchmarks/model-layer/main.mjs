@@ -17,7 +17,9 @@ if (envFlag("ZG_MODEL_BENCH_BASELINE")) {
   process.exit(0);
 }
 
-const modelReference = "local/potion-code-16m-v2";
+const modelReference =
+  process.env.ZG_MODEL_BENCH_MODEL ?? "local/potion-code-16m-v2";
+const device = process.env.ZG_MODEL_BENCH_DEVICE;
 const batchSize = envInteger("ZG_MODEL_BENCH_BATCH", 256);
 const concurrency = envInteger("ZG_MODEL_BENCH_CONCURRENCY", 1);
 const vectorsPerRound = envInteger("ZG_MODEL_BENCH_VECTORS", 16_384);
@@ -36,11 +38,13 @@ if (
 }
 
 const model = createEmbeddingModel(modelReference, {
+  apiKey: process.env.DASHSCOPE_API_KEY,
   modelCacheDir: process.env.ZG_MODEL_BENCH_CACHE,
+  ...(device ? { device } : {}),
 });
-if (model.info.limits.maxBatchSize !== 256) {
+if (batchSize > model.info.limits.maxBatchSize) {
   throw new Error(
-    `unexpected max batch size ${model.info.limits.maxBatchSize}`,
+    `batch size ${batchSize} exceeds max ${model.info.limits.maxBatchSize}`,
   );
 }
 const batch = benchmarkBatch(batchSize);
@@ -70,6 +74,7 @@ console.log(
     implementation: "main",
     mode: "model",
     model: modelReference,
+    device,
     batch_size: batchSize,
     concurrency,
     vectors_per_round: vectorsPerRound,

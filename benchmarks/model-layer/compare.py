@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare origin/main and Rust Model2Vec throughput and process RSS."""
+"""Compare origin/main and Rust model-backend throughput and process RSS."""
 
 from __future__ import annotations
 
@@ -87,6 +87,8 @@ def environment_for(
         {
             "ZG_MODEL_BENCH_MAIN_ROOT": str(arguments.main_root),
             "ZG_MODEL_BENCH_CACHE": str(arguments.cache),
+            "ZG_MODEL_BENCH_MODEL": arguments.model,
+            "ZG_MODEL_BENCH_DEVICE": arguments.device,
             "ZG_MODEL_BENCH_BATCH": str(arguments.batch),
             "ZG_MODEL_BENCH_CONCURRENCY": str(concurrency),
             "ZG_MODEL_BENCH_VECTORS": str(arguments.vectors),
@@ -98,6 +100,11 @@ def environment_for(
         environment["ZG_MODEL_BENCH_BASELINE"] = "1"
     else:
         environment.pop("ZG_MODEL_BENCH_BASELINE", None)
+    if (
+        sys.platform == "darwin"
+        and environment.get("ZVEC_GREP_METAL_KEEP_RESIDENCY") != "1"
+    ):
+        environment.setdefault("GGML_METAL_NO_RESIDENCY", "1")
     return environment
 
 
@@ -138,6 +145,8 @@ def main() -> int:
         default=Path(__file__).with_name("main.mjs"),
     )
     parser.add_argument("--cache", type=Path, required=True)
+    parser.add_argument("--model", default="local/potion-code-16m-v2")
+    parser.add_argument("--device", default="cpu")
     parser.add_argument("--batch", type=int, default=256)
     parser.add_argument("--vectors", type=int, default=16_384)
     parser.add_argument("--rounds", type=int, default=5)
@@ -196,7 +205,8 @@ def main() -> int:
     }
     summary = {
         "settings": {
-            "model": "local/potion-code-16m-v2",
+            "model": arguments.model,
+            "device": arguments.device,
             "batch": arguments.batch,
             "vectors_per_round": arguments.vectors,
             "rounds": arguments.rounds,

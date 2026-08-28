@@ -3,16 +3,16 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 
-use crate::models::embedding::EmbeddingModelProgress;
+use super::embedding::EmbeddingModelProgress;
 
 #[derive(Clone, Copy, Debug)]
-pub(super) struct ArtifactDownloadProgress {
-    pub(super) downloaded_bytes: u64,
-    pub(super) total_bytes: Option<u64>,
+pub(crate) struct ArtifactDownloadProgress {
+    pub(crate) downloaded_bytes: u64,
+    pub(crate) total_bytes: Option<u64>,
 }
 
 #[derive(Clone)]
-pub(super) struct ModelDownloadProgressReporter {
+pub(crate) struct ModelDownloadProgressReporter {
     inner: Arc<Inner>,
 }
 
@@ -23,7 +23,7 @@ struct Inner {
 }
 
 impl ModelDownloadProgressReporter {
-    pub(super) fn new(
+    pub(crate) fn new(
         model: impl Into<String>,
         on_progress: Option<Arc<dyn Fn(EmbeddingModelProgress) + Send + Sync>>,
         expected_artifacts: impl IntoIterator<Item = String>,
@@ -50,17 +50,26 @@ impl ModelDownloadProgressReporter {
         }
     }
 
-    pub(super) fn start(&self) {
+    pub(crate) fn start(&self) {
         self.emit(EmbeddingModelProgress::Preparing {
             model: self.inner.model.clone(),
         });
     }
 
-    pub(super) fn skip(&self, artifact: &str) {
+    pub(crate) fn register(&self, artifact: impl Into<String>) {
+        self.lock_artifacts()
+            .entry(artifact.into())
+            .or_insert(ArtifactDownloadProgress {
+                downloaded_bytes: 0,
+                total_bytes: None,
+            });
+    }
+
+    pub(crate) fn skip(&self, artifact: &str) {
         self.lock_artifacts().remove(artifact);
     }
 
-    pub(super) fn report(&self, artifact: &str, progress: ArtifactDownloadProgress) {
+    pub(crate) fn report(&self, artifact: &str, progress: ArtifactDownloadProgress) {
         let (downloaded_bytes, total_bytes) = {
             let mut artifacts = self.lock_artifacts();
             artifacts.insert(artifact.to_owned(), progress);
@@ -82,7 +91,18 @@ impl ModelDownloadProgressReporter {
         });
     }
 
-    pub(super) fn finish(&self) {
+    pub(crate) fn warning(&self, message: impl Into<String>) -> bool {
+        if self.inner.on_progress.is_none() {
+            return false;
+        }
+        self.emit(EmbeddingModelProgress::Warning {
+            model: self.inner.model.clone(),
+            message: message.into(),
+        });
+        true
+    }
+
+    pub(crate) fn finish(&self) {
         self.emit(EmbeddingModelProgress::Ready {
             model: self.inner.model.clone(),
         });
@@ -95,10 +115,10 @@ impl ModelDownloadProgressReporter {
     }
 
     fn lock_artifacts(&self) -> MutexGuard<'_, HashMap<String, ArtifactDownloadProgress>> {
-        match self.inner.artifacts.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        }
+        self.inner
+            .artifacts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
@@ -106,9 +126,8 @@ impl ModelDownloadProgressReporter {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use crate::models::embedding::EmbeddingModelProgress;
-
     use super::{ArtifactDownloadProgress, ModelDownloadProgressReporter};
+    use crate::models::embedding::EmbeddingModelProgress;
 
     #[test]
     fn aggregates_progress_like_typescript() {
@@ -117,11 +136,9 @@ mod tests {
         let reporter = ModelDownloadProgressReporter::new(
             "local/test",
             Some(Arc::new(move |event| {
-                captured
-                    .lock()
-                    .expect("event lock should not be poisoned")
-                    .push(event);
-            })),
+                captured.lock().expect("event lock").push(event);
+            })
+                as Arc<dyn Fn(EmbeddingModelProgress) + Send + Sync>),
             ["model".to_owned(), "tokenizer".to_owned()],
         );
         reporter.start();
@@ -140,9 +157,8 @@ mod tests {
             },
         );
         reporter.finish();
-
         assert_eq!(
-            *events.lock().expect("event lock should not be poisoned"),
+            *events.lock().expect("event lock"),
             [
                 EmbeddingModelProgress::Preparing {
                     model: "local/test".to_owned(),

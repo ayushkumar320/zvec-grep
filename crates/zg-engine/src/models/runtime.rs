@@ -190,11 +190,8 @@ impl ModelRuntimeManager {
             state.entries.insert(key.clone(), Arc::clone(&entry));
             entry
         };
-        let concurrency = resolve_embedding_concurrency(
-            embedding_concurrency,
-            entry.runtime.model.info().default_concurrency,
-            self.inner.compute_runtime.capacity(),
-        );
+        let concurrency =
+            resolve_embedding_concurrency(embedding_concurrency, entry.runtime.model.info());
         entry.leases.fetch_add(1, Ordering::AcqRel);
         Ok(ModelRuntimeLease {
             key,
@@ -271,6 +268,7 @@ impl ModelRuntimeLease {
             .acquire_operation_permit(options.signal.as_ref())
             .await?;
         let _active = ActiveEmbeddingGuard::new(&self.entry.runtime.active_embeddings);
+        options.execution_concurrency = self.operation.limit;
         if let Some(reporter) = index_progress {
             let model_progress = options.on_progress.take();
             let operation = Arc::clone(&self.operation);
@@ -433,16 +431,21 @@ fn validate_embedding_concurrency(concurrency: Option<usize>) -> Result<(), Mode
     Ok(())
 }
 
-fn resolve_embedding_concurrency(
-    requested: Option<usize>,
-    model_default: Option<usize>,
-    compute_capacity: usize,
-) -> usize {
+fn resolve_embedding_concurrency(requested: Option<usize>, info: &EmbeddingModelInfo) -> usize {
     requested
-        .or(model_default)
-        .unwrap_or(1)
+        .or(info.default_concurrency)
+        .unwrap_or_else(|| {
+            if info.provider == "qwen" {
+                if info.input_kinds.contains(&crate::EmbeddingInputKind::Image) {
+                    4
+                } else {
+                    8
+                }
+            } else {
+                1
+            }
+        })
         .max(1)
-        .min(compute_capacity.max(1))
 }
 
 fn manager_closed() -> ModelError {
@@ -913,11 +916,18 @@ mod tests {
     }
 
     #[test]
-    fn concurrency_policy_prefers_user_then_model_default_and_caps_capacity() {
-        assert_eq!(resolve_embedding_concurrency(Some(4), Some(2), 12), 4);
-        assert_eq!(resolve_embedding_concurrency(None, Some(2), 12), 2);
-        assert_eq!(resolve_embedding_concurrency(None, None, 12), 1);
-        assert_eq!(resolve_embedding_concurrency(Some(24), Some(2), 12), 12);
+    fn concurrency_policy_prefers_user_and_matches_main_remote_defaults() {
+        let mut info = ConcurrentFixtureModel::new().info;
+        assert_eq!(resolve_embedding_concurrency(Some(4), &info), 4);
+        assert_eq!(resolve_embedding_concurrency(None, &info), 2);
+        info.default_concurrency = None;
+        assert_eq!(resolve_embedding_concurrency(None, &info), 1);
+        assert_eq!(resolve_embedding_concurrency(Some(24), &info), 24);
+
+        info.provider = "qwen".to_owned();
+        assert_eq!(resolve_embedding_concurrency(None, &info), 8);
+        info.input_kinds.push(EmbeddingInputKind::Image);
+        assert_eq!(resolve_embedding_concurrency(None, &info), 4);
     }
 
     #[test]

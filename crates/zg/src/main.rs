@@ -1,5 +1,8 @@
 use std::{error::Error, io, process::ExitCode, sync::Arc};
 
+#[cfg(target_os = "macos")]
+use std::{ffi::OsString, os::unix::process::CommandExt, process::Command};
+
 use clap::Parser;
 use tokio::runtime::Builder;
 use tracing::debug;
@@ -22,11 +25,37 @@ fn run() -> Result<(), Box<dyn Error>> {
     // Clap handles --help/--version before any async runtime or native adapter is built.
     let cli = Cli::parse();
     let plan = cli.into_plan(std::env::current_dir()?)?;
+    install_darwin_metal_residency_mitigation()?;
     init_tracing();
 
     let runtime = Builder::new_multi_thread().enable_all().build()?;
 
     runtime.block_on(async move { execute_plan(plan).await })
+}
+
+#[cfg(target_os = "macos")]
+fn install_darwin_metal_residency_mitigation() -> io::Result<()> {
+    if std::env::var_os("GGML_METAL_NO_RESIDENCY").is_some()
+        || std::env::var_os("ZVEC_GREP_METAL_KEEP_RESIDENCY").as_deref()
+            == Some(std::ffi::OsStr::new("1"))
+    {
+        return Ok(());
+    }
+
+    // Changing the process environment after Tokio starts is not thread-safe. Re-exec
+    // before building the runtime so llama.cpp observes the same Metal default as main.
+    let executable = std::env::current_exe()?;
+    let arguments = std::env::args_os().skip(1).collect::<Vec<OsString>>();
+    let error = Command::new(executable)
+        .args(arguments)
+        .env("GGML_METAL_NO_RESIDENCY", "1")
+        .exec();
+    Err(error)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn install_darwin_metal_residency_mitigation() -> io::Result<()> {
+    Ok(())
 }
 
 async fn execute_plan(plan: CliPlan) -> Result<(), Box<dyn Error>> {

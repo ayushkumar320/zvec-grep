@@ -47,6 +47,19 @@ pub struct EmbeddingOptions {
     pub purpose: Option<EmbeddingPurpose>,
     pub signal: Option<CancellationToken>,
     pub on_progress: Option<Arc<dyn Fn(EmbeddingModelProgress) + Send + Sync>>,
+    /// Runtime-owned execution budget. Backends use this to size their
+    /// per-request local inference resources without exposing another public
+    /// tuning knob.
+    pub(crate) execution_concurrency: usize,
+    /// Standard W3C trace headers propagated by remote embedding backends.
+    pub(crate) trace_headers: Option<EmbeddingTraceHeaders>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct EmbeddingTraceHeaders {
+    pub(crate) traceparent: String,
+    pub(crate) tracestate: Option<String>,
+    pub(crate) baggage: Option<String>,
 }
 
 impl fmt::Debug for EmbeddingOptions {
@@ -56,6 +69,8 @@ impl fmt::Debug for EmbeddingOptions {
             .field("purpose", &self.purpose)
             .field("has_signal", &self.signal.is_some())
             .field("has_progress_callback", &self.on_progress.is_some())
+            .field("execution_concurrency", &self.execution_concurrency)
+            .field("has_trace_headers", &self.trace_headers.is_some())
             .finish()
     }
 }

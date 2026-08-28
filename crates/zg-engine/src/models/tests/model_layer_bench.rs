@@ -9,14 +9,14 @@ use std::{
 use futures_util::future::join_all;
 use serde_json::json;
 
-use crate::{Content, models::embedding::EmbeddingOptions};
+use crate::{Content, Device, models::embedding::EmbeddingOptions};
 
 use super::super::{
     embedding::CreateEmbeddingModelOptions,
     runtime::{ModelRuntimeLease, ModelRuntimeManager, ModelRuntimeRequest},
 };
 
-const MODEL_REFERENCE: &str = "local/potion-code-16m-v2";
+const DEFAULT_MODEL_REFERENCE: &str = "local/potion-code-16m-v2";
 
 /// Manual, release-mode comparison harness shared with
 /// `benchmarks/model-layer/main.mjs`.
@@ -37,6 +37,11 @@ async fn model_layer_throughput() {
     let vectors_per_round = env_usize("ZG_MODEL_BENCH_VECTORS", 16_384);
     let rounds = env_usize("ZG_MODEL_BENCH_ROUNDS", 5);
     let warmup_waves = env_usize("ZG_MODEL_BENCH_WARMUP_WAVES", 2);
+    let model_reference =
+        env::var("ZG_MODEL_BENCH_MODEL").unwrap_or_else(|_| DEFAULT_MODEL_REFERENCE.to_owned());
+    let device = env::var("ZG_MODEL_BENCH_DEVICE")
+        .ok()
+        .map(|value| parse_device(&value));
     assert!(batch_size > 0, "batch size must be positive");
     assert!(concurrency > 0, "concurrency must be positive");
     assert!(rounds > 0, "round count must be positive");
@@ -51,17 +56,11 @@ async fn model_layer_throughput() {
 
     let cache = env::var_os("ZG_MODEL_BENCH_CACHE").map(PathBuf::from);
     let manager = ModelRuntimeManager::new();
-    let model = manager
-        .acquire(ModelRuntimeRequest::new(
-            MODEL_REFERENCE,
-            CreateEmbeddingModelOptions {
-                model_cache_dir: cache,
-                ..CreateEmbeddingModelOptions::default()
-            },
-            Some(concurrency),
-        ))
-        .expect("benchmark model runtime should be acquired");
-    assert_eq!(model.info().limits.max_batch_size, 256);
+    let model = create_benchmark_model(&manager, &model_reference, cache, device, concurrency);
+    assert!(
+        batch_size <= model.info().limits.max_batch_size,
+        "batch size exceeds model limit"
+    );
     let batch = benchmark_batch(batch_size);
 
     for _ in 0..warmup_waves {
@@ -100,7 +99,8 @@ async fn model_layer_throughput() {
         json!({
             "implementation": "rust",
             "mode": "model",
-            "model": MODEL_REFERENCE,
+            "model": model_reference,
+            "device": device.map(device_name),
             "batch_size": batch_size,
             "concurrency": concurrency,
             "vectors_per_round": vectors_per_round,
@@ -115,6 +115,48 @@ async fn model_layer_throughput() {
     );
 }
 
+fn create_benchmark_model(
+    manager: &ModelRuntimeManager,
+    model_reference: &str,
+    cache: Option<PathBuf>,
+    device: Option<Device>,
+    concurrency: usize,
+) -> ModelRuntimeLease {
+    manager
+        .acquire(ModelRuntimeRequest::new(
+            model_reference,
+            CreateEmbeddingModelOptions {
+                api_key: env::var("DASHSCOPE_API_KEY").ok(),
+                model_cache_dir: cache,
+                device,
+                ..CreateEmbeddingModelOptions::default()
+            },
+            Some(concurrency),
+        ))
+        .expect("benchmark model runtime should be acquired")
+}
+
+fn parse_device(value: &str) -> Device {
+    match value {
+        "auto" => Device::Auto,
+        "cpu" => Device::Cpu,
+        "metal" => Device::Metal,
+        "vulkan" => Device::Vulkan,
+        "cuda" => Device::Cuda,
+        _ => panic!("invalid ZG_MODEL_BENCH_DEVICE={value:?}"),
+    }
+}
+
+const fn device_name(device: Device) -> &'static str {
+    match device {
+        Device::Auto => "auto",
+        Device::Cpu => "cpu",
+        Device::Metal => "metal",
+        Device::Vulkan => "vulkan",
+        Device::Cuda => "cuda",
+    }
+}
+
 async fn run_wave(model: &ModelRuntimeLease, batch: &[Content], concurrency: usize) -> f64 {
     let results =
         join_all((0..concurrency).map(|_| model.embed(batch, EmbeddingOptions::default(), None)))
@@ -122,8 +164,8 @@ async fn run_wave(model: &ModelRuntimeLease, batch: &[Content], concurrency: usi
     results
         .into_iter()
         .map(|result| {
-            let result = result.expect("benchmark embedding should succeed");
             result
+                .expect("benchmark embedding should succeed")
                 .vectors
                 .iter()
                 .map(|vector| {

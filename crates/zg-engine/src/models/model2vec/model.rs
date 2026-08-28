@@ -18,6 +18,7 @@ use tokio_util::sync::CancellationToken;
 use crate::models::{
     catalog::Model2VecConfig,
     compute::ModelComputeRuntime,
+    download_progress::{ArtifactDownloadProgress, ModelDownloadProgressReporter},
     embedding::{
         CreateEmbeddingModelOptions, EmbeddingModel, EmbeddingModelInfo, EmbeddingModelLimits,
         EmbeddingModelProgress, EmbeddingOptions, EmbeddingPurpose, EmbeddingResult,
@@ -27,10 +28,7 @@ use crate::models::{
 };
 use crate::{Content, EmbeddingInputKind};
 
-use super::{
-    download_progress::{ArtifactDownloadProgress, ModelDownloadProgressReporter},
-    safetensors::{StaticEmbeddingTable, load_static_embedding_table},
-};
+use super::safetensors::{StaticEmbeddingTable, load_static_embedding_table};
 
 static PARTIAL_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 

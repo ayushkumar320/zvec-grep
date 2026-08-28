@@ -4,7 +4,10 @@ use super::{
     catalog::get_embedding_model_catalog_entry,
     embedding::{CreateEmbeddingModelOptions, EmbeddingModel},
     error::ModelError,
+    llama_cpp::LlamaCppEmbeddingModel,
     model2vec::Model2VecEmbeddingModel,
+    qwen::QwenEmbeddingModel,
+    transformers::TransformersEmbeddingModel,
 };
 
 /// Creates a catalog-backed embedding model.
@@ -28,17 +31,24 @@ pub fn create_embedding_model(
             Some(format!("embedding={reference}")),
         )
     })?;
-    let Some(config) = entry.model2vec_config() else {
-        return Err(ModelError::coded(
-            "ZVEC_GREP.ENGINE.MODELS.EMBEDDING_MODEL_NOT_IMPLEMENTED",
-            "Embedding catalog entry is not implemented",
-            Some(format!("backend={} reference={reference}", entry.backend())),
-        ));
-    };
-    Ok(Arc::new(Model2VecEmbeddingModel::new(
-        config,
-        options.unwrap_or_default(),
-    )))
+    let options = options.unwrap_or_default();
+    if let Some(config) = entry.model2vec_config() {
+        return Ok(Arc::new(Model2VecEmbeddingModel::new(config, options)));
+    }
+    if let Some(config) = entry.qwen_config() {
+        return Ok(Arc::new(QwenEmbeddingModel::new(config, options)?));
+    }
+    if let Some(config) = entry.transformers_config() {
+        return Ok(Arc::new(TransformersEmbeddingModel::new(config, options)));
+    }
+    if let Some(config) = entry.llama_cpp_config() {
+        return Ok(Arc::new(LlamaCppEmbeddingModel::new(config, options)));
+    }
+    Err(ModelError::coded(
+        "ZVEC_GREP.ENGINE.MODELS.EMBEDDING_MODEL_NOT_IMPLEMENTED",
+        "Embedding catalog entry is not implemented",
+        Some(format!("backend={} reference={reference}", entry.backend())),
+    ))
 }
 
 #[cfg(test)]
@@ -46,18 +56,28 @@ mod tests {
     use super::create_embedding_model;
 
     #[test]
-    fn factory_exposes_only_implemented_model2vec_backends() {
+    fn factory_exposes_implemented_backends() {
         let model = create_embedding_model("local/potion-code-16m-v2", None)
             .expect("Model2Vec backend should be implemented");
         assert_eq!(model.info().reference, "local/potion-code-16m-v2");
 
-        let unimplemented = create_embedding_model("local/embeddinggemma-300m", None)
-            .err()
-            .expect("unported catalog backend should fail clearly");
-        assert_eq!(
-            unimplemented.code(),
-            Some("ZVEC_GREP.ENGINE.MODELS.EMBEDDING_MODEL_NOT_IMPLEMENTED")
-        );
+        let qwen = create_embedding_model(
+            "qwen/text-embedding-v4",
+            Some(super::CreateEmbeddingModelOptions {
+                api_key: Some("test".to_owned()),
+                ..super::CreateEmbeddingModelOptions::default()
+            }),
+        )
+        .expect("Qwen backend should be implemented");
+        assert_eq!(qwen.info().reference, "qwen/text-embedding-v4");
+
+        let llama = create_embedding_model("local/embeddinggemma-300m", None)
+            .expect("llama.cpp backend should be implemented");
+        assert_eq!(llama.info().reference, "local/embeddinggemma-300m");
+
+        let transformers = create_embedding_model("local/all-minilm-l6-v2", None)
+            .expect("Transformers backend should be implemented");
+        assert_eq!(transformers.info().reference, "local/all-minilm-l6-v2");
 
         let unknown = create_embedding_model("missing", None)
             .err()
