@@ -4,8 +4,13 @@
 
 # BrowseComp-Plus
 
-This benchmark runs a native paired evaluation of Codex on the fixed
-[BrowseComp-Plus](https://github.com/texttron/BrowseComp-Plus) corpus.
+[BrowseComp-Plus](https://github.com/texttron/BrowseComp-Plus) evaluates
+deep-research agents on reasoning-intensive questions that require locating and
+connecting evidence across multiple documents. Rather than searching the live
+web, it uses a fixed corpus of roughly 100,000 human-verified documents,
+enabling controlled and reproducible retriever comparisons.
+
+This benchmark runs a native paired evaluation of Codex on that corpus.
 
 It follows the original paper's core principles, with small differences in
 corpus processing and evaluation protocol to better reflect real-world use of a
@@ -36,8 +41,9 @@ randomly. We found no obvious ordering bias in this portion. Following a fixed
 published order also minimizes discretion in selecting cases that might favor
 zvec-grep.
 
-Cases with verified errors or insufficient corpus evidence to determine the
-answer are excluded. Each exclusion is documented in
+Cases are excluded only when review confirms a defect in the original dataset,
+such as inconsistent clues or insufficient corpus evidence to determine a
+defensible answer. Each exclusion is documented in
 [`suites/study.txt`](./suites/study.txt).
 
 | Setting | Value |
@@ -60,6 +66,38 @@ relative to Baseline.
 
 zvec-grep index preparation is measured and reported separately from Agent
 execution.
+
+### What we observed
+
+- **Why it helps.** On cross-document questions with paraphrased clues,
+  zvec-grep can surface the correct entity before broad corpus scans. This
+  narrows the effective search space and reduces candidate-discovery cost.
+- **How often it helps.** zvec-grep reduced average input tokens by 37.6%; the
+  median case saw a 25.8% reduction, and 67 of 100 cases used fewer tokens while
+  maintaining answer quality. The remaining cases generally involved smaller
+  runs and smaller absolute differences. The average reduction exceeds the
+  median because a few expensive Baseline search tails were substantially
+  shortened, while the 25.8% median and 67% case win rate show that the gains
+  extended beyond those outliers.
+- **Where gains narrow.** When exact search is already sufficient—or semantic
+  results are relevant but not decisive—the Agent may repeat verification with
+  grep. These regressions were also less consistent across trials, suggesting
+  that much of the downside came from additional retrieval overhead and
+  run-to-run variation rather than a broad, systematic regression. Precise
+  verification and timely stopping therefore remain important.
+
+Overall, zvec-grep provides the most value when semantic retrieval can narrow a
+large or ambiguous search space, where it can prevent costly exploration tails.
+When a task is already well served by exact keyword search, its incremental
+benefit is smaller and results tend to remain closer to Baseline.
+
+The BrowseComp-Plus dataset also contains minor imperfections; for example, some
+query clues do not fully align with their source documents. This resembles
+real-world information environments, where evidence may be incomplete or
+conflicting. Cases without enough corpus evidence for a defensible answer are
+excluded, while cases with sufficient evidence for the core answer are retained.
+Reconciling such clues can require extra exploration and increase run-to-run
+variation.
 
 ## Prerequisites
 
