@@ -2,9 +2,11 @@ use std::{
     fs::OpenOptions,
     io::Write,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+
+#[cfg(not(windows))]
+use std::process::{Child as DaemonChild, Command, Stdio};
 
 use serde::{Deserialize, Serialize};
 use sysinfo::{Pid, ProcessesToUpdate, Signal, System};
@@ -13,6 +15,11 @@ use tokio::{
     net::TcpStream,
 };
 use uuid::Uuid;
+// `std::process::Command` broadly inherits inheritable handles on Windows.
+// An explicit handle list prevents the resident daemon from retaining a
+// bootstrap client's stdout/stderr pipes and suppressing EOF indefinitely.
+#[cfg(windows)]
+use windows_spawn::{Child as DaemonChild, Command, Stdio};
 
 use crate::{DaemonError, ListenAddress, ServerConfig};
 
@@ -429,7 +436,7 @@ async fn wait_for_status(
     home: &Path,
     running: bool,
     timeout: Duration,
-    mut child: Option<(std::process::Child, PathBuf)>,
+    mut child: Option<(DaemonChild, PathBuf)>,
 ) -> Result<DaemonStatus, DaemonError> {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
