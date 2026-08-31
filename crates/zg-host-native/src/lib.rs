@@ -2,6 +2,7 @@
 
 mod api;
 mod change_set;
+mod error;
 mod file_type;
 mod pattern;
 mod policy;
@@ -15,5 +16,6 @@ pub use api::{
     WorkspaceChangeBatch, WorkspaceScannerPort, WorkspaceWatchSessionPort,
     WorkspaceWatcherFactoryPort,
 };
+pub use error::HostError;
 pub use scanner::NativeScanner;
 pub use watcher::{NativeWatcherConfig, NativeWatcherFactory};

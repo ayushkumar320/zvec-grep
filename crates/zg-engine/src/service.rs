@@ -19,6 +19,7 @@ use crate::{
         index::{IndexOptions, IndexResult},
         info::{InfoOptions, InfoResult},
     },
+    indexing::service::WorkspaceIndexService,
     lexical::{
         LexicalSearchService,
         types::{LexicalCoverage, LexicalOptions, LexicalSearchReply, LexicalSearchRequest},
@@ -31,17 +32,18 @@ const DEFAULT_MAX_CONCURRENT_LEXICAL_SEARCHES: usize = 2;
 #[derive(Clone, Debug)]
 pub(crate) struct EngineService {
     lexical: LexicalSearchService,
+    indexing: WorkspaceIndexService,
     models: ModelRuntimeManager,
     closed: Arc<AtomicBool>,
 }
 
-#[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
 impl EngineService {
     #[must_use]
     pub(crate) fn new() -> Self {
         Self {
             lexical: LexicalSearchService::default()
                 .with_max_searches(DEFAULT_MAX_CONCURRENT_LEXICAL_SEARCHES),
+            indexing: WorkspaceIndexService::new(),
             models: ModelRuntimeManager::new(),
             closed: Arc::new(AtomicBool::new(false)),
         }
@@ -106,47 +108,43 @@ impl EngineService {
     ///
     /// # Errors
     ///
-    /// Returns an engine error when indexing support is unavailable.
+    /// Returns an engine error when indexing fails or no storage backend is configured.
     pub(crate) async fn index(&self, options: IndexOptions) -> Result<IndexResult, EngineError> {
         self.ensure_open()?;
-        let _root = resolve_root(options.root.as_deref())?;
-        Err(unavailable("index"))
+        self.indexing.index(&self.models, options).await
     }
 
     /// Returns workspace index metadata and status.
     ///
     /// # Errors
     ///
-    /// Returns an engine error when workspace information support is unavailable.
+    /// Returns an engine error when workspace metadata or status cannot be read.
     pub(crate) async fn info(&self, options: InfoOptions) -> Result<InfoResult, EngineError> {
         self.ensure_open()?;
-        let _root = resolve_root(options.root.as_deref())?;
-        Err(unavailable("info"))
+        self.indexing.info(options).await
     }
 
     /// Drops the persisted workspace index.
     ///
     /// # Errors
     ///
-    /// Returns an engine error when index removal support is unavailable.
+    /// Returns an engine error when index removal fails or no storage backend is configured.
     pub(crate) async fn drop_index(&self, options: InfoOptions) -> Result<bool, EngineError> {
         self.ensure_open()?;
-        let _root = resolve_root(options.root.as_deref())?;
-        Err(unavailable("drop_index"))
+        std::future::ready(self.indexing.drop_index(&options)).await
     }
 
     /// Disables indexing for a workspace and returns its updated information.
     ///
     /// # Errors
     ///
-    /// Returns an engine error when index disabling support is unavailable.
+    /// Returns an engine error when workspace metadata cannot be updated.
     pub(crate) async fn disable_index(
         &self,
         options: InfoOptions,
     ) -> Result<InfoResult, EngineError> {
         self.ensure_open()?;
-        let _root = resolve_root(options.root.as_deref())?;
-        Err(unavailable("disable_index"))
+        std::future::ready(WorkspaceIndexService::disable_index(&options)).await
     }
 
     /// Closes this service and rejects subsequent requests.

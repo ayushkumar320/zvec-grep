@@ -355,9 +355,10 @@ fn full_toolset_exposes_lifecycle_tools_and_runs_managed_rg() -> Result<(), Box<
         }
     });
     let response = post_json(port, Some(&session), &index_status.to_string())?;
-    assert!(response.contains("error_code: capability_unavailable"));
-    assert!(response.contains("capability unavailable: info"));
-    assert!(response.contains("\"isError\":true"));
+    assert!(response.contains("\"indexed\":false"));
+    assert!(response.contains("\"index_policy\":\"undecided\""));
+    assert!(response.contains("\"source\":\"unindexed\""));
+    assert!(response.contains("\"isError\":false"));
 
     let output = guard.stop()?;
     assert_command_success(&output);

@@ -3851,6 +3851,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "sysinfo",
  "tempfile",
  "thiserror",
  "tokenizers",
@@ -3866,6 +3867,8 @@ dependencies = [
  "tree-sitter-python",
  "tree-sitter-rust",
  "tree-sitter-typescript",
+ "uuid",
+ "zg-host-native",
 ]
 
 [[package]]
@@ -3878,10 +3881,10 @@ dependencies = [
  "notify",
  "same-file",
  "tempfile",
+ "thiserror",
  "tokio",
  "tokio-util",
  "tracing",
- "zg-engine",
 ]
 
 [[package]]

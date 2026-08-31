@@ -8,12 +8,14 @@ pub mod api;
 mod error;
 #[allow(dead_code)]
 mod extraction;
+mod indexing;
 mod lexical;
 #[allow(dead_code)]
 mod models;
 mod payload;
 mod service;
 mod storage;
+mod workspace;
 
 use api::{
     context::{ContextOptions, ContextResult},

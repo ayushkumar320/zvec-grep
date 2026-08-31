@@ -13,10 +13,10 @@ globset.workspace = true
 ignore.workspace = true
 notify.workspace = true
 same-file.workspace = true
-tokio = { workspace = true, features = ["rt", "sync", "time"] }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tokio-util = { workspace = true, features = ["rt"] }
 tracing.workspace = true
-zg-engine = { path = "../zg-engine" }
 
 [dev-dependencies]
 tempfile.workspace = true

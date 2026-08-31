@@ -5,8 +5,8 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
+use crate::HostError;
 use ignore::types::TypesBuilder;
-use zg_engine::EngineError;
 
 use crate::{
     DiscoveryOptions, RootSpec,
@@ -126,7 +126,7 @@ impl FileTypeResolver {
         &self,
         included: &[String],
         excluded: &[String],
-    ) -> Result<FileTypePatterns, EngineError> {
+    ) -> Result<FileTypePatterns, HostError> {
         if included.is_empty() && excluded.is_empty() {
             return Ok(FileTypePatterns::default());
         }
@@ -149,7 +149,7 @@ pub(crate) struct RootPolicy {
 }
 
 impl RootPolicy {
-    pub fn new(root: RootSpec, resolver: &FileTypeResolver) -> Result<Self, EngineError> {
+    pub fn new(root: RootSpec, resolver: &FileTypeResolver) -> Result<Self, HostError> {
         let root = normalize_root(root)?;
         let discovery = &root.discovery;
         let include = compile_path_patterns(&discovery.include_paths)?;
@@ -434,9 +434,9 @@ struct FileTypePatterns {
     exclude: Vec<PathPattern>,
 }
 
-fn normalize_root(mut root: RootSpec) -> Result<RootSpec, EngineError> {
+fn normalize_root(mut root: RootSpec) -> Result<RootSpec, HostError> {
     root.path = std::path::absolute(&root.path).map_err(|error| {
-        EngineError::backend(
+        HostError::backend(
             "native-scanner",
             format!("could not resolve root {}: {error}", root.path.display()),
         )
@@ -444,7 +444,7 @@ fn normalize_root(mut root: RootSpec) -> Result<RootSpec, EngineError> {
     Ok(root)
 }
 
-fn compile_path_patterns(patterns: &[String]) -> Result<Vec<PathPattern>, EngineError> {
+fn compile_path_patterns(patterns: &[String]) -> Result<Vec<PathPattern>, HostError> {
     patterns
         .iter()
         .filter(|pattern| !pattern.trim().is_empty())
@@ -452,7 +452,7 @@ fn compile_path_patterns(patterns: &[String]) -> Result<Vec<PathPattern>, Engine
         .collect()
 }
 
-fn compile_ordered_globs(discovery: &DiscoveryOptions) -> Result<Vec<OrderedGlob>, EngineError> {
+fn compile_ordered_globs(discovery: &DiscoveryOptions) -> Result<Vec<OrderedGlob>, HostError> {
     discovery
         .globs
         .iter()
@@ -482,7 +482,7 @@ fn compile_ordered_globs(discovery: &DiscoveryOptions) -> Result<Vec<OrderedGlob
         .collect()
 }
 
-fn default_ignore_rules() -> Result<Vec<IgnoreRule>, EngineError> {
+fn default_ignore_rules() -> Result<Vec<IgnoreRule>, HostError> {
     DEFAULT_IGNORED_DIRECTORY_NAMES
         .iter()
         .map(|pattern| IgnoreRule::new("", pattern, false, true, false))
@@ -494,7 +494,7 @@ fn default_ignore_rules() -> Result<Vec<IgnoreRule>, EngineError> {
         .collect()
 }
 
-fn read_configured_ignore_rules(root: &RootSpec) -> Result<Vec<IgnoreRule>, EngineError> {
+fn read_configured_ignore_rules(root: &RootSpec) -> Result<Vec<IgnoreRule>, HostError> {
     let mut rules = Vec::new();
     for path in &root.discovery.ignore_files {
         let absolute = if path.is_absolute() {
@@ -503,7 +503,7 @@ fn read_configured_ignore_rules(root: &RootSpec) -> Result<Vec<IgnoreRule>, Engi
             root.path.join(path)
         };
         let content = fs::read(&absolute).map_err(|error| {
-            EngineError::backend(
+            HostError::backend(
                 "native-scanner",
                 format!("could not read ignore file {}: {error}", absolute.display()),
             )
@@ -516,14 +516,14 @@ fn read_configured_ignore_rules(root: &RootSpec) -> Result<Vec<IgnoreRule>, Engi
     Ok(rules)
 }
 
-fn parse_gitignore_rules(content: &str, base_path: &str) -> Result<Vec<IgnoreRule>, EngineError> {
+fn parse_gitignore_rules(content: &str, base_path: &str) -> Result<Vec<IgnoreRule>, HostError> {
     content
         .lines()
         .filter_map(|line| parse_gitignore_rule(line, base_path).transpose())
         .collect()
 }
 
-fn parse_gitignore_rule(line: &str, base_path: &str) -> Result<Option<IgnoreRule>, EngineError> {
+fn parse_gitignore_rule(line: &str, base_path: &str) -> Result<Option<IgnoreRule>, HostError> {
     let mut pattern = line.trim();
     if pattern.is_empty() || pattern.starts_with('#') {
         return Ok(None);
@@ -562,7 +562,7 @@ impl IgnoreRule {
         negated: bool,
         directory_only: bool,
         anchored: bool,
-    ) -> Result<Self, EngineError> {
+    ) -> Result<Self, HostError> {
         Ok(Self {
             base_path: base_path.to_owned(),
             pattern: PathPattern::path(pattern)?,
@@ -681,7 +681,7 @@ fn load_default_type_map() -> HashMap<String, Vec<String>> {
 fn resolve_type_names(
     names: &[String],
     type_map: &HashMap<String, Vec<String>>,
-) -> Result<Vec<PathPattern>, EngineError> {
+) -> Result<Vec<PathPattern>, HostError> {
     let aliases: HashMap<_, _> = RIPGREP_FILE_TYPE_ALIASES.into_iter().collect();
     let mut patterns = Vec::new();
     let mut seen = HashSet::new();
@@ -703,7 +703,7 @@ fn resolve_type_names(
             aliases.get(extension_name).copied().unwrap_or(&name)
         };
         let Some(type_patterns) = type_map.get(resolved) else {
-            return Err(EngineError::invalid_input(format!(
+            return Err(HostError::invalid_input(format!(
                 "unknown ripgrep file type: {raw_name}"
             )));
         };

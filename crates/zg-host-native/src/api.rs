@@ -3,7 +3,7 @@ use std::{fmt, path::PathBuf, sync::Arc, time::Instant};
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
-use zg_engine::EngineError;
+use crate::HostError;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 #[allow(clippy::struct_excessive_bools)]
@@ -164,13 +164,13 @@ pub trait WorkspaceScannerPort: Send + Sync {
         &self,
         request: &ScanRequest,
         control: &TaskControl,
-    ) -> Result<ScanSnapshot, EngineError>;
+    ) -> Result<ScanSnapshot, HostError>;
 
     async fn read_batch(
         &self,
         request: &ReadBatchRequest,
         control: &TaskControl,
-    ) -> Result<Vec<SourceFile>, EngineError>;
+    ) -> Result<Vec<SourceFile>, HostError>;
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -200,7 +200,7 @@ pub trait WorkspaceWatcherFactoryPort: Send + Sync {
         &self,
         request: &WatchRequest,
         control: &TaskControl,
-    ) -> Result<Arc<dyn WorkspaceWatchSessionPort>, EngineError>;
+    ) -> Result<Arc<dyn WorkspaceWatchSessionPort>, HostError>;
 }
 
 /// A daemon-owned watch session.
@@ -210,10 +210,7 @@ pub trait WorkspaceWatcherFactoryPort: Send + Sync {
 /// Native queue overflow and watcher recovery are normalized into one Rescan.
 #[async_trait]
 pub trait WorkspaceWatchSessionPort: Send + Sync {
-    async fn next_changes(
-        &self,
-        control: &TaskControl,
-    ) -> Result<WorkspaceChangeBatch, EngineError>;
+    async fn next_changes(&self, control: &TaskControl) -> Result<WorkspaceChangeBatch, HostError>;
 
-    async fn close(&self) -> Result<(), EngineError>;
+    async fn close(&self) -> Result<(), HostError>;
 }
