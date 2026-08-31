@@ -36,7 +36,8 @@ binary and ordinary CI jobs do not require a system `rg` executable.
 ## Crates
 
 - `zg-engine`: high-level requests, replies, errors and `ZvecGrep`; lexical
-  search and embedding model implementations are private to this crate.
+  search, source extraction and embedding model implementations are private to
+  this crate.
 - `zg-cli`: CLI parsing and terminal rendering.
 - `zg`: production binary.
 - `zg-daemon`: process lifecycle, loopback HTTP server and stdio bootstrap.

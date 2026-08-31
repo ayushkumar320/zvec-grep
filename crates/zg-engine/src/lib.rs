@@ -6,6 +6,8 @@
 
 mod domain;
 mod error;
+#[allow(dead_code)]
+mod extraction;
 mod lexical;
 #[allow(dead_code)]
 mod models;

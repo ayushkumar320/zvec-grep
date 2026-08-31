@@ -103,6 +103,7 @@ pub enum EntityMetadata {
         symbol_type: SymbolType,
         symbol_name: Option<String>,
         scope: Option<String>,
+        node_type: Option<String>,
         signature: Option<String>,
         documentation: Option<String>,
         modifiers: Vec<String>,

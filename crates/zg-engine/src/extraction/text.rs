@@ -1,0 +1,329 @@
+use crate::{Content, EngineError, TextRange};
+
+use super::{
+    ChunkOptions, EntityFragment, TextSource, byte_index_at_utf16_ceil, char_count, make_entity_id,
+    validate_source_file,
+};
+
+const DEFAULT_TEXT_CHUNK_CHARS: usize = 3_600;
+const DEFAULT_TEXT_CHUNK_OVERLAP_CHARS: usize = 540;
+
+pub(super) fn extract(
+    source: &TextSource,
+    options: ChunkOptions,
+) -> Result<Vec<EntityFragment>, EngineError> {
+    validate_source_file(source)?;
+    let (max_chars, overlap_chars) = resolve_options(options)?;
+    Ok(extract_plain_text_fragments(
+        source,
+        max_chars,
+        overlap_chars,
+    ))
+}
+
+pub(super) fn extract_plain_text_fragments(
+    source: &TextSource,
+    max_chars: usize,
+    overlap_chars: usize,
+) -> Vec<EntityFragment> {
+    chunk_text(&source.text, max_chars, overlap_chars)
+        .into_iter()
+        .enumerate()
+        .map(|(index, chunk)| EntityFragment {
+            id: make_entity_id(&source.file.id, index),
+            group: None,
+            file_id: source.file.id.clone(),
+            range: chunk.range.into(),
+            content: Content::Text(chunk.text),
+            metadata: None,
+        })
+        .collect()
+}
+
+fn resolve_options(options: ChunkOptions) -> Result<(usize, usize), EngineError> {
+    let max_chars = options.max_chunk_chars.unwrap_or(DEFAULT_TEXT_CHUNK_CHARS);
+    let overlap_chars = options
+        .chunk_overlap_chars
+        .unwrap_or(DEFAULT_TEXT_CHUNK_OVERLAP_CHARS);
+    if max_chars == 0 {
+        return Err(EngineError::invalid_input(
+            "text extractor requires a positive integer chunk size",
+        ));
+    }
+    if overlap_chars >= max_chars {
+        return Err(EngineError::invalid_input(
+            "text extractor requires overlap to be smaller than chunk size",
+        ));
+    }
+    Ok((max_chars, overlap_chars))
+}
+
+#[derive(Debug)]
+struct TextChunk {
+    text: String,
+    range: TextRange,
+}
+
+fn chunk_text(text: &str, max_chars: usize, overlap_chars: usize) -> Vec<TextChunk> {
+    if text.trim().is_empty() {
+        return Vec::new();
+    }
+
+    let lines = text.split('\n').collect::<Vec<_>>();
+    let line_offsets = compute_line_offsets(&lines);
+    let mut chunks = Vec::new();
+    let mut start_index = 0;
+
+    while start_index < lines.len() {
+        if char_count(lines[start_index]) + 1 > max_chars {
+            split_long_line(
+                lines[start_index],
+                start_index,
+                line_offsets[start_index],
+                max_chars,
+                &mut chunks,
+            );
+            start_index += 1;
+            continue;
+        }
+
+        let mut used_chars = 0;
+        let mut end_index = start_index;
+        while end_index < lines.len() {
+            let line_length = char_count(lines[end_index]) + 1;
+            if used_chars + line_length > max_chars && end_index > start_index {
+                break;
+            }
+            used_chars += line_length;
+            end_index += 1;
+        }
+
+        let chunk = lines[start_index..end_index].join("\n");
+        if !chunk.trim().is_empty() {
+            let end_line_index = end_index - 1;
+            chunks.push(TextChunk {
+                text: chunk,
+                range: TextRange {
+                    start_line: start_index + 1,
+                    end_line: end_index,
+                    start_offset: line_offsets[start_index],
+                    end_offset: line_offsets[end_line_index] + char_count(lines[end_line_index]),
+                },
+            });
+        }
+
+        if end_index >= lines.len() {
+            break;
+        }
+        start_index = compute_next_start_line(&lines, start_index, end_index, overlap_chars);
+    }
+
+    chunks
+}
+
+fn split_long_line(
+    line: &str,
+    line_index: usize,
+    line_offset: usize,
+    max_chars: usize,
+    chunks: &mut Vec<TextChunk>,
+) {
+    let mut byte_offset = 0;
+    while byte_offset < line.len() {
+        let rest = &line[byte_offset..];
+        let slice_chars = if char_count(rest) <= max_chars {
+            char_count(rest)
+        } else {
+            find_line_cut(rest, max_chars)
+        };
+        let slice_bytes = byte_index_at_utf16_ceil(rest, slice_chars);
+        let slice = &rest[..slice_bytes];
+        if !slice.trim().is_empty() {
+            chunks.push(TextChunk {
+                text: slice.to_owned(),
+                range: TextRange {
+                    start_line: line_index + 1,
+                    end_line: line_index + 1,
+                    start_offset: line_offset + char_count(&line[..byte_offset]),
+                    end_offset: line_offset + char_count(&line[..byte_offset + slice_bytes]),
+                },
+            });
+        }
+        byte_offset += slice_bytes;
+    }
+}
+
+fn compute_line_offsets(lines: &[&str]) -> Vec<usize> {
+    let mut offset = 0;
+    lines
+        .iter()
+        .map(|line| {
+            let current = offset;
+            offset += char_count(line) + 1;
+            current
+        })
+        .collect()
+}
+
+fn compute_next_start_line(
+    lines: &[&str],
+    start_index: usize,
+    end_index: usize,
+    overlap_chars: usize,
+) -> usize {
+    if overlap_chars == 0 {
+        return end_index;
+    }
+
+    let mut overlap_lines = 0;
+    let mut overlap_count = 0;
+    for index in (start_index..end_index).rev() {
+        if overlap_count >= overlap_chars {
+            break;
+        }
+        overlap_count += char_count(lines[index]) + 1;
+        overlap_lines += 1;
+    }
+    let next_start = end_index - overlap_lines;
+    if next_start > start_index {
+        next_start
+    } else {
+        end_index
+    }
+}
+
+fn find_line_cut(line: &str, max_chars: usize) -> usize {
+    if char_count(line) <= max_chars {
+        return char_count(line);
+    }
+
+    let min_position = max_chars.saturating_mul(7) / 10;
+    let mut best_position = None;
+    let mut best_score = 0;
+    let mut position = 0;
+    for character in line.chars() {
+        if position >= max_chars {
+            break;
+        }
+        let score = match character {
+            '.' | '!' | '?' => 4,
+            ',' | ';' | ':' => 3,
+            ' ' | '\t' => 2,
+            '-' | '/' | '\\' => 1,
+            _ => 0,
+        };
+        if position >= min_position && score > 0 && score >= best_score {
+            best_score = score;
+            best_position = Some(position + character.len_utf16());
+        }
+        position += character.len_utf16();
+    }
+    best_position.unwrap_or(max_chars)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{Content, ContentRange, FileKind};
+
+    use super::super::{ChunkOptions, byte_index_at_utf16, test_source};
+    use super::extract;
+
+    #[test]
+    fn validates_chunks_ranges_and_overlap_like_typescript() {
+        let source = test_source(
+            FileKind::Text,
+            "text",
+            "fixture.txt",
+            "alpha beta\ngamma delta\nepsilon zeta\n",
+        );
+        let chunks = extract(
+            &source,
+            ChunkOptions {
+                max_chunk_chars: Some(18),
+                chunk_overlap_chars: Some(6),
+            },
+        )
+        .expect("text extraction");
+        assert!(chunks.len() >= 2);
+        assert_eq!(chunks[0].id.len(), 64);
+        assert_eq!(
+            chunks[0].range,
+            ContentRange::Text {
+                start_line: 1,
+                end_line: 1,
+                start_offset: 0,
+                end_offset: 10,
+            }
+        );
+        for chunk in &chunks {
+            let Content::Text(text) = &chunk.content else {
+                panic!("text fragment expected");
+            };
+            assert!(text.chars().count() <= 18);
+        }
+    }
+
+    #[test]
+    fn splits_long_unicode_lines_on_character_boundaries() {
+        let text = format!("prefix {} suffix", "😀".repeat(20));
+        let source = test_source(FileKind::Text, "text", "unicode.txt", &text);
+        let chunks = extract(
+            &source,
+            ChunkOptions {
+                max_chunk_chars: Some(10),
+                chunk_overlap_chars: Some(0),
+            },
+        )
+        .expect("unicode extraction");
+        assert!(chunks.len() >= 3);
+        for chunk in chunks {
+            let Content::Text(content) = chunk.content else {
+                panic!("text fragment expected");
+            };
+            assert!(content.chars().count() <= 10);
+            let ContentRange::Text {
+                start_offset,
+                end_offset,
+                ..
+            } = chunk.range
+            else {
+                panic!("text range expected");
+            };
+            let start_byte = byte_index_at_utf16(&source.text, start_offset);
+            let end_byte = byte_index_at_utf16(&source.text, end_offset);
+            assert_eq!(content, source.text[start_byte..end_byte]);
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_options_and_empty_metadata() {
+        let source = test_source(FileKind::Text, "text", "fixture.txt", "value");
+        assert!(
+            extract(
+                &source,
+                ChunkOptions {
+                    max_chunk_chars: Some(0),
+                    chunk_overlap_chars: None,
+                }
+            )
+            .is_err()
+        );
+        assert!(
+            extract(
+                &source,
+                ChunkOptions {
+                    max_chunk_chars: Some(10),
+                    chunk_overlap_chars: Some(10),
+                }
+            )
+            .is_err()
+        );
+
+        let blank = test_source(FileKind::Text, "text", "blank.txt", " \n\t");
+        assert!(
+            extract(&blank, ChunkOptions::default())
+                .expect("blank extraction")
+                .is_empty()
+        );
+    }
+}
