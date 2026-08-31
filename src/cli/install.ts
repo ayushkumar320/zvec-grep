@@ -28,6 +28,7 @@ import { homedir } from "node:os";
 import { delimiter, dirname, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { parseEnv } from "node:util";
+import { REMOTE_EMBEDDING_ELICITATION_UNSUPPORTED_MESSAGE } from "../authorization/prompt.js";
 import { resolveServerUrl } from "../client/mode-router.js";
 import type { DaemonControlStatus } from "../daemon/server-controller.js";
 import type { McpToolset } from "../mcp/toolset.js";
@@ -42,6 +43,7 @@ type AgentInstaller = {
   aliases?: readonly string[];
   label: string;
   executables: readonly string[];
+  detect?: () => Promise<boolean>;
   install: (options: InstallAgentOptions) => Promise<InstallAgentResult>;
   uninstall: () => Promise<InstallAgentResult>;
 };
@@ -98,9 +100,10 @@ const AGENT_INSTALLERS: readonly AgentInstaller[] = [
   },
   {
     id: "qoder",
-    aliases: ["qodercli", "qoder-cli"],
+    aliases: ["qodercli", "qoder-cli", "qoderide", "qoder-ide"],
     label: "Qoder",
-    executables: ["qoder", "qodercli"],
+    executables: ["qoder", "qodercli", "qoder-ide"],
+    detect: qoderIdeIsAvailable,
     install: installQoderIntegration,
     uninstall: uninstallQoderIntegration,
   },
@@ -113,6 +116,7 @@ const ZVEC_GREP_AGENTS_END = "<!-- ZVEC_GREP_END -->";
 const CLAUDE_MCP_PERMISSION = "mcp__zvec_grep__*";
 const NAMESPACED_SEARCH_TOOL = "mcp__zvec_grep__zvec_grep_search";
 const NAMESPACED_RG_TOOL = "mcp__zvec_grep__zvec_grep_rg";
+const QODER_IDE_MCP_DESCRIPTION = "Managed by zg install";
 const DEFAULT_MCP_TOOL_TIMEOUT_SECONDS = 600;
 
 export async function runInstall(parsed: ParsedArgs): Promise<void> {
@@ -414,12 +418,27 @@ async function installQoderIntegration(
 ): Promise<InstallAgentResult> {
   const qoderHome = resolveQoderHome();
   const settingsPath = resolve(qoderHome, "settings.json");
+  const ideMcpPath = await resolveQoderIdeMcpPath();
   const guidancePath = resolve(qoderHome, "AGENTS.md");
+
+  await assertQoderMcpSettingsReplaceable(
+    settingsPath,
+    "Qoder CLI",
+    options.force,
+    isManagedJsonMcpServer,
+  );
+  await assertQoderMcpSettingsReplaceable(
+    ideMcpPath,
+    "Qoder IDE",
+    options.force,
+    isManagedQoderIdeMcpServer,
+  );
 
   const warnings = await updateQoderSettings({
     ...options,
     path: settingsPath,
   });
+  await updateQoderIdeSettings({ ...options, path: ideMcpPath });
   await writeMarkedFile({
     path: guidancePath,
     startMarker: ZVEC_GREP_AGENTS_START,
@@ -436,22 +455,26 @@ async function installQoderIntegration(
     console.warn(`    warning   ${warning}`);
   }
 
-  return { files: [settingsPath, guidancePath] };
+  return { files: [settingsPath, ideMcpPath, guidancePath] };
 }
 
 async function uninstallQoderIntegration(): Promise<InstallAgentResult> {
   const qoderHome = resolveQoderHome();
   const settingsPath = resolve(qoderHome, "settings.json");
+  const ideMcpPaths = qoderIdeMcpPathsForUninstall();
   const guidancePath = resolve(qoderHome, "AGENTS.md");
 
   await removeQoderSettings(settingsPath);
+  for (const path of ideMcpPaths) {
+    await removeQoderIdeSettings(path);
+  }
   await removeMarkedFile({
     path: guidancePath,
     startMarker: ZVEC_GREP_AGENTS_START,
     endMarker: ZVEC_GREP_AGENTS_END,
   });
 
-  return { files: [settingsPath, guidancePath] };
+  return { files: [settingsPath, ...ideMcpPaths, guidancePath] };
 }
 
 async function resolveInstallers(
@@ -585,16 +608,19 @@ function installersFromTokens(
 async function detectAgentInstallers(): Promise<Set<string>> {
   const detected = new Set<string>();
   const checks = await Promise.all(
-    AGENT_INSTALLERS.map(async (installer) => ({
-      installer,
-      available: (
+    AGENT_INSTALLERS.map(async (installer) => {
+      const executableDetected = (
         await Promise.all(
           installer.executables.map((executable) =>
             executableIsAvailable(executable),
           ),
         )
-      ).some(Boolean),
-    })),
+      ).some(Boolean);
+      return {
+        installer,
+        available: executableDetected || (await installer.detect?.()) === true,
+      };
+    }),
   );
   for (const check of checks) {
     if (check.available) {
@@ -818,6 +844,125 @@ function resolveCursorConfigPath(): string {
 
 function resolveQoderHome(): string {
   return resolve(process.env.QODER_CONFIG_DIR || resolve(homedir(), ".qoder"));
+}
+
+async function resolveQoderIdeMcpPath(): Promise<string> {
+  const configured = process.env.QODER_IDE_MCP_PATH?.trim();
+  if (configured) return resolve(configured);
+
+  const candidates = qoderIdeMcpPathCandidates();
+  for (const candidate of candidates) {
+    if (await fileExists(candidate)) return candidate;
+  }
+  return candidates[0]!;
+}
+
+function qoderIdeMcpPathsForUninstall(): string[] {
+  const configured = process.env.QODER_IDE_MCP_PATH?.trim();
+  return configured ? [resolve(configured)] : qoderIdeMcpPathCandidates();
+}
+
+function qoderIdeMcpPathCandidates(): string[] {
+  const qoderHome = resolve(homedir(), ".qoder");
+  const sharedClientCache =
+    process.platform === "darwin"
+      ? resolve(
+          homedir(),
+          "Library",
+          "Application Support",
+          "Qoder",
+          "SharedClientCache",
+        )
+      : process.platform === "win32"
+        ? resolve(
+            process.env.APPDATA || resolve(homedir(), "AppData", "Roaming"),
+            "Qoder",
+            "SharedClientCache",
+          )
+        : resolve(
+            process.env.XDG_CONFIG_HOME || resolve(homedir(), ".config"),
+            "Qoder",
+            "SharedClientCache",
+          );
+  return [
+    resolve(sharedClientCache, "mcp.json"),
+    resolve(sharedClientCache, "extension", "local", "mcp.json"),
+    resolve(qoderHome, "shared_client", "mcp.json"),
+    resolve(qoderHome, "shared_client", "extension", "local", "mcp.json"),
+  ];
+}
+
+async function qoderIdeIsAvailable(): Promise<boolean> {
+  const configured = process.env.QODER_IDE_EXECUTABLE?.trim();
+  const candidates = configured
+    ? [resolve(configured)]
+    : qoderIdeExecutableCandidates();
+  for (const candidate of candidates) {
+    try {
+      await access(candidate, fileSystemConstants.X_OK);
+      return true;
+    } catch {
+      // Try the next platform-specific installation path.
+    }
+  }
+  return false;
+}
+
+function qoderIdeExecutableCandidates(): string[] {
+  if (process.platform === "darwin") {
+    return [
+      resolve(
+        homedir(),
+        "Applications",
+        "Qoder IDE.app",
+        "Contents",
+        "MacOS",
+        "Qoder",
+      ),
+      resolve("/Applications", "Qoder IDE.app", "Contents", "MacOS", "Qoder"),
+      resolve(
+        homedir(),
+        "Applications",
+        "Qoder.app",
+        "Contents",
+        "MacOS",
+        "Qoder",
+      ),
+      resolve("/Applications", "Qoder.app", "Contents", "MacOS", "Qoder"),
+    ];
+  }
+  if (process.platform === "win32") {
+    const localPrograms = resolve(
+      process.env.LOCALAPPDATA || resolve(homedir(), "AppData", "Local"),
+      "Programs",
+    );
+    return [
+      resolve(localPrograms, "Qoder IDE", "Qoder IDE.exe"),
+      resolve(localPrograms, "Qoder", "Qoder.exe"),
+      ...(process.env.ProgramFiles
+        ? [
+            resolve(process.env.ProgramFiles, "Qoder IDE", "Qoder IDE.exe"),
+            resolve(process.env.ProgramFiles, "Qoder", "Qoder.exe"),
+          ]
+        : []),
+    ];
+  }
+  return [
+    "/usr/share/qoder-ide/qoder-ide",
+    "/usr/share/qoder-ide/bin/qoder-ide",
+    "/usr/bin/qoder-ide",
+    "/usr/share/qoder/bin/qoder",
+  ];
+}
+
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") return false;
+    throw error;
+  }
 }
 
 async function resolveQwenHome(): Promise<string> {
@@ -1081,6 +1226,22 @@ async function removeQoderSettings(path: string): Promise<void> {
   await removeJsoncMcpSettings(path, "Qoder", isManagedJsonMcpServer);
 }
 
+async function updateQoderIdeSettings(
+  options: InstallAgentOptions & { path: string },
+): Promise<void> {
+  await updateJsoncMcpSettings({
+    path: options.path,
+    force: options.force,
+    label: "Qoder IDE",
+    server: qoderIdeMcpServer(options),
+    isManaged: isManagedQoderIdeMcpServer,
+  });
+}
+
+async function removeQoderIdeSettings(path: string): Promise<void> {
+  await removeJsoncMcpSettings(path, "Qoder IDE", isManagedQoderIdeMcpServer);
+}
+
 function qwenMcpServer(options: InstallAgentOptions): Record<string, unknown> {
   const timeout = options.mcpToolTimeoutSeconds * 1_000;
   // Qwen otherwise defers MCP schemas behind tool_search, so the managed
@@ -1136,6 +1297,35 @@ function qoderMcpServer(options: InstallAgentOptions): Record<string, unknown> {
   };
 }
 
+function qoderIdeMcpServer(
+  options: InstallAgentOptions,
+): Record<string, unknown> {
+  const timeout = options.mcpToolTimeoutSeconds * 1_000;
+  if (options.transport === "stdio") {
+    const launch = stableQoderIdeStdioLaunch(options.mcpToolset);
+    return {
+      command: launch.command,
+      args: launch.args,
+      timeout,
+      description: QODER_IDE_MCP_DESCRIPTION,
+    };
+  }
+
+  return {
+    type: "sse",
+    url: resolveServerUrl(),
+    timeout,
+    description: QODER_IDE_MCP_DESCRIPTION,
+    ...(options.mcpTokenEnv
+      ? {
+          headers: {
+            Authorization: `Bearer \${${options.mcpTokenEnv}}`,
+          },
+        }
+      : {}),
+  };
+}
+
 type JsoncMcpSettingsOptions = {
   path: string;
   force: boolean;
@@ -1143,6 +1333,28 @@ type JsoncMcpSettingsOptions = {
   server: Record<string, unknown>;
   isManaged: (value: unknown) => boolean;
 };
+
+async function assertQoderMcpSettingsReplaceable(
+  path: string,
+  label: "Qoder CLI" | "Qoder IDE",
+  force: boolean,
+  isManaged: (value: unknown) => boolean,
+): Promise<void> {
+  const existing = await readTextFileIfExists(path);
+  const source = existing.trim() ? existing : "{}\n";
+  const root = parseJsoncSettings(path, source, label);
+  validateMcpSettingsContainer(path, root);
+  const mcpServers = isJsonObject(root.mcpServers) ? root.mcpServers : {};
+  if (
+    mcpServers.zvec_grep !== undefined &&
+    !isManaged(mcpServers.zvec_grep) &&
+    !force
+  ) {
+    throw new Error(
+      `Existing unmanaged zvec_grep MCP server found in ${path}. Re-run with --force to replace it for ${label}.`,
+    );
+  }
+}
 
 async function updateJsoncMcpSettings(
   options: JsoncMcpSettingsOptions,
@@ -1407,6 +1619,15 @@ function isManagedJsonMcpServer(value: unknown): boolean {
   );
 }
 
+function isManagedQoderIdeMcpServer(value: unknown): boolean {
+  return (
+    isJsonObject(value) &&
+    value.description === QODER_IDE_MCP_DESCRIPTION &&
+    ((typeof value.command === "string" && isStableStdioArgs(value.args)) ||
+      (value.type === "sse" && typeof value.url === "string"))
+  );
+}
+
 function isStdioArgs(value: unknown): boolean {
   return (
     Array.isArray(value) &&
@@ -1416,6 +1637,19 @@ function isStdioArgs(value: unknown): boolean {
     (value.length === 2 ||
       (value[2] === "--mcp-toolset" &&
         (value[3] === "agent" || value[3] === "full")))
+  );
+}
+
+function isStableStdioArgs(value: unknown): boolean {
+  return (
+    Array.isArray(value) &&
+    (value.length === 3 || value.length === 5) &&
+    typeof value[0] === "string" &&
+    value[1] === "server" &&
+    value[2] === "--stdio" &&
+    (value.length === 3 ||
+      (value[3] === "--mcp-toolset" &&
+        (value[4] === "agent" || value[4] === "full")))
   );
 }
 
@@ -1429,6 +1663,20 @@ function stdioArgs(mcpToolset?: McpToolset): string[] {
 
 function stdioCommand(mcpToolset?: McpToolset): string[] {
   return ["zg", ...stdioArgs(mcpToolset)];
+}
+
+function stableQoderIdeStdioLaunch(mcpToolset?: McpToolset): {
+  command: string;
+  args: string[];
+} {
+  const cliPath = process.argv[1];
+  if (!cliPath) {
+    return { command: "zg", args: stdioArgs(mcpToolset) };
+  }
+  return {
+    command: process.execPath,
+    args: [resolve(cliPath), ...stdioArgs(mcpToolset)],
+  };
 }
 
 function tomlStringArray(values: readonly string[]): string {
@@ -1751,8 +1999,8 @@ function agentGuidanceBlock(toolNames?: {
     ? `
 
 ${formatPromptRules("### Qoder Remote Embedding authorization recovery", [
-  `When \`${searchTool}\` fails because \`remote_embedding_authorization\` has no handler registered for \`elicitation/create\`, or reports that authorization was declined or cancelled without showing the user an authorization form during that call, treat it as a Qoder client interaction limitation. Do not immediately fall back to broad file reads, do not treat it as a missing API credential, and do not grant access silently. If the user actually declined a displayed authorization form, respect that decision and do not ask again.`,
-  "Use `AskUserQuestion` to offer exactly these choices: allow Remote Embedding for this workspace, use local FTS only, or cancel. Explain that workspace approval may send query text and selected workspace content to the configured provider and endpoint and may incur provider charges.",
+  `When \`${searchTool}\` needs \`remote_embedding_authorization\` and the current Qoder host returns \`code = 51500 message = method not found: No request handler configured\` without showing an authorization form, returns \`${REMOTE_EMBEDDING_ELICITATION_UNSUPPORTED_MESSAGE}\`, or reports that authorization was declined or cancelled without showing the user an authorization form, treat it as a Qoder client interaction limitation: the host lacks the server-to-client \`elicitation/create\` request handler. The outer MCP \`tools/call\` has already reached the registered MCP server and tool, so do not diagnose this error as a disconnected or missing MCP server or as a missing tool. Apply this recovery only to the Remote Embedding authorization path, not to arbitrary 51500 failures. Do not immediately fall back to broad file reads, do not treat it as a missing API credential, and do not grant access silently. If the user actually declined a displayed authorization form, respect that decision and do not ask again.`,
+  "Use the current Qoder host's built-in user-question tool (`ask_user_question` in Qoder IDE or `AskUserQuestion` in Qoder CLI/SDK) to offer exactly these choices: allow Remote Embedding for this workspace, use local FTS only, or cancel. Explain that workspace approval may send query text and selected workspace content to the configured provider and endpoint and may incur provider charges.",
   'Only after the user explicitly chooses workspace approval, run `zg auth grant "<absolute-root>" --capability embedding --scope workspace`, substituting the same absolute root used by the failed search, and then retry the original search call once. Do not use `--allow-remote`; it applies only to one CLI command and does not authorize the MCP retry.',
   `If the user chooses local FTS, retry \`${searchTool}\` once with the original search text in \`fts\`, omit \`query\`, \`queries\`, and \`vector\`, set \`autoUpdate\` to \`false\` and \`freshness\` to \`eventual\`, and preserve \`root\`, filters, and limits. This route is lexical-only, does not refresh the remote-embedding index, and sends no query text or workspace content to a remote Embedding provider.`,
   "If the user cancels, the grant command fails, or interactive user input is unavailable, stop and report that no remote data was sent. Provider credentials and Remote Embedding data authorization are separate; never request or modify an API key merely to resolve this interaction error.",
