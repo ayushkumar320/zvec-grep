@@ -12,7 +12,7 @@ pub(super) fn extract(
     source: &TextSource,
     options: ChunkOptions,
 ) -> Result<Vec<EntityFragment>, EngineError> {
-    validate_source_file(source)?;
+    validate_source_file(&source.file)?;
     let (max_chars, overlap_chars) = resolve_options(options)?;
     Ok(extract_plain_text_fragments(
         source,

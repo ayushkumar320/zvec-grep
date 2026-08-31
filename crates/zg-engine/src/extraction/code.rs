@@ -75,7 +75,7 @@ pub(super) fn extract_for_indexing(
     if source.file.kind != FileKind::Code {
         return Ok(Vec::new());
     }
-    validate_source_file(source)?;
+    validate_source_file(&source.file)?;
     let (max_chars, overlap_chars) = resolve_options(options)?;
 
     if COMPONENT_CODE_FORMATS.contains(&source.file.format.as_str()) {

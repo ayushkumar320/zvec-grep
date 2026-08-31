@@ -37,7 +37,7 @@ pub(super) fn extract(
     if source.file.format != "markdown" {
         return Ok(Vec::new());
     }
-    validate_source_file(source)?;
+    validate_source_file(&source.file)?;
     let (max_chars, overlap_chars) = resolve_options(options)?;
     let lines = source.text.split('\n').collect::<Vec<_>>();
     let headings = scan_headings(&lines);

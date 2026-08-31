@@ -1,6 +1,7 @@
 //! Deterministic source extraction used by the indexing and lexical-enrichment paths.
 
 mod code;
+mod image;
 mod markdown;
 mod text;
 
@@ -8,7 +9,7 @@ use std::path::PathBuf;
 
 use sha2::{Digest, Sha256};
 
-use crate::{Content, ContentRange, EngineError, EntityMetadata, FileKind};
+use crate::{Content, ContentRange, EngineError, EntityMetadata, FileKind, ImageFormat};
 
 const HEX: &[u8; 16] = b"0123456789abcdef";
 
@@ -31,6 +32,32 @@ pub(crate) struct SourceFile {
 pub(crate) struct TextSource {
     pub file: SourceFile,
     pub text: String,
+}
+
+/// Binary image source prepared by the native scanner.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ImageSource {
+    pub file: SourceFile,
+    pub data: Vec<u8>,
+    pub format: ImageFormat,
+}
+
+/// Borrowed extraction input routed by source representation before file semantics.
+pub(crate) enum Source<'source> {
+    Text(&'source TextSource),
+    Image(&'source ImageSource),
+}
+
+impl<'source> From<&'source TextSource> for Source<'source> {
+    fn from(source: &'source TextSource) -> Self {
+        Self::Text(source)
+    }
+}
+
+impl<'source> From<&'source ImageSource> for Source<'source> {
+    fn from(source: &'source ImageSource) -> Self {
+        Self::Image(source)
+    }
 }
 
 /// Per-call chunking limits and ranges use UTF-16 code-unit counts, matching
@@ -59,8 +86,8 @@ pub(crate) struct IndexingExtractionFragment {
     pub embedding_source: Option<Content>,
 }
 
-pub(crate) fn extract(
-    source: &TextSource,
+pub(crate) fn extract<'source>(
+    source: impl Into<Source<'source>>,
     options: ChunkOptions,
 ) -> Result<Vec<EntityFragment>, EngineError> {
     Ok(extract_for_indexing(source, options)?
@@ -69,31 +96,28 @@ pub(crate) fn extract(
         .collect())
 }
 
-pub(crate) fn extract_for_indexing(
-    source: &TextSource,
+pub(crate) fn extract_for_indexing<'source>(
+    source: impl Into<Source<'source>>,
     options: ChunkOptions,
 ) -> Result<Vec<IndexingExtractionFragment>, EngineError> {
-    match source.file.kind {
-        FileKind::Code => code::extract_for_indexing(source, options),
-        _ if source.file.format == "markdown" => markdown::extract(source, options).map(|items| {
-            items
-                .into_iter()
-                .map(|fragment| IndexingExtractionFragment {
-                    fragment,
-                    embedding_source: None,
-                })
-                .collect()
-        }),
-        _ => text::extract(source, options).map(|items| {
-            items
-                .into_iter()
-                .map(|fragment| IndexingExtractionFragment {
-                    fragment,
-                    embedding_source: None,
-                })
-                .collect()
-        }),
-    }
+    let fragments = match source.into() {
+        Source::Image(source) => image::extract(source),
+        Source::Text(source) if source.file.kind == FileKind::Code => {
+            return code::extract_for_indexing(source, options);
+        }
+        Source::Text(source) if source.file.format == "markdown" => {
+            markdown::extract(source, options)
+        }
+        Source::Text(source) => text::extract(source, options),
+    }?;
+
+    Ok(fragments
+        .into_iter()
+        .map(|fragment| IndexingExtractionFragment {
+            fragment,
+            embedding_source: None,
+        })
+        .collect())
 }
 
 pub(crate) fn vector_content_for_fragment(
@@ -114,30 +138,18 @@ pub(crate) fn vector_content_for_fragment(
     Content::Text(format!("{metadata}\n{text}"))
 }
 
-fn validate_source_file(source: &TextSource) -> Result<(), EngineError> {
-    if source.file.id.trim().is_empty() {
+fn validate_source_file(file: &SourceFile) -> Result<(), EngineError> {
+    if file.id.trim().is_empty() {
         return Err(EngineError::invalid_input(
             "extractor source requires a non-empty file id",
         ));
     }
-    if source
-        .file
-        .absolute_path
-        .to_string_lossy()
-        .trim()
-        .is_empty()
-    {
+    if file.absolute_path.to_string_lossy().trim().is_empty() {
         return Err(EngineError::invalid_input(
             "extractor source requires a non-empty absolute file path",
         ));
     }
-    if source
-        .file
-        .relative_path
-        .to_string_lossy()
-        .trim()
-        .is_empty()
-    {
+    if file.relative_path.to_string_lossy().trim().is_empty() {
         return Err(EngineError::invalid_input(
             "extractor source requires a non-empty relative file path",
         ));
@@ -287,17 +299,22 @@ fn byte_index_at_utf16_ceil(value: &str, utf16_offset: usize) -> usize {
 #[cfg(test)]
 fn test_source(kind: FileKind, format: &str, relative_path: &str, text: &str) -> TextSource {
     TextSource {
-        file: SourceFile {
-            id: format!("file-{format}"),
-            absolute_path: PathBuf::from("/repo").join(relative_path),
-            relative_path: PathBuf::from(relative_path),
-            root_path: PathBuf::from("/repo"),
-            size_bytes: text.len() as u64,
-            modified_epoch_ms: Some(1),
-            content_hash: None,
-            kind,
-            format: format.to_owned(),
-        },
+        file: test_file(kind, format, relative_path, text.len() as u64),
         text: text.to_owned(),
+    }
+}
+
+#[cfg(test)]
+fn test_file(kind: FileKind, format: &str, relative_path: &str, size_bytes: u64) -> SourceFile {
+    SourceFile {
+        id: format!("file-{format}"),
+        absolute_path: PathBuf::from("/repo").join(relative_path),
+        relative_path: PathBuf::from(relative_path),
+        root_path: PathBuf::from("/repo"),
+        size_bytes,
+        modified_epoch_ms: Some(1),
+        content_hash: None,
+        kind,
+        format: format.to_owned(),
     }
 }
