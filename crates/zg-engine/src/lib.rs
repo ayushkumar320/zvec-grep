@@ -13,6 +13,7 @@ mod lexical;
 mod models;
 mod payload;
 mod service;
+mod storage;
 
 use api::{
     context::{ContextOptions, ContextResult},
