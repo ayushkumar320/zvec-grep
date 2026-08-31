@@ -1,8 +1,8 @@
-use crate::{Content, EngineError, TextRange};
+use crate::{EngineError, payload::Content};
 
 use super::{
-    ChunkOptions, EntityFragment, TextSource, byte_index_at_utf16_ceil, char_count, make_entity_id,
-    validate_source_file,
+    ChunkOptions, EntityFragment, TextRange, TextSource, byte_index_at_utf16_ceil, char_count,
+    make_entity_id, validate_source_file,
 };
 
 const DEFAULT_TEXT_CHUNK_CHARS: usize = 3_600;
@@ -223,7 +223,9 @@ fn find_line_cut(line: &str, max_chars: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Content, ContentRange, FileKind};
+    use crate::{api::context::result::ContentRange, payload::Content};
+
+    use super::super::FileKind;
 
     use super::super::{ChunkOptions, byte_index_at_utf16, test_source};
     use super::extract;

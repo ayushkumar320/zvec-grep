@@ -2,10 +2,9 @@ use std::{error::Error, fs, path::PathBuf, time::Duration};
 
 use tempfile::tempdir_in;
 use tokio_util::sync::CancellationToken;
-use zg_engine::{DiscoveryOptions, RootSpec};
 use zg_host_native::{
-    NativeWatcherConfig, NativeWatcherFactory, TaskControl, WatchRequest, WorkspaceChange,
-    WorkspaceWatcherFactoryPort,
+    DiscoveryOptions, NativeWatcherConfig, NativeWatcherFactory, RootSpec, TaskControl,
+    WatchRequest, WorkspaceChange, WorkspaceWatcherFactoryPort,
 };
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;

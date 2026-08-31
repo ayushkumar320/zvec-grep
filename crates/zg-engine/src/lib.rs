@@ -4,27 +4,66 @@
 //! dispatch, transport envelopes and adapter composition are not part of this
 //! public API.
 
-mod domain;
+pub mod api;
 mod error;
 #[allow(dead_code)]
 mod extraction;
 mod lexical;
 #[allow(dead_code)]
 mod models;
+mod payload;
 mod service;
 
-pub use domain::{
-    ChangeIndexAction, ChangeIndexReply, ChangeIndexRequest, Content, ContentRange, Device,
-    DiscoveryOptions, EmbeddingInputKind, EmbeddingMetric, EmbeddingModelSpec, EmptyReason,
-    EntityMetadata, FileKind, Freshness, ImageContent, ImageFormat, IndexEmbeddingProgress,
-    IndexEmbeddingStage, IndexPolicy, IndexProgress, IndexProgressPhase, IndexProgressReporter,
-    IndexReply, IndexRequest, InspectReply, InspectRequest, InspectSource, JobAction, JobInfo,
-    JobReceipt, JobReply, JobRequest, JobState, LexicalCoverage, LexicalDiagnostics, LexicalMatch,
-    LexicalOptions, LexicalSearchReply, LexicalSearchRequest, ManagedRgArgumentError, MatchedBy,
-    QueryCoverage, QueryDiagnostics, QueryItem, QueryItemKind, QueryReply, QueryRequest,
-    QueryRoute, QueryRouteMode, QuerySource, RefreshMode, RootSpec, SkippedFile, SkippedFileReason,
-    SymbolType, TextRange, TimingEntry, WorkspaceIndexInfo, WorkspaceIndexRef,
-    WorkspaceIndexStatus, parse_managed_rg_args,
+use api::{
+    context::{ContextOptions, ContextResult},
+    index::{IndexOptions, IndexResult},
+    info::{InfoOptions, InfoResult},
 };
+
 pub use error::{EngineError, ErrorCode};
-pub use service::ZvecGrep;
+
+/// Reusable zvec-grep engine. One instance may serve multiple workspaces.
+#[derive(Clone, Debug)]
+pub struct ZvecGrep {
+    service: service::EngineService,
+}
+
+#[allow(clippy::missing_errors_doc)]
+impl ZvecGrep {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            service: service::EngineService::new(),
+        }
+    }
+
+    pub async fn context(&self, options: ContextOptions) -> Result<ContextResult, EngineError> {
+        self.service.context(options).await
+    }
+
+    pub async fn index(&self, options: IndexOptions) -> Result<IndexResult, EngineError> {
+        self.service.index(options).await
+    }
+
+    pub async fn info(&self, options: InfoOptions) -> Result<InfoResult, EngineError> {
+        self.service.info(options).await
+    }
+
+    pub async fn drop_index(&self, options: InfoOptions) -> Result<bool, EngineError> {
+        self.service.drop_index(options).await
+    }
+
+    pub async fn disable_index(&self, options: InfoOptions) -> Result<InfoResult, EngineError> {
+        self.service.disable_index(options).await
+    }
+
+    pub fn close(&self) {
+        self.service.close();
+    }
+}
+
+impl Default for ZvecGrep {
+    fn default() -> Self {
+        Self::new()
+    }
+}

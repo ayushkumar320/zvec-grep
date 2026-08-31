@@ -1,0 +1,282 @@
+//! Types used by [`crate::ZvecGrep::context`].
+
+pub use options::ContextOptions;
+pub use result::ContextResult;
+
+/// Options accepted by [`crate::ZvecGrep::context`].
+pub mod options {
+    use std::path::PathBuf;
+
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    #[allow(clippy::struct_excessive_bools)]
+    pub struct ContextOptions {
+        pub query: Option<String>,
+        pub queries: Vec<String>,
+        pub rg: bool,
+        pub rg_options: RgOptions,
+        pub rg_paths: Vec<PathBuf>,
+        pub routes: Vec<ContextRoute>,
+        pub fuse: bool,
+        /// Workspace root. `None` uses the process working directory.
+        pub root: Option<PathBuf>,
+        pub limit: Option<usize>,
+        pub auto_update: bool,
+        pub trace: bool,
+        pub prefer_symbol: bool,
+        pub symbol_types: Vec<SymbolType>,
+        pub include_paths: Vec<String>,
+        pub exclude_paths: Vec<String>,
+        pub globs: Vec<String>,
+        pub insensitive_globs: Vec<String>,
+        pub file_types: Vec<String>,
+        pub excluded_file_types: Vec<String>,
+        pub hidden: bool,
+        pub no_ignore: bool,
+        pub ignore_files: Vec<PathBuf>,
+        pub max_depth: Option<usize>,
+        pub max_file_size_bytes: Option<u64>,
+        pub follow: bool,
+        pub modified_after_epoch_ms: Option<u64>,
+        pub modified_before_epoch_ms: Option<u64>,
+        pub embedding_concurrency: Option<usize>,
+    }
+
+    impl Default for ContextOptions {
+        fn default() -> Self {
+            Self {
+                query: None,
+                queries: Vec::new(),
+                rg: false,
+                rg_options: RgOptions::default(),
+                rg_paths: Vec::new(),
+                routes: Vec::new(),
+                fuse: false,
+                root: None,
+                limit: None,
+                auto_update: true,
+                trace: false,
+                prefer_symbol: false,
+                symbol_types: Vec::new(),
+                include_paths: Vec::new(),
+                exclude_paths: Vec::new(),
+                globs: Vec::new(),
+                insensitive_globs: Vec::new(),
+                file_types: Vec::new(),
+                excluded_file_types: Vec::new(),
+                hidden: false,
+                no_ignore: false,
+                ignore_files: Vec::new(),
+                max_depth: None,
+                max_file_size_bytes: None,
+                follow: false,
+                modified_after_epoch_ms: None,
+                modified_before_epoch_ms: None,
+                embedding_concurrency: None,
+            }
+        }
+    }
+
+    #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    pub struct ContextRoute {
+        pub mode: ContextRouteMode,
+        pub query: String,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum ContextRouteMode {
+        Fts,
+        Vector,
+    }
+
+    #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+    pub struct RgOptions {
+        pub extra_args: Vec<String>,
+        pub pattern_files: Vec<PathBuf>,
+        pub fixed_strings: bool,
+        pub ignore_case: bool,
+        pub word_regexp: bool,
+        pub before_context: usize,
+        pub after_context: usize,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum SymbolType {
+        Module,
+        Class,
+        Interface,
+        Function,
+        Value,
+        Alias,
+    }
+}
+
+/// Values returned by [`crate::ZvecGrep::context`].
+pub mod result {
+    use std::path::PathBuf;
+
+    use serde::{Deserialize, Serialize};
+
+    use super::options::SymbolType;
+
+    #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+    pub struct ContextResult {
+        pub query: String,
+        pub root: PathBuf,
+        pub source: ContextSource,
+        pub coverage: ContextCoverage,
+        pub workspace_index: Option<ContextWorkspaceIndex>,
+        pub items: Vec<ContextItem>,
+        pub diagnostics: ContextDiagnostics,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum ContextSource {
+        Index,
+        Rg,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum ContextCoverage {
+        RankedSample,
+        RgExhaustive,
+        RgTruncated,
+    }
+
+    #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    pub struct ContextWorkspaceIndex {
+        pub id: String,
+        pub name: String,
+        pub path: PathBuf,
+        pub generation: Option<u64>,
+    }
+
+    #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+    pub struct ContextItem {
+        pub kind: ContextItemKind,
+        pub rank: usize,
+        pub absolute_path: PathBuf,
+        pub relative_path: PathBuf,
+        pub range: ContentRange,
+        pub excerpt_range: Option<ContentRange>,
+        pub content: String,
+        pub outline: Option<String>,
+        pub status: ContextItemStatus,
+        pub score: Option<f64>,
+        pub matched_by: MatchedBy,
+        pub metadata: Option<EntityMetadata>,
+        pub entity_id: Option<String>,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum ContextItemKind {
+        IndexedEntity,
+        LexicalMatch,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum ContextItemStatus {
+        Fresh,
+        PossiblyStale,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum MatchedBy {
+        Fts,
+        Vector,
+        FtsAndVector,
+        Lexical,
+    }
+
+    #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+    pub struct ContextDiagnostics {
+        pub empty_reason: Option<EmptyReason>,
+        pub hits_returned: usize,
+        pub rg: Option<RgDiagnostics>,
+        pub timings: Vec<TimingEntry>,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum EmptyReason {
+        NoMatches,
+        NoSearchableFiles,
+    }
+
+    #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    pub struct RgDiagnostics {
+        pub backend: String,
+        pub command: PathBuf,
+        pub args: Vec<String>,
+        pub ignored_directories: Vec<PathBuf>,
+        pub missing_paths: Vec<PathBuf>,
+        pub searched_paths: Vec<PathBuf>,
+        pub limit: Option<usize>,
+        pub truncated: bool,
+    }
+
+    #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    pub struct TimingEntry {
+        pub name: String,
+        pub duration_micros: u64,
+        pub count: Option<u64>,
+    }
+
+    #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    #[serde(rename_all = "snake_case", tag = "kind")]
+    pub enum ContentRange {
+        File,
+        Text {
+            start_line: usize,
+            end_line: usize,
+            start_offset: usize,
+            end_offset: usize,
+        },
+        Byte {
+            start_offset: u64,
+            end_offset: u64,
+        },
+        Page {
+            page: usize,
+        },
+        PageText {
+            page: usize,
+            start_offset: usize,
+            end_offset: usize,
+        },
+        PageRegion {
+            page: usize,
+            x: u32,
+            y: u32,
+            width: u32,
+            height: u32,
+        },
+    }
+
+    #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    #[serde(rename_all = "snake_case", tag = "kind")]
+    pub enum EntityMetadata {
+        Code {
+            symbol_type: SymbolType,
+            symbol_name: Option<String>,
+            scope: Option<String>,
+            node_type: Option<String>,
+            signature: Option<String>,
+            documentation: Option<String>,
+            modifiers: Vec<String>,
+        },
+        Markdown {
+            heading: Option<String>,
+            level: Option<usize>,
+            scope: Option<String>,
+        },
+    }
+}

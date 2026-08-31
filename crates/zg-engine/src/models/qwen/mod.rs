@@ -4,16 +4,15 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
-use crate::{Content, EmbeddingInputKind, ImageFormat};
+use crate::payload::{Content, ImageFormat};
 
 use super::{
     catalog::QwenConfig,
-    embedding::{
-        CreateEmbeddingModelOptions, EmbeddingModel, EmbeddingModelInfo, EmbeddingModelLimits,
-        EmbeddingOptions, EmbeddingResult, EmbeddingTraceHeaders, validate_contents,
-        validate_result,
+    spi::{
+        CreateEmbeddingModelOptions, EmbeddingInputKind, EmbeddingModel, EmbeddingModelInfo,
+        EmbeddingModelLimits, EmbeddingOptions, EmbeddingResult, EmbeddingTraceHeaders, ModelError,
+        validate_contents, validate_result,
     },
-    error::ModelError,
 };
 
 const REMOTE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -722,7 +721,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
-    use crate::EmbeddingMetric;
+    use crate::{models::spi::EmbeddingMetric, payload::ImageContent};
 
     struct MockHttp {
         response: Mutex<Option<QwenHttpResponse>>,
@@ -855,7 +854,7 @@ mod tests {
             .embed(
                 &[
                     Content::Text("query".to_owned()),
-                    Content::Image(crate::ImageContent {
+                    Content::Image(ImageContent {
                         data: vec![1, 2, 3],
                         format: ImageFormat::Png,
                     }),
@@ -872,7 +871,7 @@ mod tests {
 
         let error = model
             .embed(
-                &[Content::Image(crate::ImageContent {
+                &[Content::Image(ImageContent {
                     data: vec![1],
                     format: ImageFormat::Gif,
                 })],

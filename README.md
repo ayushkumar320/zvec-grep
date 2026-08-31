@@ -4,25 +4,37 @@ This branch contains the Rust implementation of zvec-grep. The application API
 is centered on one reusable `ZvecGrep` engine value:
 
 ```rust,ignore
+use zg_engine::{
+    ZvecGrep,
+    api::context::ContextOptions,
+};
+
 let zg = ZvecGrep::new();
-let reply = zg.lexical_search(LexicalSearchRequest {
+let reply = zg.context(ContextOptions {
     root: Some(root.into()),
-    ..request
+    rg: true,
+    query: Some("needle".to_owned()),
+    ..ContextOptions::default()
 }).await?;
 zg.close();
 ```
 
 `ZvecGrep` is normally shared for the lifetime of a process. Workspace root is
 request state, so the same instance can serve multiple workspaces. It exposes
-typed `query`, `lexical_search`, `index`, `inspect`,
-`change_index` and `job` methods. It calls its private services directly; there
-is no public command dispatcher, operation envelope, adapter registry or Core
-layer between a method and its implementation.
+typed `context`, `index`, `info`, `drop_index`, and `disable_index` methods. It
+calls its private services directly; there is no public command dispatcher,
+operation envelope, adapter registry or Core layer between a method and its
+implementation.
+
+Request and reply types are grouped under the matching method name in
+`zg_engine::api` (`context`, `index`, and `info`). Each group exposes its primary
+`Options` and `Result` types directly and keeps secondary types under `options`,
+`result`, or `progress`.
 
 The engine owns a private process-level model runtime manager. Workspaces using
 the same model configuration share one runtime and its loaded weights/tokenizer;
 embedding calls may execute concurrently against those shared resources.
-`IndexRequest::on_progress` accepts an in-process `IndexProgressReporter` and
+`IndexOptions::on_progress` accepts an in-process `IndexProgressReporter` and
 surfaces model downloads through `IndexProgress::embedding`. The reporter is
 runtime-only and is omitted from serialized daemon requests.
 
@@ -35,9 +47,9 @@ binary and ordinary CI jobs do not require a system `rg` executable.
 
 ## Crates
 
-- `zg-engine`: high-level requests, replies, errors and `ZvecGrep`; lexical
-  search, source extraction and embedding model implementations are private to
-  this crate.
+- `zg-engine`: `ZvecGrep`, engine errors, and method-grouped types under `api`;
+  lexical search, source extraction and embedding model implementations are
+  private to this crate.
 - `zg-cli`: CLI parsing and terminal rendering.
 - `zg`: production binary.
 - `zg-daemon`: process lifecycle, loopback HTTP server and stdio bootstrap.

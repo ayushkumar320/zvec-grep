@@ -10,12 +10,13 @@ use std::{
 use async_trait::async_trait;
 use same_file::is_same_file;
 use tokio::sync::Semaphore;
-use zg_engine::{EngineError, FileKind, RootSpec, SkippedFile, SkippedFileReason};
+use zg_engine::EngineError;
 
 use crate::{
     api::{
-        DiscoveredFile, KnownSourceFile, ReadBatchRequest, ScanDiagnostics, ScanRequest,
-        ScanSnapshot, SourceFile, TaskControl, WorkspaceScannerPort,
+        DiscoveredFile, FileKind, KnownSourceFile, ReadBatchRequest, RootSpec, ScanDiagnostics,
+        ScanRequest, ScanSnapshot, SkippedFile, SkippedFileReason, SourceFile, TaskControl,
+        WorkspaceScannerPort,
     },
     file_type::{detect_file_type, max_file_size},
     pattern::normalize_relative_path,

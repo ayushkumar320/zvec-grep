@@ -3906,6 +3906,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "zg-cli",
  "zg-engine",
 ]
 

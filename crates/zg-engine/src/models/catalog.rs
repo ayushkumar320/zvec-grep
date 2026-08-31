@@ -1,4 +1,4 @@
-use crate::EmbeddingMetric;
+use super::spi::EmbeddingMetric;
 
 const DEFAULT_QWEN_TEXT_EMBEDDING_ENDPOINT: &str =
     "https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings";

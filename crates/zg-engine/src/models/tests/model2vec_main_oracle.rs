@@ -4,11 +4,11 @@ use serde::Deserialize;
 use tempfile::TempDir;
 
 use crate::{
-    Content,
     models::{
-        embedding::{CreateEmbeddingModelOptions, EmbeddingOptions, EmbeddingPurpose},
         factory::create_embedding_model,
+        spi::{CreateEmbeddingModelOptions, EmbeddingOptions, EmbeddingPurpose},
     },
+    payload::Content,
 };
 
 #[derive(Deserialize)]

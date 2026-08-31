@@ -7,26 +7,38 @@ use std::{
 };
 
 use crate::{
-    ChangeIndexReply, ChangeIndexRequest, EngineError, IndexReply, IndexRequest, InspectReply,
-    InspectRequest, JobReply, JobRequest, LexicalSearchReply, LexicalSearchRequest, QueryReply,
-    QueryRequest, lexical::LexicalSearchService, models::runtime::ModelRuntimeManager,
+    EngineError,
+    api::{
+        context::{
+            ContextOptions, ContextResult,
+            result::{
+                ContentRange, ContextCoverage, ContextDiagnostics, ContextItem, ContextItemKind,
+                ContextItemStatus, ContextSource, EmptyReason, MatchedBy, RgDiagnostics,
+            },
+        },
+        index::{IndexOptions, IndexResult},
+        info::{InfoOptions, InfoResult},
+    },
+    lexical::{
+        LexicalSearchService,
+        types::{LexicalCoverage, LexicalOptions, LexicalSearchReply, LexicalSearchRequest},
+    },
+    models::ModelRuntimeManager,
 };
 
 const DEFAULT_MAX_CONCURRENT_LEXICAL_SEARCHES: usize = 2;
 
-/// Reusable zvec-grep engine serving workspace roots supplied by each request.
 #[derive(Clone, Debug)]
-pub struct ZvecGrep {
+pub(crate) struct EngineService {
     lexical: LexicalSearchService,
     models: ModelRuntimeManager,
     closed: Arc<AtomicBool>,
 }
 
 #[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
-impl ZvecGrep {
-    /// Creates a reusable engine instance.
+impl EngineService {
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             lexical: LexicalSearchService::default()
                 .with_max_searches(DEFAULT_MAX_CONCURRENT_LEXICAL_SEARCHES),
@@ -35,29 +47,59 @@ impl ZvecGrep {
         }
     }
 
-    /// Runs an indexed or routed context query.
+    /// Retrieves context from an index or, when `rg` is enabled, embedded ripgrep.
     ///
     /// # Errors
     ///
-    /// Returns an engine error when indexed query support is unavailable.
-    pub async fn query(&self, request: QueryRequest) -> Result<QueryReply, EngineError> {
-        self.ensure_open()?;
-        let _root = resolve_root(request.root.as_deref())?;
-        Err(unavailable("query"))
-    }
-
-    /// Runs an exhaustive lexical search.
-    ///
-    /// # Errors
-    ///
-    /// Returns an engine error when the request is invalid or embedded grep fails.
-    pub async fn lexical_search(
+    /// Returns an engine error when the request is invalid or its selected
+    /// retrieval mode is unavailable.
+    pub(crate) async fn context(
         &self,
-        request: LexicalSearchRequest,
-    ) -> Result<LexicalSearchReply, EngineError> {
+        options: ContextOptions,
+    ) -> Result<ContextResult, EngineError> {
         self.ensure_open()?;
-        let root = resolve_root(request.root.as_deref())?;
-        self.lexical.search(&root, &request).await
+        let root = resolve_root(options.root.as_deref())?;
+        if !options.rg {
+            return Err(unavailable("context"));
+        }
+        if !options.rg_options.extra_args.is_empty() {
+            return Err(EngineError::invalid_input(
+                "context rg_options.extra_args is not supported by the embedded backend",
+            ));
+        }
+        let query = options
+            .query
+            .iter()
+            .chain(&options.queries)
+            .cloned()
+            .collect::<Vec<_>>();
+        let request = LexicalSearchRequest {
+            root: Some(root.clone()),
+            patterns: query.clone(),
+            pattern_files: options.rg_options.pattern_files,
+            paths: options.rg_paths,
+            limit: options.limit,
+            options: LexicalOptions {
+                fixed_strings: options.rg_options.fixed_strings,
+                ignore_case: options.rg_options.ignore_case,
+                word_regexp: options.rg_options.word_regexp,
+                before_context: options.rg_options.before_context,
+                after_context: options.rg_options.after_context,
+                hidden: options.hidden,
+                no_ignore: options.no_ignore,
+                follow: options.follow,
+                globs: options.globs,
+                file_types: options.file_types,
+                excluded_file_types: options.excluded_file_types,
+                ignore_files: options.ignore_files,
+                max_depth: options.max_depth,
+                max_file_size_bytes: options.max_file_size_bytes,
+                modified_after_epoch_ms: options.modified_after_epoch_ms,
+                modified_before_epoch_ms: options.modified_before_epoch_ms,
+            },
+        };
+        let reply = self.lexical.search(&root, &request).await?;
+        Ok(context_from_lexical(query.join("\n"), reply))
     }
 
     /// Creates or refreshes the workspace index.
@@ -65,50 +107,50 @@ impl ZvecGrep {
     /// # Errors
     ///
     /// Returns an engine error when indexing support is unavailable.
-    pub async fn index(&self, request: IndexRequest) -> Result<IndexReply, EngineError> {
+    pub(crate) async fn index(&self, options: IndexOptions) -> Result<IndexResult, EngineError> {
         self.ensure_open()?;
-        let _root = resolve_root(request.root.as_deref())?;
+        let _root = resolve_root(options.root.as_deref())?;
         Err(unavailable("index"))
     }
 
-    /// Inspects workspace index metadata and status.
+    /// Returns workspace index metadata and status.
     ///
     /// # Errors
     ///
-    /// Returns an engine error when inspection support is unavailable.
-    pub async fn inspect(&self, request: InspectRequest) -> Result<InspectReply, EngineError> {
+    /// Returns an engine error when workspace information support is unavailable.
+    pub(crate) async fn info(&self, options: InfoOptions) -> Result<InfoResult, EngineError> {
         self.ensure_open()?;
-        let _root = resolve_root(request.root.as_deref())?;
-        Err(unavailable("inspect"))
+        let _root = resolve_root(options.root.as_deref())?;
+        Err(unavailable("info"))
     }
 
-    /// Drops or disables the workspace index.
+    /// Drops the persisted workspace index.
     ///
     /// # Errors
     ///
-    /// Returns an engine error when index mutation support is unavailable.
-    pub async fn change_index(
+    /// Returns an engine error when index removal support is unavailable.
+    pub(crate) async fn drop_index(&self, options: InfoOptions) -> Result<bool, EngineError> {
+        self.ensure_open()?;
+        let _root = resolve_root(options.root.as_deref())?;
+        Err(unavailable("drop_index"))
+    }
+
+    /// Disables indexing for a workspace and returns its updated information.
+    ///
+    /// # Errors
+    ///
+    /// Returns an engine error when index disabling support is unavailable.
+    pub(crate) async fn disable_index(
         &self,
-        request: ChangeIndexRequest,
-    ) -> Result<ChangeIndexReply, EngineError> {
+        options: InfoOptions,
+    ) -> Result<InfoResult, EngineError> {
         self.ensure_open()?;
-        let _root = resolve_root(request.root.as_deref())?;
-        Err(unavailable("change_index"))
-    }
-
-    /// Lists, inspects or cancels background jobs.
-    ///
-    /// # Errors
-    ///
-    /// Returns an engine error when job support is unavailable.
-    pub async fn job(&self, request: JobRequest) -> Result<JobReply, EngineError> {
-        self.ensure_open()?;
-        let _root = resolve_root(request.root.as_deref())?;
-        Err(unavailable("job"))
+        let _root = resolve_root(options.root.as_deref())?;
+        Err(unavailable("disable_index"))
     }
 
     /// Closes this service and rejects subsequent requests.
-    pub fn close(&self) {
+    pub(crate) fn close(&self) {
         self.closed.store(true, Ordering::Release);
         self.models.close();
     }
@@ -122,9 +164,61 @@ impl ZvecGrep {
     }
 }
 
-impl Default for ZvecGrep {
-    fn default() -> Self {
-        Self::new()
+fn context_from_lexical(query: String, reply: LexicalSearchReply) -> ContextResult {
+    let hits_returned = reply.matches.len();
+    let empty_reason = (hits_returned == 0).then_some(EmptyReason::NoMatches);
+    ContextResult {
+        query,
+        root: reply.root,
+        source: ContextSource::Rg,
+        coverage: match reply.coverage {
+            LexicalCoverage::Exhaustive => ContextCoverage::RgExhaustive,
+            LexicalCoverage::Truncated => ContextCoverage::RgTruncated,
+        },
+        workspace_index: None,
+        items: reply
+            .matches
+            .into_iter()
+            .map(|item| ContextItem {
+                kind: ContextItemKind::LexicalMatch,
+                rank: item.rank,
+                absolute_path: item.absolute_path,
+                relative_path: item.relative_path,
+                range: lexical_range(item.range),
+                excerpt_range: item.excerpt_range.map(lexical_range),
+                content: item.content,
+                outline: None,
+                status: ContextItemStatus::Fresh,
+                score: None,
+                matched_by: MatchedBy::Lexical,
+                metadata: None,
+                entity_id: None,
+            })
+            .collect(),
+        diagnostics: ContextDiagnostics {
+            empty_reason,
+            hits_returned,
+            rg: Some(RgDiagnostics {
+                backend: reply.diagnostics.backend,
+                command: reply.diagnostics.command,
+                args: reply.diagnostics.args,
+                ignored_directories: reply.diagnostics.ignored_directories,
+                missing_paths: reply.diagnostics.missing_paths,
+                searched_paths: reply.diagnostics.searched_paths,
+                limit: reply.diagnostics.limit,
+                truncated: reply.diagnostics.truncated,
+            }),
+            timings: Vec::new(),
+        },
+    }
+}
+
+fn lexical_range(range: crate::lexical::types::TextRange) -> ContentRange {
+    ContentRange::Text {
+        start_line: range.start_line,
+        end_line: range.end_line,
+        start_offset: range.start_offset,
+        end_offset: range.end_offset,
     }
 }
 

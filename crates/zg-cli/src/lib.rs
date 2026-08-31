@@ -7,9 +7,144 @@ use std::{
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use thiserror::Error;
-use zg_engine::{
-    LexicalSearchReply, LexicalSearchRequest, ManagedRgArgumentError, parse_managed_rg_args,
-};
+use zg_engine::api::context::{ContextOptions, ContextResult, result::ContentRange};
+
+#[derive(Debug, Error)]
+pub enum ManagedRgArgumentError {
+    #[error("zg query --rg requires a pattern")]
+    MissingPattern,
+    #[error("unsupported --rg option in the POC: {0}")]
+    UnsupportedOption(String),
+    #[error("{option} requires a value")]
+    MissingOptionValue { option: String },
+    #[error("invalid value {value:?} for {option}")]
+    InvalidOptionValue { option: String, value: String },
+}
+
+/// Parses the managed-ripgrep argument dialect shared by CLI and MCP.
+///
+/// # Errors
+///
+/// Returns [`ManagedRgArgumentError`] for a missing pattern, unsupported
+/// option, missing option value, or invalid numeric value.
+pub fn parse_managed_rg_args(args: &[String]) -> Result<ContextOptions, ManagedRgArgumentError> {
+    let mut request = ContextOptions {
+        rg: true,
+        ..ContextOptions::default()
+    };
+    let mut index = 0;
+    let mut options_finished = false;
+    let mut positionals = Vec::new();
+
+    while index < args.len() {
+        let arg = &args[index];
+        if options_finished {
+            positionals.push(arg.clone());
+            index += 1;
+            continue;
+        }
+        if arg == "--" {
+            options_finished = true;
+            index += 1;
+            continue;
+        }
+
+        match arg.as_str() {
+            "-n" | "--line-number" => {}
+            "-F" | "--fixed-strings" => request.rg_options.fixed_strings = true,
+            "-i" | "--ignore-case" => request.rg_options.ignore_case = true,
+            "-w" | "--word-regexp" => request.rg_options.word_regexp = true,
+            "--hidden" => request.hidden = true,
+            "--no-ignore" => request.no_ignore = true,
+            "--follow" => request.follow = true,
+            "-g" | "--glob" => request.globs.push(take_value(args, &mut index, arg)?),
+            "-t" | "--type" => request.file_types.push(take_value(args, &mut index, arg)?),
+            "-T" | "--type-not" => request
+                .excluded_file_types
+                .push(take_value(args, &mut index, arg)?),
+            "--ignore-file" => request
+                .ignore_files
+                .push(PathBuf::from(take_value(args, &mut index, arg)?)),
+            "--max-depth" => {
+                request.max_depth = Some(take_usize(args, &mut index, arg)?);
+            }
+            "--max-filesize" => {
+                request.max_file_size_bytes = Some(take_u64(args, &mut index, arg)?);
+            }
+            "-A" | "--after-context" => {
+                request.rg_options.after_context = take_usize(args, &mut index, arg)?;
+            }
+            "-B" | "--before-context" => {
+                request.rg_options.before_context = take_usize(args, &mut index, arg)?;
+            }
+            "-C" | "--context" => {
+                let value = take_usize(args, &mut index, arg)?;
+                request.rg_options.before_context = value;
+                request.rg_options.after_context = value;
+            }
+            "-e" | "--regexp" => request.queries.push(take_value(args, &mut index, arg)?),
+            "-f" | "--file" => request
+                .rg_options
+                .pattern_files
+                .push(PathBuf::from(take_value(args, &mut index, arg)?)),
+            value if value.starts_with('-') => {
+                return Err(ManagedRgArgumentError::UnsupportedOption(value.to_owned()));
+            }
+            value => positionals.push(value.to_owned()),
+        }
+        index += 1;
+    }
+
+    if request.queries.is_empty() && request.rg_options.pattern_files.is_empty() {
+        if positionals.is_empty() {
+            return Err(ManagedRgArgumentError::MissingPattern);
+        }
+        request.query = Some(positionals.remove(0));
+    }
+    request.rg_paths = positionals.into_iter().map(PathBuf::from).collect();
+    Ok(request)
+}
+
+fn take_value(
+    args: &[String],
+    index: &mut usize,
+    option: &str,
+) -> Result<String, ManagedRgArgumentError> {
+    *index += 1;
+    args.get(*index)
+        .cloned()
+        .ok_or_else(|| ManagedRgArgumentError::MissingOptionValue {
+            option: option.to_owned(),
+        })
+}
+
+fn take_usize(
+    args: &[String],
+    index: &mut usize,
+    option: &str,
+) -> Result<usize, ManagedRgArgumentError> {
+    let value = take_value(args, index, option)?;
+    value
+        .parse()
+        .map_err(|_| ManagedRgArgumentError::InvalidOptionValue {
+            option: option.to_owned(),
+            value,
+        })
+}
+
+fn take_u64(
+    args: &[String],
+    index: &mut usize,
+    option: &str,
+) -> Result<u64, ManagedRgArgumentError> {
+    let value = take_value(args, index, option)?;
+    value
+        .parse()
+        .map_err(|_| ManagedRgArgumentError::InvalidOptionValue {
+            option: option.to_owned(),
+            value,
+        })
+}
 
 #[derive(Debug, Parser)]
 #[command(name = "zg", version, about = "Agent-friendly workspace search")]
@@ -125,7 +260,7 @@ pub enum ClientMode {
 pub enum CliPlan {
     Execute {
         mode: ClientMode,
-        request: Box<LexicalSearchRequest>,
+        request: Box<ContextOptions>,
     },
     Server(ServerPlan),
 }
@@ -193,19 +328,19 @@ impl Cli {
     }
 }
 
-/// Renders a lexical-search reply for the terminal.
+/// Renders an rg-backed context result for the terminal.
 ///
 /// # Errors
 ///
 /// Returns the writer's I/O error when output cannot be written.
-pub fn write_lexical_reply(mut writer: impl Write, reply: &LexicalSearchReply) -> io::Result<()> {
-    if reply.matches.is_empty() {
+pub fn write_context_result(mut writer: impl Write, result: &ContextResult) -> io::Result<()> {
+    if result.items.is_empty() {
         writeln!(writer, "No matches.")?;
         return Ok(());
     }
 
     let mut previous_path: Option<&std::path::Path> = None;
-    for item in &reply.matches {
+    for item in &result.items {
         if previous_path != Some(item.relative_path.as_path()) {
             if previous_path.is_some() {
                 writeln!(writer)?;
@@ -216,11 +351,18 @@ pub fn write_lexical_reply(mut writer: impl Write, reply: &LexicalSearchReply) -
         writeln!(
             writer,
             "  {}: {}",
-            item.range.start_line,
+            start_line(&item.range),
             item.content.trim_end()
         )?;
     }
     Ok(())
+}
+
+fn start_line(range: &ContentRange) -> usize {
+    match range {
+        ContentRange::Text { start_line, .. } => *start_line,
+        _ => 0,
+    }
 }
 
 #[cfg(test)]
@@ -244,9 +386,9 @@ mod tests {
             panic!("query must create an execute plan");
         };
         assert_eq!(request.root, Some(PathBuf::from("/workspace")));
-        assert_eq!(request.patterns, ["needle"]);
-        assert_eq!(request.paths, [PathBuf::from("src")]);
-        assert!(request.options.fixed_strings);
+        assert_eq!(request.query.as_deref(), Some("needle"));
+        assert_eq!(request.rg_paths, [PathBuf::from("src")]);
+        assert!(request.rg_options.fixed_strings);
     }
 
     #[test]

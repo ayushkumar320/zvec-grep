@@ -9,8 +9,9 @@ mod scanner;
 mod watcher;
 
 pub use api::{
-    ClockPort, DiscoveredFile, KnownSourceFile, ReadBatchRequest, ScanDiagnostics, ScanRequest,
-    ScanSnapshot, SkippedByReason, SourceFile, TaskControl, WatchRequest, WorkspaceChange,
+    ClockPort, DiscoveredFile, DiscoveryOptions, FileKind, KnownSourceFile, ReadBatchRequest,
+    RootSpec, ScanDiagnostics, ScanRequest, ScanSnapshot, SkippedByReason, SkippedFile,
+    SkippedFileReason, SourceFile, TaskControl, WatchRequest, WorkspaceChange,
     WorkspaceChangeBatch, WorkspaceScannerPort, WorkspaceWatchSessionPort,
     WorkspaceWatcherFactoryPort,
 };

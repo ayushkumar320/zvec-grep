@@ -25,18 +25,17 @@ use llama_cpp_2::{
 use tokio::{fs, io::AsyncWriteExt, sync::Mutex};
 use tokio_util::sync::CancellationToken;
 
-use crate::{Content, Device, EmbeddingInputKind};
+use crate::{api::index::options::Device, payload::Content};
 
 use super::{
     catalog::LlamaCppConfig,
     compute::ModelComputeRuntime,
     download_progress::{ArtifactDownloadProgress, ModelDownloadProgressReporter},
-    embedding::{
-        CreateEmbeddingModelOptions, EmbeddingModel, EmbeddingModelInfo, EmbeddingModelLimits,
-        EmbeddingModelProgress, EmbeddingOptions, EmbeddingPurpose, EmbeddingResult,
-        validate_contents, validate_result,
+    spi::{
+        CreateEmbeddingModelOptions, EmbeddingInputKind, EmbeddingModel, EmbeddingModelInfo,
+        EmbeddingModelLimits, EmbeddingModelProgress, EmbeddingOptions, EmbeddingPurpose,
+        EmbeddingResult, ModelError, validate_contents, validate_result,
     },
-    error::ModelError,
 };
 
 static PARTIAL_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(1);

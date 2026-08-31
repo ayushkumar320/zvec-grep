@@ -1,7 +1,7 @@
-use crate::{Content, EngineError, EntityMetadata, TextRange};
+use crate::{EngineError, api::context::result::EntityMetadata, payload::Content};
 
 use super::{
-    ChunkOptions, EntityFragment, TextSource, byte_index_at_utf16_ceil, char_count,
+    ChunkOptions, EntityFragment, TextRange, TextSource, byte_index_at_utf16_ceil, char_count,
     chunk_options_for_metadata, fit_text_to_chars, make_entity_id,
     text::extract_plain_text_fragments, validate_source_file,
 };
@@ -520,7 +520,12 @@ fn metadata_heading(metadata: &EntityMetadata) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Content, ContentRange, EntityMetadata, FileKind};
+    use crate::{
+        api::context::result::{ContentRange, EntityMetadata},
+        payload::Content,
+    };
+
+    use super::super::FileKind;
 
     use super::super::{ChunkOptions, byte_index_at_utf16, test_source};
     use super::extract;

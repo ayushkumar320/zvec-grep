@@ -8,10 +8,9 @@ use std::{
 
 use tempfile::tempdir;
 use tokio_util::sync::CancellationToken;
-use zg_engine::{DiscoveryOptions, RootSpec, SkippedFileReason};
 use zg_host_native::{
-    DiscoveredFile, KnownSourceFile, NativeScanner, ReadBatchRequest, ScanRequest, ScanSnapshot,
-    TaskControl, WorkspaceScannerPort,
+    DiscoveredFile, DiscoveryOptions, KnownSourceFile, NativeScanner, ReadBatchRequest, RootSpec,
+    ScanRequest, ScanSnapshot, SkippedFileReason, TaskControl, WorkspaceScannerPort,
 };
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;

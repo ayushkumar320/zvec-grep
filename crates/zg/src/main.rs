@@ -9,7 +9,7 @@ use tracing::debug;
 use tracing_subscriber::EnvFilter;
 use zg_cli::{Cli, CliPlan, ClientMode, McpToolset, ServerPlan, ServerStartArgs};
 use zg_daemon::{DaemonStatus, ListenAddress, McpToolset as DaemonMcpToolset, ServerConfig};
-use zg_engine::{LexicalSearchRequest, ZvecGrep};
+use zg_engine::{ZvecGrep, api::context::ContextOptions};
 
 fn main() -> ExitCode {
     match run() {
@@ -65,17 +65,14 @@ async fn execute_plan(plan: CliPlan) -> Result<(), Box<dyn Error>> {
     }
 }
 
-async fn execute_request(
-    mode: ClientMode,
-    request: LexicalSearchRequest,
-) -> Result<(), Box<dyn Error>> {
+async fn execute_request(mode: ClientMode, request: ContextOptions) -> Result<(), Box<dyn Error>> {
     if mode == ClientMode::Server {
         debug!("managed --rg remains local in server mode");
     }
     let engine = ZvecGrep::new();
-    let reply = engine.lexical_search(request).await?;
+    let result = engine.context(request).await?;
     engine.close();
-    zg_cli::write_lexical_reply(io::stdout().lock(), &reply)?;
+    zg_cli::write_context_result(io::stdout().lock(), &result)?;
     Ok(())
 }
 

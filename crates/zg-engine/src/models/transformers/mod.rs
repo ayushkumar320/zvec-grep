@@ -27,18 +27,17 @@ use tokenizers::{
 use tokio::{fs, io::AsyncWriteExt, sync::Mutex};
 use tokio_util::sync::CancellationToken;
 
-use crate::{Content, Device, EmbeddingInputKind};
+use crate::{api::index::options::Device, payload::Content};
 
 use super::{
     catalog::TransformersConfig,
     compute::ModelComputeRuntime,
     download_progress::{ArtifactDownloadProgress, ModelDownloadProgressReporter},
-    embedding::{
-        CreateEmbeddingModelOptions, EmbeddingModel, EmbeddingModelInfo, EmbeddingModelLimits,
-        EmbeddingModelProgress, EmbeddingOptions, EmbeddingPurpose, EmbeddingResult,
-        validate_contents, validate_result,
+    spi::{
+        CreateEmbeddingModelOptions, EmbeddingInputKind, EmbeddingModel, EmbeddingModelInfo,
+        EmbeddingModelLimits, EmbeddingModelProgress, EmbeddingOptions, EmbeddingPurpose,
+        EmbeddingResult, ModelError, validate_contents, validate_result,
     },
-    error::ModelError,
 };
 
 static PARTIAL_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -1522,7 +1521,7 @@ mod tests {
         assert_eq!(merged.attention_mask, [1, 1, 0, 1, 1, 1, 1, 1, 0]);
         assert_eq!(merged.truncated, [0, 2]);
     }
-    use crate::EmbeddingMetric;
+    use crate::models::spi::EmbeddingMetric;
 
     fn entry(pooling: &'static str, normalize: bool) -> TransformersConfig {
         TransformersConfig {

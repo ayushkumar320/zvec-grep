@@ -3,7 +3,7 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 
-use super::embedding::EmbeddingModelProgress;
+use super::spi::EmbeddingModelProgress;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ArtifactDownloadProgress {
@@ -127,7 +127,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::{ArtifactDownloadProgress, ModelDownloadProgressReporter};
-    use crate::models::embedding::EmbeddingModelProgress;
+    use crate::models::spi::EmbeddingModelProgress;
 
     #[test]
     fn aggregates_progress_like_typescript() {

@@ -22,12 +22,26 @@ use rmcp::{
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use zg_cli::parse_managed_rg_args;
 use zg_engine::{
-    ChangeIndexAction, ChangeIndexReply, ChangeIndexRequest, ContentRange, Device,
-    DiscoveryOptions, EmbeddingModelSpec, EngineError, ErrorCode, Freshness, IndexPolicy,
-    IndexReply, IndexRequest, InspectReply, InspectRequest, LexicalCoverage, LexicalSearchReply,
-    MatchedBy, QueryItem, QueryReply, QueryRequest, QueryRoute, QueryRouteMode, RefreshMode,
-    RootSpec, SymbolType, ZvecGrep, parse_managed_rg_args,
+    EngineError, ErrorCode, ZvecGrep,
+    api::{
+        context::{
+            ContextOptions, ContextResult,
+            options::{ContextRoute, ContextRouteMode, SymbolType},
+            result::{ContentRange, ContextItem, ContextItemStatus, MatchedBy},
+        },
+        index::{
+            IndexOptions, IndexResult,
+            options::{
+                Device, DiscoveryOptions as IndexDiscoveryOptions, EmbeddingModelSpec, RootPath,
+            },
+        },
+        info::{
+            InfoOptions, InfoResult,
+            result::{InfoSource, WorkspaceIndexPolicy},
+        },
+    },
 };
 
 pub const AGENT_TOOL_NAME: &str = "zvec_grep_search";
@@ -183,10 +197,10 @@ impl ZvecGrepMcpServer {
         let request = input
             .into_request()
             .map_err(|message| ErrorData::invalid_params(message, None))?;
-        let result = self.engine.query(request).await;
+        let result = self.engine.context(request).await;
 
         Ok(match result {
-            Ok(reply) => query_reply_to_result(&reply),
+            Ok(reply) => context_result_to_tool_result(&reply),
             Err(error) => error_result(&error),
         })
     }
@@ -221,8 +235,8 @@ impl ZvecGrepMcpServer {
             }
             IndexToolRequest::Drop(request) => {
                 let root = request_root(request.root.as_deref());
-                match self.engine.change_index(request).await {
-                    Ok(reply) => drop_reply_to_index_result(&root, &reply),
+                match self.engine.drop_index(request).await {
+                    Ok(removed) => drop_result_to_index_result(&root, removed),
                     Err(error) => error_result(&error),
                 }
             }
@@ -248,13 +262,12 @@ impl ZvecGrepMcpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let root = absolute_root(&input.root)
             .map_err(|message| ErrorData::invalid_params(message, None))?;
-        let request = ChangeIndexRequest {
+        let request = InfoOptions {
             root: Some(root.clone()),
-            action: ChangeIndexAction::Drop,
-            force: false,
+            include_status: false,
         };
-        Ok(match self.engine.change_index(request).await {
-            Ok(reply) => drop_reply_to_result(&root, &reply),
+        Ok(match self.engine.drop_index(request).await {
+            Ok(removed) => drop_result_to_result(&root, removed),
             Err(error) => error_result(&error),
         })
     }
@@ -278,8 +291,8 @@ impl ZvecGrepMcpServer {
         let request = input
             .into_request()
             .map_err(|message| ErrorData::invalid_params(message, None))?;
-        Ok(match self.engine.lexical_search(request).await {
-            Ok(reply) => lexical_reply_to_result(&reply),
+        Ok(match self.engine.context(request).await {
+            Ok(reply) => context_result_to_tool_result(&reply),
             Err(error) => error_result(&error),
         })
     }
@@ -303,12 +316,12 @@ impl ZvecGrepMcpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let root = absolute_root(&input.root)
             .map_err(|message| ErrorData::invalid_params(message, None))?;
-        let request = InspectRequest {
+        let request = InfoOptions {
             root: Some(root),
             include_status: true,
         };
-        Ok(match self.engine.inspect(request).await {
-            Ok(reply) => inspect_reply_to_result(reply),
+        Ok(match self.engine.info(request).await {
+            Ok(reply) => info_result_to_tool_result(reply),
             Err(error) => error_result(&error),
         })
     }
@@ -506,8 +519,8 @@ pub struct RgInput {
 }
 
 enum IndexToolRequest {
-    Index(Box<IndexRequest>),
-    Drop(ChangeIndexRequest),
+    Index(Box<IndexOptions>),
+    Drop(InfoOptions),
 }
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
@@ -752,7 +765,7 @@ const fn default_auto_update() -> bool {
 }
 
 impl SearchInput {
-    fn into_request(self) -> Result<QueryRequest, String> {
+    fn into_request(self) -> Result<ContextOptions, String> {
         let root = absolute_root(&self.root)?;
         if let Some(api_key) = &self.api_key {
             validate_text("apiKey", api_key, 1, 8_192)?;
@@ -793,53 +806,50 @@ impl SearchInput {
 
         let routes = fts
             .into_iter()
-            .map(|query| QueryRoute {
-                mode: QueryRouteMode::Fts,
+            .map(|query| ContextRoute {
+                mode: ContextRouteMode::Fts,
                 query,
             })
-            .chain(vector.into_iter().map(|query| QueryRoute {
-                mode: QueryRouteMode::Vector,
+            .chain(vector.into_iter().map(|query| ContextRoute {
+                mode: ContextRouteMode::Vector,
                 query,
             }))
             .collect();
-        let refresh = match (self.freshness, self.auto_update) {
-            (FreshnessInput::WaitForFresh, _) => RefreshMode::Wait,
-            (FreshnessInput::Eventual, true) => RefreshMode::Background,
-            (FreshnessInput::Eventual, false) => RefreshMode::Off,
-        };
+        let auto_update =
+            self.auto_update || matches!(self.freshness, FreshnessInput::WaitForFresh);
+        let ignore_files = normalize_path_list(self.ignore_files, "ignoreFiles")?
+            .into_iter()
+            .map(PathBuf::from)
+            .collect();
 
-        let request = QueryRequest {
+        let request = ContextOptions {
+            query: None,
             root: Some(root.clone()),
             queries,
             routes,
             fuse: self.fuse.unwrap_or(false),
             limit: self.limit,
-            refresh,
+            auto_update,
             trace: self.trace.unwrap_or(false),
             prefer_symbol: self.prefer_symbol.unwrap_or(false),
             symbol_types: self.symbol_types.into_iter().map(Into::into).collect(),
-            discovery: zg_engine::DiscoveryOptions {
-                globs: normalize_path_list(self.globs, "globs")?,
-                insensitive_globs: normalize_path_list(self.insensitive_globs, "insensitiveGlobs")?,
-                file_types: normalize_path_list(self.file_types, "fileTypes")?,
-                excluded_file_types: normalize_path_list(
-                    self.excluded_file_types,
-                    "excludedFileTypes",
-                )?,
-                hidden: self.hidden.unwrap_or(false),
-                no_ignore: self.no_ignore.unwrap_or(false),
-                ignore_files: normalize_path_list(self.ignore_files, "ignoreFiles")?
-                    .into_iter()
-                    .map(PathBuf::from)
-                    .collect(),
-                max_depth: self.max_depth,
-                max_file_size_bytes: self.max_file_size_bytes,
-                follow: self.follow.unwrap_or(false),
-                ..zg_engine::DiscoveryOptions::default()
-            },
+            globs: normalize_path_list(self.globs, "globs")?,
+            insensitive_globs: normalize_path_list(self.insensitive_globs, "insensitiveGlobs")?,
+            file_types: normalize_path_list(self.file_types, "fileTypes")?,
+            excluded_file_types: normalize_path_list(
+                self.excluded_file_types,
+                "excludedFileTypes",
+            )?,
+            hidden: self.hidden.unwrap_or(false),
+            no_ignore: self.no_ignore.unwrap_or(false),
+            ignore_files,
+            max_depth: self.max_depth,
+            max_file_size_bytes: self.max_file_size_bytes,
+            follow: self.follow.unwrap_or(false),
             modified_after_epoch_ms: parse_optional_time(self.modified_after, "modifiedAfter")?,
             modified_before_epoch_ms: parse_optional_time(self.modified_before, "modifiedBefore")?,
             embedding_concurrency: self.embedding_concurrency,
+            ..ContextOptions::default()
         };
         if request
             .modified_after_epoch_ms
@@ -848,7 +858,7 @@ impl SearchInput {
         {
             return Err("modifiedAfter must not be later than modifiedBefore".to_owned());
         }
-        validate_scoped_paths(&root, &request.discovery.ignore_files, "ignore file")?;
+        validate_scoped_paths(&root, &request.ignore_files, "ignore file")?;
         Ok(request)
     }
 }
@@ -875,10 +885,9 @@ impl IndexInput {
                         .to_owned(),
                 );
             }
-            return Ok(IndexToolRequest::Drop(ChangeIndexRequest {
+            return Ok(IndexToolRequest::Drop(InfoOptions {
                 root: Some(root),
-                action: ChangeIndexAction::Drop,
-                force: false,
+                include_status: false,
             }));
         }
         if let Some(api_key) = &self.api_key {
@@ -904,7 +913,7 @@ impl IndexInput {
             return Err("device requires an explicit embedding model".to_owned());
         }
 
-        let discovery = DiscoveryOptions {
+        let discovery = IndexDiscoveryOptions {
             globs: normalize_path_list(self.globs, "globs")?,
             insensitive_globs: normalize_path_list(self.insensitive_globs, "insensitiveGlobs")?,
             file_types: normalize_path_list(self.file_types, "fileTypes")?,
@@ -921,10 +930,10 @@ impl IndexInput {
             max_depth: self.max_depth,
             max_file_size_bytes: self.max_file_size_bytes,
             follow: self.follow.unwrap_or(false),
-            ..DiscoveryOptions::default()
+            ..IndexDiscoveryOptions::default()
         };
         validate_scoped_paths(&root, &discovery.ignore_files, "ignore file")?;
-        let root_spec = RootSpec {
+        let root_spec = RootPath {
             path: root.clone(),
             recursive: true,
             discovery: discovery.clone(),
@@ -942,7 +951,7 @@ impl IndexInput {
         } else {
             None
         };
-        Ok(IndexToolRequest::Index(Box::new(IndexRequest {
+        Ok(IndexToolRequest::Index(Box::new(IndexOptions {
             root: Some(root),
             roots: vec![root_spec],
             rebuild: self.rebuild.unwrap_or(false),
@@ -950,9 +959,7 @@ impl IndexInput {
             discovery,
             embedding,
             embedding_concurrency: self.embedding_concurrency,
-            wait: self.wait.unwrap_or(false),
-            debug: self.debug.unwrap_or(false),
-            ..IndexRequest::default()
+            ..IndexOptions::default()
         })))
     }
 
@@ -980,15 +987,15 @@ impl IndexInput {
 }
 
 impl RgInput {
-    fn into_request(self) -> Result<zg_engine::LexicalSearchRequest, String> {
+    fn into_request(self) -> Result<ContextOptions, String> {
         let root = absolute_root(&self.root)?;
         validate_text("command", &self.command, 1, MAX_QUERY_CHARS)?;
         let (args, limit) = parse_rg_command(&self.command)?;
         let mut request = parse_managed_rg_args(&args).map_err(|error| error.to_string())?;
         request.limit = limit;
-        validate_scoped_paths(&root, &request.paths, "search path")?;
-        validate_scoped_paths(&root, &request.pattern_files, "pattern file")?;
-        validate_scoped_paths(&root, &request.options.ignore_files, "ignore file")?;
+        validate_scoped_paths(&root, &request.rg_paths, "search path")?;
+        validate_scoped_paths(&root, &request.rg_options.pattern_files, "pattern file")?;
+        validate_scoped_paths(&root, &request.ignore_files, "ignore file")?;
         request.root = Some(root);
         Ok(request)
     }
@@ -1285,11 +1292,11 @@ fn request_root(root: Option<&Path>) -> PathBuf {
     root.map_or_else(|| PathBuf::from("."), Path::to_path_buf)
 }
 
-fn index_reply_to_result(root: &Path, reply: &IndexReply) -> CallToolResult {
+fn index_reply_to_result(root: &Path, reply: &IndexResult) -> CallToolResult {
     structured_result(completed_index(root, reply))
 }
 
-fn completed_index(root: &Path, reply: &IndexReply) -> IndexOutput {
+fn completed_index(root: &Path, reply: &IndexResult) -> IndexOutput {
     IndexOutput {
         root: root.display().to_string(),
         job_id: format!("generation-{}", reply.generation),
@@ -1300,62 +1307,30 @@ fn completed_index(root: &Path, reply: &IndexReply) -> IndexOutput {
     }
 }
 
-fn drop_reply_to_index_result(root: &Path, reply: &ChangeIndexReply) -> CallToolResult {
+fn drop_result_to_index_result(root: &Path, removed: bool) -> CallToolResult {
     structured_result(IndexOutput {
         root: root.display().to_string(),
         job_id: "drop".to_owned(),
         state: IndexJobState::Succeeded,
         reused: false,
         action: Some(IndexActionOutput::Drop),
-        dropped: Some(reply.changed),
+        dropped: Some(removed),
     })
 }
 
-fn drop_reply_to_result(root: &Path, reply: &ChangeIndexReply) -> CallToolResult {
+fn drop_result_to_result(root: &Path, removed: bool) -> CallToolResult {
     structured_result(IndexDropOutput {
         root: root.display().to_string(),
-        removed: reply.changed,
+        removed,
     })
 }
 
-fn lexical_reply_to_result(reply: &LexicalSearchReply) -> CallToolResult {
-    CallToolResult::success(vec![ContentBlock::text(format_lexical_reply(reply))])
-}
-
-fn inspect_reply_to_result(reply: InspectReply) -> CallToolResult {
+fn info_result_to_tool_result(reply: InfoResult) -> CallToolResult {
     structured_result(IndexStatusOutput::from(reply))
 }
 
-fn format_lexical_reply(reply: &LexicalSearchReply) -> String {
-    if reply.matches.is_empty() {
-        return "No matches.".to_owned();
-    }
-    let mut matches = reply.matches.iter().collect::<Vec<_>>();
-    matches.sort_by_key(|item| item.rank);
-    let mut output = String::new();
-    for item in matches {
-        let _ = write!(
-            output,
-            "{}#{} matchedBy=lexical {}:{}\nsource:",
-            if output.is_empty() { "" } else { "\n\n" },
-            item.rank,
-            item.relative_path.display(),
-            item.range.start_line
-        );
-        for line in item.content.lines().take(10) {
-            let _ = write!(output, "\n  {}", truncate_line(line));
-        }
-    }
-    if reply.coverage == LexicalCoverage::Truncated {
-        output.push_str(
-            "\n\nMore matches were omitted by the explicit output bound. Remove or increase the trailing head bound to see them.",
-        );
-    }
-    output
-}
-
-impl From<InspectReply> for IndexStatusOutput {
-    fn from(reply: InspectReply) -> Self {
+impl From<InfoResult> for IndexStatusOutput {
+    fn from(reply: InfoResult) -> Self {
         let workspace_index = reply.workspace_index.map(|info| WorkspaceIndexOutput {
             id: info.id,
             name: info.name,
@@ -1389,8 +1364,8 @@ impl From<InspectReply> for IndexStatusOutput {
             indexed: reply.indexed,
             index_policy: index_policy_label(reply.index_policy).to_owned(),
             source: match reply.source {
-                zg_engine::InspectSource::Index => "index",
-                zg_engine::InspectSource::Unindexed => "unindexed",
+                InfoSource::Index => "index",
+                InfoSource::Unindexed => "unindexed",
             }
             .to_owned(),
             persistent: PersistentIndexStatusOutput {
@@ -1404,8 +1379,8 @@ impl From<InspectReply> for IndexStatusOutput {
     }
 }
 
-impl From<RootSpec> for RootSpecOutput {
-    fn from(root: RootSpec) -> Self {
+impl From<RootPath> for RootSpecOutput {
+    fn from(root: RootPath) -> Self {
         Self {
             absolute_path: root.path.display().to_string(),
             recursive: root.recursive,
@@ -1447,11 +1422,11 @@ impl From<ServerStatusSnapshot> for ServerStatusOutput {
     }
 }
 
-fn index_policy_label(policy: IndexPolicy) -> &'static str {
+fn index_policy_label(policy: WorkspaceIndexPolicy) -> &'static str {
     match policy {
-        IndexPolicy::Enabled => "enabled",
-        IndexPolicy::Disabled => "disabled",
-        IndexPolicy::Undecided => "undecided",
+        WorkspaceIndexPolicy::Enabled => "enabled",
+        WorkspaceIndexPolicy::Disabled => "disabled",
+        WorkspaceIndexPolicy::Undecided => "undecided",
     }
 }
 
@@ -1460,8 +1435,8 @@ const fn is_false(value: &bool) -> bool {
     !*value
 }
 
-fn query_reply_to_result(reply: &QueryReply) -> CallToolResult {
-    CallToolResult::success(vec![ContentBlock::text(format_query_reply(reply))])
+fn context_result_to_tool_result(reply: &ContextResult) -> CallToolResult {
+    CallToolResult::success(vec![ContentBlock::text(format_context_result(reply))])
 }
 
 fn error_code_label(code: ErrorCode) -> &'static str {
@@ -1476,11 +1451,11 @@ fn error_code_label(code: ErrorCode) -> &'static str {
     }
 }
 
-fn format_query_reply(reply: &QueryReply) -> String {
+fn format_context_result(reply: &ContextResult) -> String {
     let freshness = if reply
         .items
         .iter()
-        .any(|item| item.freshness == Freshness::PossiblyStale)
+        .any(|item| item.status == ContextItemStatus::PossiblyStale)
     {
         "possibly_stale"
     } else {
@@ -1491,7 +1466,7 @@ fn format_query_reply(reply: &QueryReply) -> String {
         let _ = write!(output, "\nNo matches.");
         return output;
     }
-    let mut items: Vec<&QueryItem> = reply.items.iter().collect();
+    let mut items: Vec<&ContextItem> = reply.items.iter().collect();
     items.sort_by_key(|item| item.rank);
     for item in items {
         let _ = write!(
@@ -1564,7 +1539,7 @@ mod tests {
     use std::{path::PathBuf, sync::Arc};
 
     use rmcp::ServerHandler;
-    use zg_engine::{RefreshMode, ZvecGrep};
+    use zg_engine::ZvecGrep;
 
     use super::{
         AGENT_TOOL_NAME, FULL_TOOL_NAMES, FreshnessInput, IndexInput, IndexToolRequest,
@@ -1620,13 +1595,13 @@ mod tests {
     }
 
     #[test]
-    fn maps_agent_search_to_query_request() {
+    fn maps_agent_search_to_context_options() {
         let request = input().into_request().expect("search input should map");
         assert_eq!(request.root, Some(test_root()));
         assert_eq!(request.queries, ["call chain"]);
         assert_eq!(request.routes.len(), 1);
-        assert_eq!(request.refresh, RefreshMode::Background);
-        assert_eq!(request.discovery.globs, ["*.rs"]);
+        assert!(request.auto_update);
+        assert_eq!(request.globs, ["*.rs"]);
         assert!(request.fuse);
         assert!(request.prefer_symbol);
         assert!(request.trace);
@@ -1676,8 +1651,6 @@ mod tests {
                 .map(|model| model.reference.as_str()),
             Some("potion-base-8M")
         );
-        assert!(request.wait);
-        assert!(request.debug);
     }
 
     #[test]
@@ -1689,10 +1662,10 @@ mod tests {
         .into_request()
         .expect("managed rg should map");
         assert_eq!(request.root, Some(test_root()));
-        assert_eq!(request.patterns, ["resident manager"]);
-        assert_eq!(request.paths, [PathBuf::from("src")]);
+        assert_eq!(request.query.as_deref(), Some("resident manager"));
+        assert_eq!(request.rg_paths, [PathBuf::from("src")]);
         assert_eq!(request.limit, Some(5));
-        assert!(request.options.fixed_strings);
+        assert!(request.rg_options.fixed_strings);
 
         assert!(
             RgInput {

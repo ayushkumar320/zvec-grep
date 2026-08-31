@@ -1,6 +1,6 @@
 use tree_sitter::Node;
 
-use crate::SymbolType;
+use crate::api::context::options::SymbolType;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum AdapterKind {

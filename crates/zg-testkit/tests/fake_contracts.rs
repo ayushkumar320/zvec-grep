@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use tempfile::tempdir;
-use zg_engine::{EngineError, LexicalSearchRequest, ZvecGrep};
+use zg_engine::{EngineError, ZvecGrep, api::context::ContextOptions};
 use zg_testkit::load_cli_case;
 
 #[tokio::test]
@@ -18,35 +18,38 @@ async fn zvec_grep_executes_typed_requests_directly() {
     let service = ZvecGrep::new();
 
     let first_reply = service
-        .lexical_search(LexicalSearchRequest {
+        .context(ContextOptions {
             root: Some(first_root.clone()),
-            patterns: vec!["needle".to_owned()],
-            ..LexicalSearchRequest::default()
+            query: Some("needle".to_owned()),
+            rg: true,
+            ..ContextOptions::default()
         })
         .await
         .expect("first lexical request should complete");
     let second_reply = service
-        .lexical_search(LexicalSearchRequest {
+        .context(ContextOptions {
             root: Some(second_root.clone()),
-            patterns: vec!["needle".to_owned()],
-            ..LexicalSearchRequest::default()
+            query: Some("needle".to_owned()),
+            rg: true,
+            ..ContextOptions::default()
         })
         .await
         .expect("second lexical request should complete");
 
     assert_eq!(first_reply.root, first_root);
-    assert_eq!(first_reply.matches.len(), 1);
-    assert_eq!(first_reply.matches[0].content, "first needle");
+    assert_eq!(first_reply.items.len(), 1);
+    assert_eq!(first_reply.items[0].content, "first needle");
     assert_eq!(second_reply.root, second_root);
-    assert_eq!(second_reply.matches.len(), 1);
-    assert_eq!(second_reply.matches[0].content, "second needle");
+    assert_eq!(second_reply.items.len(), 1);
+    assert_eq!(second_reply.items[0].content, "second needle");
 
     service.close();
     let error = service
-        .lexical_search(LexicalSearchRequest {
+        .context(ContextOptions {
             root: Some(temporary.path().to_path_buf()),
-            patterns: vec!["needle".to_owned()],
-            ..LexicalSearchRequest::default()
+            query: Some("needle".to_owned()),
+            rg: true,
+            ..ContextOptions::default()
         })
         .await
         .expect_err("closed service must reject requests");

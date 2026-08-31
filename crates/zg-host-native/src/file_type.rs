@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use zg_engine::FileKind;
+use crate::FileKind;
 
 pub(crate) const DEFAULT_MAX_CODE_FILE_SIZE_BYTES: u64 = 1024 * 1024;
 pub(crate) const DEFAULT_MAX_TEXT_FILE_SIZE_BYTES: u64 = 256 * 1024 * 1024;
@@ -128,9 +128,7 @@ fn is_known_binary_extension(extension: &str) -> bool {
 mod tests {
     use std::path::Path;
 
-    use zg_engine::FileKind;
-
-    use super::{detect_file_type, max_file_size};
+    use super::{FileKind, detect_file_type, max_file_size};
 
     #[test]
     fn matches_typescript_file_detection_and_size_defaults() {

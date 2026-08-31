@@ -1,6 +1,6 @@
 use std::{collections::HashMap, env};
 
-use super::{catalog::get_embedding_model_catalog_entry, error::ModelError};
+use super::{catalog::get_embedding_model_catalog_entry, spi::ModelError};
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ResolveEmbeddingReferenceOptions {

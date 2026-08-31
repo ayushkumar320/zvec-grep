@@ -4,13 +4,20 @@ use std::collections::{HashMap, HashSet};
 
 use tree_sitter::{Language, Node, Parser};
 
-use crate::{Content, ContentRange, EngineError, EntityMetadata, FileKind, SymbolType, TextRange};
+use crate::{
+    EngineError,
+    api::context::{
+        options::SymbolType,
+        result::{ContentRange, EntityMetadata},
+    },
+    payload::Content,
+};
 
 use self::adapter::{LanguageAdapter, named_children, resolve_adapter, text};
 use super::{
-    ChunkOptions, EntityFragment, IndexingExtractionFragment, TextSource, byte_index_at_utf16,
-    byte_index_at_utf16_ceil, char_count, chunk_options_for_metadata, make_entity_id,
-    symbol_type_name, text::extract_plain_text_fragments, validate_source_file,
+    ChunkOptions, EntityFragment, FileKind, IndexingExtractionFragment, TextRange, TextSource,
+    byte_index_at_utf16, byte_index_at_utf16_ceil, char_count, chunk_options_for_metadata,
+    make_entity_id, symbol_type_name, text::extract_plain_text_fragments, validate_source_file,
 };
 
 const DEFAULT_CODE_CHUNK_CHARS: usize = 3_600;
@@ -1041,7 +1048,15 @@ fn remap_script_block_fragments(
 mod tests {
     use std::collections::HashSet;
 
-    use crate::{Content, ContentRange, EntityMetadata, FileKind, SymbolType};
+    use crate::{
+        api::context::{
+            options::SymbolType,
+            result::{ContentRange, EntityMetadata},
+        },
+        payload::Content,
+    };
+
+    use super::super::FileKind;
 
     use super::super::{
         ChunkOptions, byte_index_at_utf16, extract, extract_for_indexing, test_source,

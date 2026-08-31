@@ -1,4 +1,8 @@
-use crate::{Content, ContentRange, EngineError, ImageContent};
+use crate::{
+    EngineError,
+    api::context::result::ContentRange,
+    payload::{Content, ImageContent},
+};
 
 use super::{EntityFragment, ImageSource, make_entity_id, validate_source_file};
 
@@ -25,7 +29,12 @@ pub(super) fn extract(source: &ImageSource) -> Result<Vec<EntityFragment>, Engin
 
 #[cfg(test)]
 mod tests {
-    use crate::{Content, ContentRange, FileKind, ImageContent, ImageFormat};
+    use crate::{
+        api::context::result::ContentRange,
+        payload::{Content, ImageContent, ImageFormat},
+    };
+
+    use super::super::FileKind;
 
     use super::super::{
         ChunkOptions, ImageSource, extract as extract_source, extract_for_indexing, test_file,

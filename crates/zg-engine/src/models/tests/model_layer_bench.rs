@@ -9,11 +9,10 @@ use std::{
 use futures_util::future::join_all;
 use serde_json::json;
 
-use crate::{Content, Device, models::embedding::EmbeddingOptions};
+use crate::{api::index::options::Device, models::spi::EmbeddingOptions, payload::Content};
 
 use super::super::{
-    embedding::CreateEmbeddingModelOptions,
-    runtime::{ModelRuntimeLease, ModelRuntimeManager, ModelRuntimeRequest},
+    ModelRuntimeLease, ModelRuntimeManager, ModelRuntimeRequest, spi::CreateEmbeddingModelOptions,
 };
 
 const DEFAULT_MODEL_REFERENCE: &str = "local/potion-code-16m-v2";

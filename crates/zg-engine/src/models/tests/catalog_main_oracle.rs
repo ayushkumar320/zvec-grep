@@ -1,8 +1,8 @@
 use serde_json::{Value, json};
 
-use crate::{
-    EmbeddingMetric,
-    models::catalog::{EmbeddingCatalogEntry, list_embedding_models},
+use crate::models::{
+    catalog::{EmbeddingCatalogEntry, list_embedding_models},
+    spi::EmbeddingMetric,
 };
 
 #[test]

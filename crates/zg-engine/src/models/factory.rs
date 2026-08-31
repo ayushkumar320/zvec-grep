@@ -2,11 +2,10 @@ use std::sync::Arc;
 
 use super::{
     catalog::get_embedding_model_catalog_entry,
-    embedding::{CreateEmbeddingModelOptions, EmbeddingModel},
-    error::ModelError,
     llama_cpp::LlamaCppEmbeddingModel,
     model2vec::Model2VecEmbeddingModel,
     qwen::QwenEmbeddingModel,
+    spi::{CreateEmbeddingModelOptions, EmbeddingModel, ModelError},
     transformers::TransformersEmbeddingModel,
 };
 

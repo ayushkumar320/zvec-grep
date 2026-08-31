@@ -14,18 +14,23 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    Content, Device, IndexEmbeddingProgress, IndexEmbeddingStage, IndexProgress,
-    IndexProgressPhase, IndexProgressReporter,
+    api::index::{
+        options::Device,
+        progress::{
+            IndexEmbeddingProgress, IndexEmbeddingStage, IndexProgress, IndexProgressPhase,
+            IndexProgressReporter,
+        },
+    },
+    payload::Content,
 };
 
 use super::{
     compute::ModelComputeRuntime,
-    embedding::{
-        CreateEmbeddingModelOptions, EmbeddingModel, EmbeddingModelInfo, EmbeddingOptions,
-        EmbeddingResult,
-    },
-    error::ModelError,
     factory::create_embedding_model,
+    spi::{
+        CreateEmbeddingModelOptions, EmbeddingInputKind, EmbeddingModel, EmbeddingModelInfo,
+        EmbeddingOptions, EmbeddingResult, ModelError,
+    },
 };
 
 type ModelFactory = dyn Fn(&str, CreateEmbeddingModelOptions) -> Result<Arc<dyn EmbeddingModel>, ModelError>
@@ -68,7 +73,7 @@ pub(crate) struct ModelRuntimeRequest {
 }
 
 impl ModelRuntimeRequest {
-    pub(crate) fn new(
+    pub(super) fn new_impl(
         reference: impl Into<String>,
         options: CreateEmbeddingModelOptions,
         embedding_concurrency: Option<usize>,
@@ -132,7 +137,7 @@ pub(crate) struct ModelRuntimeSnapshot {
 }
 
 impl ModelRuntimeManager {
-    pub(crate) fn new() -> Self {
+    pub(super) fn new_impl() -> Self {
         Self::with_factory(|reference, options| create_embedding_model(reference, Some(options)))
     }
 
@@ -156,7 +161,7 @@ impl ModelRuntimeManager {
     }
 
     /// Returns a counted lease, reusing an existing runtime with the same key.
-    pub(crate) fn acquire(
+    pub(super) fn acquire_impl(
         &self,
         request: ModelRuntimeRequest,
     ) -> Result<ModelRuntimeLease, ModelError> {
@@ -205,7 +210,7 @@ impl ModelRuntimeManager {
     }
 
     /// Stops new acquisitions and retires runtimes without active leases.
-    pub(crate) fn close(&self) {
+    pub(super) fn close_impl(&self) {
         let mut state = self.lock_state();
         state.closed = true;
         state
@@ -213,7 +218,7 @@ impl ModelRuntimeManager {
             .retain(|_, entry| entry.leases.load(Ordering::Acquire) > 0);
     }
 
-    pub(crate) fn snapshot(&self) -> ModelRuntimeSnapshot {
+    pub(super) fn snapshot_impl(&self) -> ModelRuntimeSnapshot {
         let state = self.lock_state();
         ModelRuntimeSnapshot {
             cached_runtimes: state.entries.len(),
@@ -254,11 +259,11 @@ impl fmt::Debug for ModelRuntimeManager {
 }
 
 impl ModelRuntimeLease {
-    pub(crate) fn info(&self) -> &EmbeddingModelInfo {
+    pub(super) fn info_impl(&self) -> &EmbeddingModelInfo {
         self.entry.runtime.model.info()
     }
 
-    pub(crate) async fn embed(
+    pub(super) async fn embed_impl(
         &self,
         contents: &[Content],
         mut options: EmbeddingOptions,
@@ -313,9 +318,9 @@ impl ModelRuntimeLease {
 
 fn index_progress_from_model(
     operation: &OperationConcurrency,
-    progress: super::embedding::EmbeddingModelProgress,
+    progress: super::spi::EmbeddingModelProgress,
 ) -> IndexProgress {
-    use super::embedding::EmbeddingModelProgress;
+    use super::spi::EmbeddingModelProgress;
 
     let (stage, model, downloaded_bytes, total_bytes, message) = match progress {
         EmbeddingModelProgress::Preparing { model } => {
@@ -436,7 +441,7 @@ fn resolve_embedding_concurrency(requested: Option<usize>, info: &EmbeddingModel
         .or(info.default_concurrency)
         .unwrap_or_else(|| {
             if info.provider == "qwen" {
-                if info.input_kinds.contains(&crate::EmbeddingInputKind::Image) {
+                if info.input_kinds.contains(&EmbeddingInputKind::Image) {
                     4
                 } else {
                     8
@@ -466,10 +471,13 @@ mod tests {
     use async_trait::async_trait;
     use tokio::sync::{Barrier, Semaphore as TokioSemaphore};
 
-    use crate::{Content, EmbeddingInputKind, EmbeddingMetric};
+    use crate::{
+        models::spi::{EmbeddingInputKind, EmbeddingMetric},
+        payload::Content,
+    };
 
     use super::*;
-    use crate::models::embedding::{EmbeddingModelLimits, EmbeddingPurpose};
+    use crate::models::spi::{EmbeddingModelLimits, EmbeddingPurpose};
 
     struct ConcurrentFixtureModel {
         info: EmbeddingModelInfo,
@@ -605,21 +613,19 @@ mod tests {
             options: EmbeddingOptions,
         ) -> Result<EmbeddingResult, ModelError> {
             if let Some(on_progress) = options.on_progress {
-                on_progress(super::super::embedding::EmbeddingModelProgress::Preparing {
+                on_progress(super::super::spi::EmbeddingModelProgress::Preparing {
                     model: self.info.reference.clone(),
                 });
-                on_progress(
-                    super::super::embedding::EmbeddingModelProgress::Downloading {
-                        model: self.info.reference.clone(),
-                        downloaded_bytes: Some(4),
-                        total_bytes: Some(8),
-                    },
-                );
-                on_progress(super::super::embedding::EmbeddingModelProgress::Warning {
+                on_progress(super::super::spi::EmbeddingModelProgress::Downloading {
+                    model: self.info.reference.clone(),
+                    downloaded_bytes: Some(4),
+                    total_bytes: Some(8),
+                });
+                on_progress(super::super::spi::EmbeddingModelProgress::Warning {
                     model: self.info.reference.clone(),
                     message: "fixture warning".to_owned(),
                 });
-                on_progress(super::super::embedding::EmbeddingModelProgress::Ready {
+                on_progress(super::super::spi::EmbeddingModelProgress::Ready {
                     model: self.info.reference.clone(),
                 });
             }

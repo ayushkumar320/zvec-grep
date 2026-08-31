@@ -6,10 +6,11 @@ use std::{
 };
 
 use ignore::types::TypesBuilder;
-use zg_engine::{DiscoveryOptions, EngineError, RootSpec};
+use zg_engine::EngineError;
 
-use crate::pattern::{
-    PathPattern, is_hidden_name, normalize_path_pattern, normalize_relative_path,
+use crate::{
+    DiscoveryOptions, RootSpec,
+    pattern::{PathPattern, is_hidden_name, normalize_path_pattern, normalize_relative_path},
 };
 
 const HARD_SKIP_HIDDEN_NAMES: [&str; 2] = [".git", ".zvec-grep"];
@@ -719,7 +720,7 @@ fn resolve_type_names(
 mod tests {
     use std::path::PathBuf;
 
-    use zg_engine::{DiscoveryOptions, RootSpec};
+    use crate::{DiscoveryOptions, RootSpec};
 
     use super::{FileTypeResolver, RootPolicy, parse_gitignore_rules};
 

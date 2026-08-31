@@ -230,7 +230,7 @@ fn server_on_exposes_only_agent_search_and_off_stops_it() -> Result<(), Box<dyn 
     });
     let response = post_json(port, Some(&session), &call.to_string())?;
     assert!(response.contains("error_code: capability_unavailable"));
-    assert!(response.contains("capability unavailable: query"));
+    assert!(response.contains("capability unavailable: context"));
     assert!(response.contains("\"isError\":true"));
 
     let output = guard.stop()?;
@@ -356,7 +356,7 @@ fn full_toolset_exposes_lifecycle_tools_and_runs_managed_rg() -> Result<(), Box<
     });
     let response = post_json(port, Some(&session), &index_status.to_string())?;
     assert!(response.contains("error_code: capability_unavailable"));
-    assert!(response.contains("capability unavailable: inspect"));
+    assert!(response.contains("capability unavailable: info"));
     assert!(response.contains("\"isError\":true"));
 
     let output = guard.stop()?;

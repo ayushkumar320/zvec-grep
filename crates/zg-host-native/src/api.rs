@@ -3,7 +3,55 @@ use std::{fmt, path::PathBuf, sync::Arc, time::Instant};
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
-use zg_engine::{EngineError, FileKind, RootSpec, SkippedFile};
+use zg_engine::EngineError;
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct DiscoveryOptions {
+    pub include_paths: Vec<String>,
+    pub exclude_paths: Vec<String>,
+    pub globs: Vec<String>,
+    pub insensitive_globs: Vec<String>,
+    pub file_types: Vec<String>,
+    pub excluded_file_types: Vec<String>,
+    pub hidden: bool,
+    pub no_ignore: bool,
+    pub ignore_files: Vec<PathBuf>,
+    pub max_depth: Option<usize>,
+    pub max_file_size_bytes: Option<u64>,
+    pub follow: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RootSpec {
+    pub path: PathBuf,
+    pub recursive: bool,
+    pub discovery: DiscoveryOptions,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SkippedFile {
+    pub path: PathBuf,
+    pub reason: SkippedFileReason,
+    pub size_bytes: Option<u64>,
+    pub limit_bytes: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SkippedFileReason {
+    Empty,
+    TooLarge,
+    Unsupported,
+    Binary,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FileKind {
+    Text,
+    Code,
+    Data,
+    Image,
+}
 
 /// Cancellation and deadline state for scanner and watcher operations.
 #[derive(Clone)]

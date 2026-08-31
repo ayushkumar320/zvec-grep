@@ -1,11 +1,29 @@
+//! Backend contract shared by the model runtime and embedding implementations.
+
 use std::{collections::HashSet, fmt, path::PathBuf, sync::Arc};
 
-use crate::{Content, Device, EmbeddingInputKind, EmbeddingMetric};
+use crate::{api::index::options::Device, payload::Content};
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
 use super::compute::ModelComputeRuntime;
-use super::error::ModelError;
+pub(super) use super::error::ModelError;
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum EmbeddingMetric {
+    Cosine,
+    DotProduct,
+    Euclidean,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum EmbeddingInputKind {
+    Text,
+    Image,
+}
 
 #[derive(Clone, Default)]
 pub struct CreateEmbeddingModelOptions {
@@ -260,7 +278,7 @@ const fn kind_name(kind: EmbeddingInputKind) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Content, ImageContent, ImageFormat};
+    use crate::payload::{Content, ImageContent, ImageFormat};
 
     use super::*;
 

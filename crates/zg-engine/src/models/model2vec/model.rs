@@ -19,14 +19,13 @@ use crate::models::{
     catalog::Model2VecConfig,
     compute::ModelComputeRuntime,
     download_progress::{ArtifactDownloadProgress, ModelDownloadProgressReporter},
-    embedding::{
-        CreateEmbeddingModelOptions, EmbeddingModel, EmbeddingModelInfo, EmbeddingModelLimits,
-        EmbeddingModelProgress, EmbeddingOptions, EmbeddingPurpose, EmbeddingResult,
-        validate_contents, validate_result,
+    spi::{
+        CreateEmbeddingModelOptions, EmbeddingInputKind, EmbeddingModel, EmbeddingModelInfo,
+        EmbeddingModelLimits, EmbeddingModelProgress, EmbeddingOptions, EmbeddingPurpose,
+        EmbeddingResult, ModelError, validate_contents, validate_result,
     },
-    error::ModelError,
 };
-use crate::{Content, EmbeddingInputKind};
+use crate::payload::Content;
 
 use super::safetensors::{StaticEmbeddingTable, load_static_embedding_table};
 
@@ -629,12 +628,12 @@ mod tests {
 
     use crate::models::{
         catalog::Model2VecConfig,
-        embedding::{
+        spi::{
             CreateEmbeddingModelOptions, EmbeddingModel, EmbeddingModelProgress, EmbeddingOptions,
             EmbeddingPurpose,
         },
     };
-    use crate::{Content, EmbeddingMetric};
+    use crate::{models::spi::EmbeddingMetric, payload::Content};
 
     use super::{
         ArtifactDownloadProgress, Model2VecDependencies, Model2VecEmbeddingModel,
@@ -1033,7 +1032,7 @@ mod tests {
     }
 
     impl TokenizerRuntime for FixtureTokenizer {
-        fn encode(&self, text: &str) -> Result<Vec<u32>, crate::models::error::ModelError> {
+        fn encode(&self, text: &str) -> Result<Vec<u32>, crate::models::spi::ModelError> {
             self.texts
                 .lock()
                 .expect("tokenizer lock should not be poisoned")
@@ -1102,7 +1101,7 @@ mod tests {
         async fn load_tokenizer(
             &self,
             _source: &Path,
-        ) -> Result<Arc<dyn TokenizerRuntime>, crate::models::error::ModelError> {
+        ) -> Result<Arc<dyn TokenizerRuntime>, crate::models::spi::ModelError> {
             self.tokenizer_loads.fetch_add(1, Ordering::Relaxed);
             Ok(self.tokenizer.clone())
         }
@@ -1112,7 +1111,7 @@ mod tests {
             _path: &Path,
             _tensor_name: &str,
             _dimension: usize,
-        ) -> Result<StaticEmbeddingTable, crate::models::error::ModelError> {
+        ) -> Result<StaticEmbeddingTable, crate::models::spi::ModelError> {
             self.table_loads.fetch_add(1, Ordering::Relaxed);
             Ok(StaticEmbeddingTable {
                 values: vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 2.0],
@@ -1126,7 +1125,7 @@ mod tests {
             _url: &str,
             destination: &Path,
             on_progress: Arc<dyn Fn(ArtifactDownloadProgress) + Send + Sync>,
-        ) -> Result<(), crate::models::error::ModelError> {
+        ) -> Result<(), crate::models::spi::ModelError> {
             self.downloads.fetch_add(1, Ordering::Relaxed);
             on_progress(ArtifactDownloadProgress {
                 downloaded_bytes: 4,
@@ -1134,7 +1133,7 @@ mod tests {
             });
             tokio::fs::write(destination, b"asset")
                 .await
-                .map_err(|error| crate::models::error::ModelError::uncoded(error.to_string()))
+                .map_err(|error| crate::models::spi::ModelError::uncoded(error.to_string()))
         }
     }
 }

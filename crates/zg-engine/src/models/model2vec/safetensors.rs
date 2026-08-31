@@ -7,7 +7,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncSeekExt},
 };
 
-use crate::models::error::ModelError;
+use crate::models::spi::ModelError;
 
 #[derive(Clone, Debug)]
 pub(super) struct StaticEmbeddingTable {

@@ -13,6 +13,7 @@ rmcp.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+zg-cli = { path = "../zg-cli" }
 zg-engine = { path = "../zg-engine" }
 
 [dev-dependencies]

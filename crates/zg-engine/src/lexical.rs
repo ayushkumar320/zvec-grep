@@ -1,5 +1,7 @@
 //! Private lexical search service backed by ripgrep's embedded `grep` crates.
 
+pub(crate) mod types;
+
 use std::{
     collections::{HashMap, HashSet},
     io,
@@ -11,10 +13,7 @@ use std::{
     time::UNIX_EPOCH,
 };
 
-use crate::{
-    EngineError, LexicalCoverage, LexicalDiagnostics, LexicalMatch, LexicalSearchReply,
-    LexicalSearchRequest, TextRange,
-};
+use crate::EngineError;
 use grep::{
     matcher::Matcher,
     regex::{RegexMatcher, RegexMatcherBuilder},
@@ -23,6 +22,11 @@ use grep::{
 use ignore::{WalkBuilder, WalkState, overrides::OverrideBuilder, types::TypesBuilder};
 use tokio::sync::Semaphore;
 use tracing::debug;
+
+use self::types::{
+    LexicalCoverage, LexicalDiagnostics, LexicalMatch, LexicalSearchReply, LexicalSearchRequest,
+    TextRange,
+};
 
 const EMBEDDED_BACKEND: &str = "grep";
 const EMBEDDED_COMMAND: &str = "[embedded-grep]";
@@ -647,7 +651,7 @@ fn expand_context(matches: &mut [LexicalMatch], request: &LexicalSearchRequest) 
             continue;
         }
 
-        let excerpt = item.range.clone();
+        let excerpt = item.range;
         let start_line = excerpt.start_line.saturating_sub(before).max(1);
         let end_line = excerpt.end_line.saturating_add(after).min(lines.len());
         let content = lines[start_line - 1..end_line].join("\n");
@@ -691,7 +695,7 @@ mod tests {
         path::{Path, PathBuf},
     };
 
-    use crate::{LexicalOptions, LexicalSearchReply, LexicalSearchRequest};
+    use super::types::{LexicalOptions, LexicalSearchReply, LexicalSearchRequest};
     use tempfile::TempDir;
 
     use super::{

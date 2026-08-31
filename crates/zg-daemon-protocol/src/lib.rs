@@ -6,12 +6,15 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use zg_engine::{
-    ChangeIndexReply, ChangeIndexRequest, ErrorCode, IndexProgress, IndexReply, IndexRequest,
-    InspectReply, InspectRequest, JobReply, JobRequest, LexicalSearchReply, LexicalSearchRequest,
-    QueryReply, QueryRequest,
+    ErrorCode,
+    api::{
+        context::{ContextOptions, ContextResult},
+        index::{IndexOptions, IndexResult, progress::IndexProgress},
+        info::{InfoOptions, InfoResult},
+    },
 };
 
-pub const CURRENT_DAEMON_PROTOCOL_VERSION: u32 = 1;
+pub const CURRENT_DAEMON_PROTOCOL_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct DaemonRequest {
@@ -74,12 +77,11 @@ pub struct ExecuteRequest {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case", tag = "kind", content = "request")]
 pub enum DaemonCommand {
-    Query(QueryRequest),
-    LexicalSearch(LexicalSearchRequest),
-    Index(IndexRequest),
-    Inspect(InspectRequest),
-    ChangeIndex(ChangeIndexRequest),
-    Job(JobRequest),
+    Context(ContextOptions),
+    Index(IndexOptions),
+    DropIndex(InfoOptions),
+    DisableIndex(InfoOptions),
+    Info(InfoOptions),
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -176,12 +178,11 @@ pub enum ExecutionResult {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case", tag = "kind", content = "reply")]
 pub enum DaemonReply {
-    Query(Box<QueryReply>),
-    LexicalSearch(Box<LexicalSearchReply>),
-    Index(Box<IndexReply>),
-    Inspect(Box<InspectReply>),
-    ChangeIndex(Box<ChangeIndexReply>),
-    Job(Box<JobReply>),
+    Context(Box<ContextResult>),
+    Index(Box<IndexResult>),
+    DropIndex(bool),
+    DisableIndex(Box<InfoResult>),
+    Info(Box<InfoResult>),
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -193,9 +194,11 @@ pub struct ErrorReply {
 
 #[cfg(test)]
 mod tests {
-    use zg_engine::{
-        IndexEmbeddingProgress, IndexEmbeddingStage, IndexProgress, IndexProgressPhase,
-        QueryRequest,
+    use zg_engine::api::{
+        context::ContextOptions,
+        index::progress::{
+            IndexEmbeddingProgress, IndexEmbeddingStage, IndexProgress, IndexProgressPhase,
+        },
     };
 
     use super::{
@@ -216,9 +219,9 @@ mod tests {
             message_id: 7,
             kind: DaemonRequestKind::Execute(Box::new(ExecuteRequest {
                 request_id: RequestId::new(),
-                command: DaemonCommand::Query(QueryRequest {
+                command: DaemonCommand::Context(ContextOptions {
                     root: Some("/workspace".into()),
-                    ..QueryRequest::default()
+                    ..ContextOptions::default()
                 }),
                 timeout_millis: Some(5_000),
                 principal: Principal::local(),
