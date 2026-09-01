@@ -120,6 +120,10 @@ pub enum DaemonError {
     Http(#[from] axum::Error),
     #[error("daemon MCP stdio bridge failed: {0}")]
     McpBridge(String),
+    #[error("resident daemon is not ready")]
+    NotReady,
+    #[error("resident daemon request failed ({code}): {message}")]
+    Remote { code: String, message: String },
 }
 
 /// Resolves the daemon home without changing process-global state.
@@ -149,6 +153,41 @@ pub fn resolve_home(explicit: Option<PathBuf>) -> Result<PathBuf, DaemonError> {
 /// inspected safely.
 pub async fn server_status(home: &std::path::Path) -> Result<DaemonStatus, DaemonError> {
     controller::server_status(home).await
+}
+
+/// Executes one typed engine command through the resident daemon's local
+/// administration endpoint. The command and reply are the same DTOs used by
+/// direct mode, which keeps CLI behavior independent of the MCP tool profile.
+///
+/// # Errors
+///
+/// Returns [`DaemonError`] when the daemon is unavailable, the loopback HTTP
+/// exchange fails, the reply is malformed, or the remote engine call fails.
+pub async fn execute_command(
+    home: &std::path::Path,
+    command: zg_daemon_protocol::DaemonCommand,
+) -> Result<zg_daemon_protocol::DaemonReply, DaemonError> {
+    let status = server_status(home).await?;
+    if !status.ready {
+        return Err(DaemonError::NotReady);
+    }
+    let mut url = status.server_url.ok_or(DaemonError::NotReady)?;
+    if let Some(prefix) = url.strip_suffix("/mcp") {
+        url = format!("{prefix}/admin/execute");
+    } else {
+        return Err(DaemonError::McpBridge(
+            "daemon published an invalid server URL".to_owned(),
+        ));
+    }
+    let body = serde_json::to_vec(&command)?;
+    let reply = http_client::post_json(&url, body).await?;
+    match serde_json::from_slice::<zg_daemon_protocol::ExecutionResult>(&reply)? {
+        zg_daemon_protocol::ExecutionResult::Success(reply) => Ok(reply),
+        zg_daemon_protocol::ExecutionResult::Failure(error) => Err(DaemonError::Remote {
+            code: format!("{:?}", error.code),
+            message: error.message,
+        }),
+    }
 }
 
 /// Runs the resident HTTP daemon until local shutdown or an OS termination

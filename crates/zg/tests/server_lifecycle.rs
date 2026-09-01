@@ -234,6 +234,18 @@ fn server_on_exposes_only_agent_search_and_off_stops_it() -> Result<(), Box<dyn 
     assert!(response.contains("no workspace manifest was found"));
     assert!(response.contains("\"isError\":true"));
 
+    // CLI administration uses the typed daemon protocol rather than the
+    // public MCP toolset, so status remains available with the agent profile.
+    let cli_status = Command::new(&guard.binary)
+        .args(["status", "--mode", "server", "--home"])
+        .arg(&guard.home)
+        .arg(home.path())
+        .output()?;
+    assert_command_success(&cli_status);
+    let cli_stdout = String::from_utf8_lossy(&cli_status.stdout);
+    assert!(cli_stdout.contains("Workspace index: missing"));
+    assert!(cli_stdout.contains(&format!("Root: {}", home.path().display())));
+
     let output = guard.stop()?;
     assert_command_success(&output);
     assert!(String::from_utf8_lossy(&output.stdout).contains("Server: stopped"));

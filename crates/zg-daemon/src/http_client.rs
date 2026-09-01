@@ -18,11 +18,37 @@ use rmcp::{
 use sse_stream::{Sse, SseStream};
 use tokio::net::TcpStream;
 
+use crate::DaemonError;
+
 const SESSION_ID: &str = "Mcp-Session-Id";
 const LAST_EVENT_ID: &str = "Last-Event-Id";
 const PROTOCOL_VERSION: &str = "MCP-Protocol-Version";
 const EVENT_STREAM: &str = "text/event-stream";
 const JSON: &str = "application/json";
+
+pub(crate) async fn post_json(uri: &str, body: Vec<u8>) -> Result<Vec<u8>, DaemonError> {
+    let request = request_builder(Method::POST, uri)
+        .map_err(|error| DaemonError::McpBridge(error.to_string()))?
+        .header(CONTENT_TYPE, JSON)
+        .header(ACCEPT, JSON)
+        .body(Full::new(Bytes::from(body)))
+        .map_err(|error| DaemonError::McpBridge(error.to_string()))?;
+    let response = send_http_request(request)
+        .await
+        .map_err(|error| DaemonError::McpBridge(error.to_string()))?;
+    if !response.status().is_success() {
+        return Err(DaemonError::McpBridge(
+            unexpected_response(response).await.to_string(),
+        ));
+    }
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .map_err(|error| DaemonError::McpBridge(error.to_string()))?
+        .to_bytes();
+    Ok(bytes.to_vec())
+}
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct LoopbackHttpClient;

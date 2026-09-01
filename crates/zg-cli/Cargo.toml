@@ -8,6 +8,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+chrono.workspace = true
 clap.workspace = true
 thiserror.workspace = true
 zg-engine = { path = "../zg-engine" }

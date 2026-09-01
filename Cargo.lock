@@ -3785,6 +3785,7 @@ dependencies = [
  "tracing-subscriber",
  "zg-cli",
  "zg-daemon",
+ "zg-daemon-protocol",
  "zg-engine",
 ]
 
@@ -3792,6 +3793,7 @@ dependencies = [
 name = "zg-cli"
 version = "0.0.1"
 dependencies = [
+ "chrono",
  "clap",
  "thiserror",
  "zg-engine",
@@ -3820,6 +3822,7 @@ dependencies = [
  "tracing",
  "uuid",
  "windows-spawn",
+ "zg-daemon-protocol",
  "zg-engine",
  "zg-transport-mcp",
 ]

@@ -12,6 +12,7 @@ use rmcp::transport::streamable_http_server::{
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
+use zg_daemon_protocol::{DaemonCommand, DaemonReply, ErrorReply, ExecutionResult};
 use zg_engine::ZvecGrep;
 use zg_transport_mcp::{McpToolset, ServerStatusProvider, ServerStatusSnapshot, ZvecGrepMcpServer};
 
@@ -20,6 +21,7 @@ use crate::{DaemonError, ServerConfig, controller::InstanceLock};
 #[derive(Clone)]
 struct ControlState {
     shutdown: CancellationToken,
+    engine: Arc<ZvecGrep>,
 }
 
 struct RuntimeStatusProvider {
@@ -80,9 +82,11 @@ pub(crate) async fn run_server(
     let app = Router::new()
         .route("/healthz", get(health))
         .route("/control/shutdown", post(request_shutdown))
+        .route("/admin/execute", post(execute_command))
         .nest_service("/mcp", mcp_service)
         .with_state(ControlState {
             shutdown: shutdown.clone(),
+            engine: Arc::clone(&engine),
         });
 
     if let Err(error) = instance.mark_ready().await {
@@ -121,6 +125,59 @@ async fn request_shutdown(
     }
     state.shutdown.cancel();
     (StatusCode::ACCEPTED, Json(json!({ "status": "stopping" })))
+}
+
+async fn execute_command(
+    State(state): State<ControlState>,
+    headers: HeaderMap,
+    Json(command): Json<DaemonCommand>,
+) -> (StatusCode, Json<ExecutionResult>) {
+    if !has_loopback_host(&headers) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(ExecutionResult::Failure(ErrorReply {
+                code: zg_engine::ErrorCode::InvalidInput,
+                message: "unauthorized".to_owned(),
+                retryable: false,
+            })),
+        );
+    }
+    let result = match command {
+        DaemonCommand::Context(request) => state
+            .engine
+            .context(request)
+            .await
+            .map(|reply| DaemonReply::Context(Box::new(reply))),
+        DaemonCommand::Index(request) => state
+            .engine
+            .index(request)
+            .await
+            .map(|reply| DaemonReply::Index(Box::new(reply))),
+        DaemonCommand::DropIndex(request) => state
+            .engine
+            .drop_index(request)
+            .await
+            .map(DaemonReply::DropIndex),
+        DaemonCommand::Info(request) => state
+            .engine
+            .info(request)
+            .await
+            .map(|reply| DaemonReply::Info(Box::new(reply))),
+    };
+    let result = result.map_or_else(
+        |error| {
+            ExecutionResult::Failure(ErrorReply {
+                code: error.code(),
+                message: error.to_string(),
+                retryable: matches!(
+                    error.code(),
+                    zg_engine::ErrorCode::BackendFailure | zg_engine::ErrorCode::DeadlineExceeded
+                ),
+            })
+        },
+        ExecutionResult::Success,
+    );
+    (StatusCode::OK, Json(result))
 }
 
 fn has_loopback_host(headers: &HeaderMap) -> bool {

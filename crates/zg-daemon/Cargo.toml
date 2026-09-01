@@ -26,6 +26,7 @@ tokio-util = { workspace = true, features = ["rt"] }
 tracing.workspace = true
 uuid.workspace = true
 zg-engine = { path = "../zg-engine" }
+zg-daemon-protocol = { path = "../zg-daemon-protocol" }
 zg-transport-mcp = { path = "../zg-transport-mcp" }
 
 [dev-dependencies]

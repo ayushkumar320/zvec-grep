@@ -1,22 +1,22 @@
-use std::{error::Error, io, process::ExitCode, sync::Arc};
+use std::{error::Error, io, path::Path, process::ExitCode, sync::Arc};
 
 #[cfg(target_os = "macos")]
 use std::{ffi::OsString, os::unix::process::CommandExt, process::Command};
 
-use clap::Parser;
 use tokio::runtime::Builder;
 use tracing::debug;
 use tracing_subscriber::EnvFilter;
-use zg_cli::{Cli, CliPlan, ClientMode, McpToolset, ServerPlan, ServerStartArgs};
+use zg_cli::{Cli, CliPlan, ClientMode, IndexOperation, McpToolset, ServerPlan, ServerStartArgs};
 use zg_daemon::{DaemonStatus, ListenAddress, McpToolset as DaemonMcpToolset, ServerConfig};
+use zg_daemon_protocol::{DaemonCommand, DaemonReply};
 use zg_engine::{ZvecGrep, api::context::ContextOptions};
 
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("error: {error}");
-            ExitCode::from(2)
+            eprintln!("Error: {error}");
+            ExitCode::FAILURE
         }
     }
 }
@@ -25,6 +25,17 @@ fn run() -> Result<(), Box<dyn Error>> {
     // Clap handles --help/--version before any async runtime or native adapter is built.
     let cli = Cli::parse();
     let plan = cli.into_plan(std::env::current_dir()?)?;
+    match &plan {
+        CliPlan::Help(topic) => {
+            zg_cli::print_help(topic.as_deref())?;
+            return Ok(());
+        }
+        CliPlan::Version => {
+            println!("{}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        _ => {}
+    }
     install_darwin_metal_residency_mitigation()?;
     init_tracing();
 
@@ -61,20 +72,158 @@ fn install_darwin_metal_residency_mitigation() -> io::Result<()> {
 
 async fn execute_plan(plan: CliPlan) -> Result<(), Box<dyn Error>> {
     match plan {
-        CliPlan::Execute { mode, request } => execute_request(mode, *request).await,
+        CliPlan::Query {
+            mode,
+            home,
+            request,
+            ..
+        } => execute_request(mode, home.as_deref(), *request).await,
+        CliPlan::Index {
+            mode,
+            home,
+            operation,
+            ..
+        } => execute_index(mode, home.as_deref(), operation).await,
+        CliPlan::Status {
+            mode,
+            home,
+            request,
+            check_ready,
+        } => execute_status(mode, home.as_deref(), request, check_ready).await,
         CliPlan::Server(plan) => execute_server_plan(plan).await,
+        CliPlan::Help(_) | CliPlan::Version => Ok(()),
     }
 }
 
-async fn execute_request(mode: ClientMode, request: ContextOptions) -> Result<(), Box<dyn Error>> {
-    if mode == ClientMode::Server {
-        debug!("managed --rg remains local in server mode");
+async fn execute_request(
+    mode: ClientMode,
+    home: Option<&Path>,
+    request: ContextOptions,
+) -> Result<(), Box<dyn Error>> {
+    if request.rg {
+        if mode == ClientMode::Server {
+            debug!("managed --rg remains local in server mode");
+        }
+        return execute_direct_context(request).await;
     }
+    if use_server(mode, home).await? {
+        let home = zg_daemon::resolve_home(home.map(Path::to_owned))?;
+        let reply = zg_daemon::execute_command(&home, DaemonCommand::Context(request)).await?;
+        let DaemonReply::Context(result) = reply else {
+            return Err(protocol_mismatch("context"));
+        };
+        zg_cli::write_context_result(io::stdout().lock(), &result)?;
+        return Ok(());
+    }
+    execute_direct_context(request).await
+}
+
+async fn execute_direct_context(request: ContextOptions) -> Result<(), Box<dyn Error>> {
     let engine = ZvecGrep::new();
     let result = engine.context(request).await?;
     engine.close();
     zg_cli::write_context_result(io::stdout().lock(), &result)?;
     Ok(())
+}
+
+async fn execute_index(
+    mode: ClientMode,
+    home: Option<&Path>,
+    operation: IndexOperation,
+) -> Result<(), Box<dyn Error>> {
+    let root = match &operation {
+        IndexOperation::Build(request) => request.root.clone(),
+        IndexOperation::Drop(request) => request.root.clone(),
+    }
+    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "index root is required"))?;
+    let server = use_server(mode, home).await?;
+    match operation {
+        IndexOperation::Build(request) => {
+            let result = if server {
+                let home = zg_daemon::resolve_home(home.map(Path::to_owned))?;
+                let reply =
+                    zg_daemon::execute_command(&home, DaemonCommand::Index(*request)).await?;
+                let DaemonReply::Index(result) = reply else {
+                    return Err(protocol_mismatch("index"));
+                };
+                *result
+            } else {
+                let engine = ZvecGrep::new();
+                let result = engine.index(*request).await?;
+                engine.close();
+                result
+            };
+            zg_cli::write_index_result(io::stdout().lock(), &root, &result)?;
+        }
+        IndexOperation::Drop(request) => {
+            let removed = if server {
+                let home = zg_daemon::resolve_home(home.map(Path::to_owned))?;
+                let reply =
+                    zg_daemon::execute_command(&home, DaemonCommand::DropIndex(request)).await?;
+                let DaemonReply::DropIndex(removed) = reply else {
+                    return Err(protocol_mismatch("drop_index"));
+                };
+                removed
+            } else {
+                let engine = ZvecGrep::new();
+                let removed = engine.drop_index(request).await?;
+                engine.close();
+                removed
+            };
+            println!(
+                "Workspace index: {}",
+                if removed { "dropped" } else { "missing" }
+            );
+            println!("Root: {}", root.display());
+        }
+    }
+    Ok(())
+}
+
+async fn execute_status(
+    mode: ClientMode,
+    home: Option<&Path>,
+    request: zg_engine::api::info::InfoOptions,
+    check_ready: bool,
+) -> Result<(), Box<dyn Error>> {
+    let result = if use_server(mode, home).await? {
+        let home = zg_daemon::resolve_home(home.map(Path::to_owned))?;
+        let reply = zg_daemon::execute_command(&home, DaemonCommand::Info(request)).await?;
+        let DaemonReply::Info(result) = reply else {
+            return Err(protocol_mismatch("info"));
+        };
+        *result
+    } else {
+        let engine = ZvecGrep::new();
+        let result = engine.info(request).await?;
+        engine.close();
+        result
+    };
+    zg_cli::write_info_result(io::stdout().lock(), &result)?;
+    let ready = result.indexed
+        && result
+            .status
+            .as_ref()
+            .is_none_or(|status| status.files_pending == 0 && status.files_failed == 0);
+    if check_ready && !ready {
+        return Err(io::Error::other("workspace index is not ready").into());
+    }
+    Ok(())
+}
+
+async fn use_server(mode: ClientMode, home: Option<&Path>) -> Result<bool, Box<dyn Error>> {
+    match mode {
+        ClientMode::Direct => Ok(false),
+        ClientMode::Server => Ok(true),
+        ClientMode::Auto => {
+            let home = zg_daemon::resolve_home(home.map(Path::to_owned))?;
+            Ok(zg_daemon::server_status(&home).await?.ready)
+        }
+    }
+}
+
+fn protocol_mismatch(expected: &str) -> Box<dyn Error> {
+    io::Error::other(format!("daemon returned a reply other than {expected}")).into()
 }
 
 async fn execute_server_plan(plan: ServerPlan) -> Result<(), Box<dyn Error>> {
@@ -91,6 +240,7 @@ async fn execute_server_plan(plan: ServerPlan) -> Result<(), Box<dyn Error>> {
             write_server_status(&status);
         }
         ServerPlan::Off(args) => {
+            reject_token_file(args.token_file.as_deref())?;
             let home = zg_daemon::resolve_home(args.home)?;
             let status = zg_daemon::stop_server(&home, zg_daemon::default_stop_timeout()).await?;
             write_server_status(&status);
@@ -99,6 +249,9 @@ async fn execute_server_plan(plan: ServerPlan) -> Result<(), Box<dyn Error>> {
             let home = zg_daemon::resolve_home(args.home)?;
             let status = zg_daemon::server_status(&home).await?;
             write_server_status(&status);
+            if args.check_ready && !status.ready {
+                return Err(io::Error::other("server is not ready").into());
+            }
         }
         ServerPlan::Run(args) => {
             let config = server_config(args)?;
@@ -109,6 +262,7 @@ async fn execute_server_plan(plan: ServerPlan) -> Result<(), Box<dyn Error>> {
 }
 
 fn server_config(args: ServerStartArgs) -> Result<ServerConfig, Box<dyn Error>> {
+    reject_token_file(args.token_file.as_deref())?;
     let listen = args.listen.parse::<ListenAddress>()?;
     let home = zg_daemon::resolve_home(args.home)?;
     let mut config = ServerConfig::new(listen, home);
@@ -117,6 +271,17 @@ fn server_config(args: ServerStartArgs) -> Result<ServerConfig, Box<dyn Error>> 
         McpToolset::Full => DaemonMcpToolset::Full,
     };
     Ok(config)
+}
+
+fn reject_token_file(token_file: Option<&Path>) -> Result<(), Box<dyn Error>> {
+    if token_file.is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "--token-file is not yet supported by the Rust daemon",
+        )
+        .into());
+    }
+    Ok(())
 }
 
 fn write_server_status(status: &DaemonStatus) {
