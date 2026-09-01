@@ -66,3 +66,79 @@ Run the complete local gate with:
 ```sh
 bash scripts/check.sh
 ```
+
+## Local npm installation
+
+Build the release binary with the same script name used by the TypeScript
+project:
+
+```sh
+npm run build
+```
+
+Stage only the current native platform and link the local package into the
+active npm global prefix:
+
+```sh
+npm run install:local
+zg --version
+```
+
+The local install remains linked to `dist/npm/zvec-grep-local`; rerun the command
+after cleaning `dist/`. To generate a self-contained tarball without installing
+it:
+
+```sh
+npm run pack:local
+```
+
+Generated packages are written under `dist/npm/`. Run the isolated install
+smoke test with:
+
+```sh
+npm run test:package
+```
+
+Pass `--no-build` after `--` to reuse an existing `target/release/zg`, or pass
+`--prefix <path>` to install or smoke-test under a custom npm prefix:
+
+```sh
+npm run install:local -- --no-build --prefix /tmp/zvec-grep-npm
+```
+
+## npm release packaging
+
+The registry distribution is prepared as one meta package plus exact-version
+native optional dependencies declared in `npm/platforms.json`. The meta package
+uses Node only during `postinstall` to verify and materialize the native
+executable; running `zg` enters that executable directly. Published installs
+support Node.js 14.14 and newer.
+
+Validate the release manifest and build the current platform dry-run packages:
+
+```sh
+npm run release:verify
+npm run release:pack
+```
+
+The release tarballs are written under `dist/npm/release/tarballs/`. Run a real
+two-tarball install in an isolated npm prefix and verify the materialized binary
+with:
+
+```sh
+npm run release:smoke
+```
+
+CI can package a previously built target artifact without rebuilding it:
+
+```sh
+node scripts/npm-release.mjs pack-platform \
+  --target linux-x64-gnu \
+  --binary /path/to/zg \
+  --lib-dir /path/to/runtime-libs \
+  --no-build
+```
+
+All native platform packages must be published and smoke-tested before the meta
+package. The release script intentionally does not run `npm publish` or move a
+dist-tag.
