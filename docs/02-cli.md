@@ -150,9 +150,8 @@ zg install [--target codex|claude|qwen|qoder|opencode|cursor|all|auto] [--mcp-tr
 zg uninstall [--target codex|claude|qwen|qoder|opencode|cursor|all|auto] [--yes]
 ```
 
-`--target` is repeatable. `qodercli`, `qoder-cli`, `qoderide`, and `qoder-ide`
-are accepted aliases for the single canonical `qoder` target. That target
-configures Qoder CLI and Qoder IDE together. `zg install` also accepts:
+`--target` is repeatable. `qoder` is the single Qoder target and configures
+Qoder CLI and Qoder IDE together. `zg install` also accepts:
 
 | Option | Meaning |
 | --- | --- |
@@ -232,7 +231,7 @@ refresh, authentication, and logs. See [MCP](./03-mcp.md) for the tool contract.
 | `QWEN_API_KEY` | Qwen API-key fallback after `DASHSCOPE_API_KEY` |
 | `QWEN_HOME` | Qwen Code configuration directory used by `zg install` |
 | `QODER_CONFIG_DIR` | Qoder CLI configuration directory used by `zg install` |
-| `QODER_IDE_MCP_PATH` | Full Qoder IDE `SharedClientCache/mcp.json` path used by `zg install` |
+| `QODER_IDE_MCP_PATH` | Full Qoder IDE `mcp.json` path used by `zg install` |
 | `QODER_IDE_EXECUTABLE` | Qoder IDE executable used for automatic install-target detection |
 
 Run `zg help environment` for advanced variables, agent integration paths,

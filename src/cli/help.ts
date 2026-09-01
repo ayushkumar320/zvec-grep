@@ -51,8 +51,7 @@ const ENVIRONMENT_VARIABLES = {
   CLAUDE_CONFIG_DIR: "Claude configuration directory used by zg install",
   QWEN_HOME: "Qwen Code configuration directory used by zg install",
   QODER_CONFIG_DIR: "Qoder CLI configuration directory used by zg install",
-  QODER_IDE_MCP_PATH:
-    "Full Qoder IDE SharedClientCache/mcp.json path used by zg install",
+  QODER_IDE_MCP_PATH: "Full Qoder IDE mcp.json path used by zg install",
   QODER_IDE_EXECUTABLE:
     "Qoder IDE executable used by automatic install-target detection",
   OPENCODE_CONFIG: "OpenCode configuration file used by zg install",
@@ -313,8 +312,7 @@ Options:
   --yes                             Install detected agents without prompting
   --force                           Replace conflicting unmanaged configuration
 
-Qoder aliases: qodercli, qoder-cli, qoderide, qoder-ide.
-The single qoder target configures Qoder CLI and Qoder IDE together.
+The qoder target configures Qoder CLI and Qoder IDE together.
 
 Interactive setup detects supported agents, configures stdio by default, and
 starts the shared daemon. In stdio mode an agent reconnect also starts the
@@ -331,8 +329,8 @@ install the npm package.`;
   zg uninstall [--target codex|claude|qwen|qoder|opencode|cursor|all|auto] [--yes]
 
 Removes zvec-grep-managed MCP configuration, agent-specific approval, and
-guidance. Qoder aliases qodercli, qoder-cli, qoderide, and qoder-ide all remove
-the managed Qoder CLI and IDE integration together.`;
+guidance. The qoder target removes the managed Qoder CLI and IDE integration
+together.`;
     case "help":
       return `Usage:
   zg help [command|topic]
