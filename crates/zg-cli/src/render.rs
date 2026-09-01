@@ -378,8 +378,7 @@ Options:
   --yes                             Install detected agents without prompting
   --force                           Replace conflicting unmanaged configuration
 
-Qoder aliases: qodercli, qoder-cli, qoderide, qoder-ide.
-The single qoder target configures Qoder CLI and Qoder IDE together.
+The qoder target configures Qoder CLI and Qoder IDE together.
 
 Interactive setup detects supported agents, configures stdio by default, and
 starts the shared daemon. In stdio mode an agent reconnect also starts the
@@ -396,8 +395,8 @@ const UNINSTALL_HELP: &str = r"Usage:
   zg uninstall [--target codex|claude|qwen|qoder|opencode|cursor|all|auto] [--yes]
 
 Removes zvec-grep-managed MCP configuration, agent-specific approval, and
-guidance. Qoder aliases qodercli, qoder-cli, qoderide, and qoder-ide all remove
-the managed Qoder CLI and IDE integration together.";
+guidance. The qoder target removes the managed Qoder CLI and IDE integration
+together.";
 
 const HELP_HELP: &str = r"Usage:
   zg help [command|topic]

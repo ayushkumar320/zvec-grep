@@ -6,7 +6,10 @@ use std::{ffi::OsString, os::unix::process::CommandExt, process::Command};
 use tokio::runtime::Builder;
 use tracing::debug;
 use tracing_subscriber::EnvFilter;
-use zg_cli::{Cli, CliPlan, ClientMode, IndexOperation, McpToolset, ServerPlan, ServerStartArgs};
+use zg_cli::{
+    Cli, CliPlan, ClientMode, IndexOperation, InstallOutcome, McpInstallTransport, McpToolset,
+    ServerPlan, ServerStartArgs,
+};
 use zg_daemon::{DaemonStatus, ListenAddress, McpToolset as DaemonMcpToolset, ServerConfig};
 use zg_daemon_protocol::{DaemonCommand, DaemonReply};
 use zg_engine::{ZvecGrep, api::context::ContextOptions};
@@ -91,8 +94,84 @@ async fn execute_plan(plan: CliPlan) -> Result<(), Box<dyn Error>> {
             check_ready,
         } => execute_status(mode, home.as_deref(), request, check_ready).await,
         CliPlan::Server(plan) => execute_server_plan(plan).await,
+        CliPlan::Install(args) => execute_install_plan(&args).await,
+        CliPlan::Uninstall(args) => zg_cli::execute_uninstall(&args).map_err(Into::into),
         CliPlan::Help(_) | CliPlan::Version => Ok(()),
     }
+}
+
+async fn execute_install_plan(args: &zg_cli::InstallArgs) -> Result<(), Box<dyn Error>> {
+    let outcome = zg_cli::execute_install(args)?;
+    if outcome.agent_labels.is_empty() {
+        return Ok(());
+    }
+
+    let status = if std::env::var("ZVEC_GREP_INSTALL_SKIP_SERVER").as_deref() == Ok("1") {
+        None
+    } else {
+        Some(start_installed_server(&outcome).await?)
+    };
+    if let Some(status) = &status {
+        if status.ready {
+            println!("  ✓ Server");
+            println!(
+                "    ready at {}",
+                status
+                    .server_url
+                    .as_deref()
+                    .unwrap_or("http://127.0.0.1:7999/mcp")
+            );
+        } else {
+            println!("  ○ Server");
+            println!("    not started; run `zg server on`");
+        }
+    } else {
+        println!("  ○ Server");
+        println!("    not started; run `zg server on`");
+    }
+    if outcome.transport == McpInstallTransport::Stdio {
+        println!("  ✓ Connection");
+        println!("    stdio; reconnects start the server automatically");
+    }
+    println!("\nzvec-grep is ready\n");
+    println!("  Agents       {}", outcome.agent_labels.join(", "));
+    println!("  Remote data  Authorization requested on first remote use");
+    println!("\nRestart the selected agents or start a new session to load the integration.");
+    Ok(())
+}
+
+async fn start_installed_server(outcome: &InstallOutcome) -> Result<DaemonStatus, Box<dyn Error>> {
+    let listen = zg_cli::resolve_server_listen()?.parse::<ListenAddress>()?;
+    let home = zg_daemon::resolve_home(None)?;
+    let mut config = ServerConfig::new(listen, home);
+    config.mcp_toolset = match outcome.mcp_toolset {
+        Some(McpToolset::Agent) => DaemonMcpToolset::Agent,
+        Some(McpToolset::Full) => DaemonMcpToolset::Full,
+        None => {
+            if let Some(environment) = std::env::var_os("ZVEC_GREP_MCP_TOOLSET") {
+                match environment.to_string_lossy().as_ref() {
+                    "agent" => DaemonMcpToolset::Agent,
+                    "full" => DaemonMcpToolset::Full,
+                    _ => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "ZVEC_GREP_MCP_TOOLSET must be agent or full",
+                        )
+                        .into());
+                    }
+                }
+            } else {
+                let current = zg_daemon::server_status(&config.home).await?;
+                if current.running && current.mcp_toolset.as_deref() == Some("full") {
+                    DaemonMcpToolset::Full
+                } else {
+                    DaemonMcpToolset::Agent
+                }
+            }
+        }
+    };
+    let executable = std::env::current_exe()?;
+    Ok(zg_daemon::start_server(&executable, &config).await?)
 }
 
 async fn execute_request(

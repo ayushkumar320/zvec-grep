@@ -10,7 +10,9 @@ publish.workspace = true
 [dependencies]
 chrono.workspace = true
 clap.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
+uuid.workspace = true
 zg-engine = { path = "../zg-engine" }
 
 [lints]

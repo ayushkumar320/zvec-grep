@@ -1,5 +1,7 @@
 //! Command-line parsing, validation, request construction, and terminal rendering.
 
+mod install;
+mod jsonc;
 mod managed_rg;
 mod render;
 
@@ -24,6 +26,10 @@ use zg_engine::api::{
     info::InfoOptions,
 };
 
+pub use install::{
+    InstallError, InstallOutcome, execute_install, execute_uninstall, resolve_server_listen,
+    resolve_server_url,
+};
 pub use managed_rg::{ManagedRgArgumentError, parse_managed_rg_args};
 pub use render::{
     HelpTopicError, help_text, print_help, write_context_result, write_index_result,
@@ -60,9 +66,9 @@ pub enum CommandLine {
     /// Manage workspace Remote Embedding authorization.
     Auth(UnsupportedArgs),
     /// Install agent integrations.
-    Install(UnsupportedArgs),
+    Install(InstallArgs),
     /// Remove agent integrations.
-    Uninstall(UnsupportedArgs),
+    Uninstall(UninstallArgs),
     /// Show help for a command or topic.
     Help(HelpArgs),
     /// Print the installed version.
@@ -77,6 +83,48 @@ pub struct UnsupportedArgs {
         trailing_var_arg = true
     )]
     pub args: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
+pub enum McpInstallTransport {
+    #[default]
+    Stdio,
+    Http,
+}
+
+#[derive(Clone, Debug, Args)]
+pub struct InstallArgs {
+    #[arg(long = "target", value_name = "AGENT", action = clap::ArgAction::Append)]
+    pub targets: Vec<String>,
+    #[arg(long = "mcp-transport", value_enum)]
+    pub transport: Option<McpInstallTransport>,
+    #[arg(long = "mcp-toolset", value_enum)]
+    pub mcp_toolset: Option<McpToolset>,
+    #[arg(
+        long = "mcp-tool-timeout",
+        value_name = "SECONDS",
+        default_value_t = 600,
+        value_parser = parse_positive_u64
+    )]
+    pub mcp_tool_timeout_seconds: u64,
+    #[arg(long = "mcp-token-env", value_name = "NAME", value_parser = parse_environment_variable)]
+    pub mcp_token_env: Option<String>,
+    #[arg(long)]
+    pub yes: bool,
+    #[arg(long)]
+    pub force: bool,
+    #[arg(value_name = "AGENT")]
+    pub positional_targets: Vec<String>,
+}
+
+#[derive(Clone, Debug, Args)]
+pub struct UninstallArgs {
+    #[arg(long = "target", value_name = "AGENT", action = clap::ArgAction::Append)]
+    pub targets: Vec<String>,
+    #[arg(long)]
+    pub yes: bool,
+    #[arg(value_name = "AGENT")]
+    pub positional_targets: Vec<String>,
 }
 
 #[derive(Debug, Args)]
@@ -433,6 +481,8 @@ pub enum CliPlan {
         check_ready: bool,
     },
     Server(ServerPlan),
+    Install(InstallArgs),
+    Uninstall(UninstallArgs),
     Help(Option<String>),
     Version,
 }
@@ -485,6 +535,8 @@ pub enum CliError {
     MissingServerAction,
     #[error("--stdio cannot be combined with a server action")]
     StdioWithServerAction,
+    #[error("--mcp-token-env requires --mcp-transport http")]
+    InstallTokenRequiresHttp,
     #[error("{0} is parsed by Rust but its handler has not been ported yet")]
     UnsupportedCommand(&'static str),
     #[error(transparent)]
@@ -544,8 +596,14 @@ impl Cli {
             CommandLine::Version => Ok(CliPlan::Version),
             CommandLine::Config(_) => Err(CliError::UnsupportedCommand("zg config")),
             CommandLine::Auth(_) => Err(CliError::UnsupportedCommand("zg auth")),
-            CommandLine::Install(_) => Err(CliError::UnsupportedCommand("zg install")),
-            CommandLine::Uninstall(_) => Err(CliError::UnsupportedCommand("zg uninstall")),
+            CommandLine::Install(args) => {
+                if args.mcp_token_env.is_some() && args.transport != Some(McpInstallTransport::Http)
+                {
+                    return Err(CliError::InstallTokenRequiresHttp);
+                }
+                Ok(CliPlan::Install(args))
+            }
+            CommandLine::Uninstall(args) => Ok(CliPlan::Uninstall(args)),
         }
     }
 }
@@ -946,6 +1004,28 @@ fn parse_positive_usize(value: &str) -> Result<usize, String> {
         .ok()
         .filter(|value| *value > 0)
         .ok_or_else(|| "requires a positive integer".to_owned())
+}
+
+fn parse_positive_u64(value: &str) -> Result<u64, String> {
+    value
+        .parse::<u64>()
+        .ok()
+        .filter(|value| *value > 0)
+        .ok_or_else(|| "requires a positive integer".to_owned())
+}
+
+fn parse_environment_variable(value: &str) -> Result<String, String> {
+    let mut characters = value.chars();
+    let valid_first = characters
+        .next()
+        .is_some_and(|character| character == '_' || character.is_ascii_alphabetic());
+    if valid_first
+        && characters.all(|character| character == '_' || character.is_ascii_alphanumeric())
+    {
+        Ok(value.to_owned())
+    } else {
+        Err("requires an environment variable name".to_owned())
+    }
 }
 
 fn parse_non_negative_usize(value: &str) -> Result<usize, String> {
