@@ -84,7 +84,7 @@ pub mod options {
         pub query: String,
     }
 
-    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
     #[serde(rename_all = "snake_case")]
     pub enum ContextRouteMode {
         Fts,
@@ -130,7 +130,16 @@ pub mod result {
         pub coverage: ContextCoverage,
         pub workspace_index: Option<ContextWorkspaceIndex>,
         pub items: Vec<ContextItem>,
+        pub group_results: Vec<ContextGroupResult>,
         pub diagnostics: ContextDiagnostics,
+    }
+
+    #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+    pub struct ContextGroupResult {
+        pub id: String,
+        pub query: String,
+        pub role: ContextQueryGroupRole,
+        pub items: Vec<ContextItem>,
     }
 
     #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -165,12 +174,55 @@ pub mod result {
         pub range: ContentRange,
         pub excerpt_range: Option<ContentRange>,
         pub content: String,
+        pub content_role: Option<ContextContentRole>,
         pub outline: Option<String>,
         pub status: ContextItemStatus,
         pub score: Option<f64>,
         pub matched_by: MatchedBy,
         pub metadata: Option<EntityMetadata>,
         pub entity_id: Option<String>,
+        pub container: Option<ContextContainer>,
+        pub trace: Option<SearchHitTrace>,
+        pub query_groups: Vec<ContextQueryGroupMatch>,
+        pub selection_reason: Option<ContextSelectionReason>,
+        pub coverage_group: Option<String>,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum ContextContentRole {
+        Source,
+        Outline,
+    }
+
+    #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    pub struct ContextContainer {
+        pub entity_id: String,
+        pub range: ContentRange,
+        pub metadata: Option<EntityMetadata>,
+    }
+
+    #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+    pub struct ContextQueryGroupMatch {
+        pub id: String,
+        pub query: String,
+        pub role: ContextQueryGroupRole,
+        pub rank: usize,
+        pub matched_by: MatchedBy,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum ContextQueryGroupRole {
+        Primary,
+        Supplemental,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum ContextSelectionReason {
+        Coverage,
+        GlobalFill,
     }
 
     #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -192,6 +244,7 @@ pub mod result {
     pub enum MatchedBy {
         Fts,
         Vector,
+        #[serde(rename = "fts+vector")]
         FtsAndVector,
         Lexical,
     }
@@ -199,9 +252,81 @@ pub mod result {
     #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
     pub struct ContextDiagnostics {
         pub empty_reason: Option<EmptyReason>,
-        pub hits_returned: usize,
+        pub index: Option<IndexDiagnostics>,
         pub rg: Option<RgDiagnostics>,
+        pub structure: Option<StructureEnrichmentDiagnostics>,
         pub timings: Vec<TimingEntry>,
+    }
+
+    #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    pub struct IndexDiagnostics {
+        pub hits_returned: usize,
+        pub query_groups: Vec<IndexQueryGroupDiagnostics>,
+        pub routes: Vec<IndexRouteDiagnostics>,
+    }
+
+    #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    pub struct IndexQueryGroupDiagnostics {
+        pub id: String,
+        pub query: String,
+        pub role: ContextQueryGroupRole,
+    }
+
+    #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    pub struct IndexRouteDiagnostics {
+        pub id: String,
+        pub mode: super::options::ContextRouteMode,
+        pub query: String,
+    }
+
+    #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    pub struct StructureEnrichmentDiagnostics {
+        pub source: StructureEnrichmentSource,
+        pub file_limit: usize,
+        pub matched_files: usize,
+        pub parsed_files: usize,
+        pub enriched_files: usize,
+        pub enriched_items: usize,
+        pub skipped_files: usize,
+        pub truncated: bool,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum StructureEnrichmentSource {
+        StructuralExtraction,
+    }
+
+    #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+    pub struct SearchHitTrace {
+        pub recall: Vec<SearchRecallTrace>,
+        pub fusion: SearchFusionTrace,
+        pub final_selection: SearchFinalTrace,
+    }
+
+    #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+    pub struct SearchRecallTrace {
+        pub path: super::options::ContextRouteMode,
+        pub route_id: String,
+        pub query: String,
+        pub found: bool,
+        pub rank: Option<usize>,
+        pub score: Option<f64>,
+        pub forced: bool,
+        pub reason: Option<String>,
+    }
+
+    #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+    pub struct SearchFusionTrace {
+        pub rank: usize,
+        pub score: f64,
+        pub forced: bool,
+    }
+
+    #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    pub struct SearchFinalTrace {
+        pub returned_by_limit: bool,
+        pub cutoff_rank: usize,
     }
 
     #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

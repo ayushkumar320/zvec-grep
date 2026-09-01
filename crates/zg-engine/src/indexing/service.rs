@@ -12,6 +12,7 @@ use zg_host_native::NativeScanner;
 use crate::{
     EngineError,
     api::{
+        context::{ContextOptions, ContextResult},
         index::{
             IndexOptions, IndexResult,
             options::{Device, DiscoveryOptions, EmbeddingModelSpec, RootPath},
@@ -27,6 +28,7 @@ use crate::{
         CreateEmbeddingModelOptions, EmbeddingMetric, ModelError, ModelRuntimeLease,
         ModelRuntimeManager, ModelRuntimeRequest,
     },
+    search::context::{NormalizedContextRequest, context_from_index},
     storage::spi::{
         WorkspaceIndexEmbeddingSchema, WorkspaceIndexStorageFactory, WorkspaceIndexStorageOptions,
     },
@@ -158,6 +160,118 @@ impl WorkspaceIndexService {
         Ok(indexed)
     }
 
+    pub(crate) async fn context(
+        &self,
+        models: &ModelRuntimeManager,
+        options: &ContextOptions,
+        request: &NormalizedContextRequest,
+    ) -> Result<ContextResult, EngineError> {
+        let requested_root = resolve_root(options.root.as_deref())?;
+        let Some(location) = find_nearest_workspace(&requested_root)? else {
+            return Err(workspace_index_unavailable(
+                &requested_root,
+                "no workspace manifest was found",
+            ));
+        };
+        let factory = self.storage_factory()?;
+        if !factory.exists(&location.home)? {
+            return Err(workspace_index_unavailable(
+                &location.root,
+                "index storage is missing",
+            ));
+        }
+        if options.auto_update
+            && self
+                .workspace_needs_refresh(&location, factory.as_ref())
+                .await?
+        {
+            self.index(
+                models,
+                IndexOptions {
+                    root: Some(location.root.clone()),
+                    embedding_concurrency: options.embedding_concurrency,
+                    ..IndexOptions::default()
+                },
+            )
+            .await?;
+        }
+        let _lock = acquire_home_lock(&location.home, LockMode::Read, "context")?;
+        let manifest = read_workspace_manifest(&location.home)?.ok_or_else(|| {
+            workspace_index_unavailable(&location.root, "workspace manifest disappeared")
+        })?;
+        if manifest.index_policy == WorkspaceIndexPolicy::Disabled {
+            return Err(workspace_index_unavailable(
+                &location.root,
+                "indexing is disabled",
+            ));
+        }
+        if !is_indexed(&manifest) {
+            return Err(workspace_index_unavailable(
+                &location.root,
+                "workspace index has not been built",
+            ));
+        }
+        let model = request
+            .routes
+            .iter()
+            .any(|route| route.mode == crate::api::context::options::ContextRouteMode::Vector)
+            .then(|| acquire_search_model(models, &manifest, options.embedding_concurrency))
+            .transpose()?;
+        if let Some(model) = &model {
+            assert_embedding_compatible(Some(&manifest), model)?;
+        }
+        let storage = factory.open(WorkspaceIndexStorageOptions::ReadOnly {
+            storage_path: location.home.clone(),
+        })?;
+        let result = context_from_index(
+            &location.root,
+            &manifest.index_info(),
+            storage.as_ref(),
+            model
+                .as_ref()
+                .map(|model| model as &dyn crate::search::SearchEmbeddingRuntime),
+            options,
+            request,
+        )
+        .await;
+        let close = storage.close();
+        let result = result?;
+        close?;
+        Ok(result)
+    }
+
+    async fn workspace_needs_refresh(
+        &self,
+        location: &WorkspaceIndexLocation,
+        factory: &dyn WorkspaceIndexStorageFactory,
+    ) -> Result<bool, EngineError> {
+        let _lock = acquire_home_lock(&location.home, LockMode::Read, "context.refresh")?;
+        let Some(manifest) = read_workspace_manifest(&location.home)? else {
+            return Ok(false);
+        };
+        if !is_indexed(&manifest) || manifest.index_policy == WorkspaceIndexPolicy::Disabled {
+            return Ok(false);
+        }
+        let storage = factory.open(WorkspaceIndexStorageOptions::ReadOnly {
+            storage_path: location.home.clone(),
+        })?;
+        let status = get_workspace_index_status(
+            &manifest.index_info(),
+            storage.as_ref(),
+            &self.scanner,
+            None,
+        )
+        .await;
+        let close = storage.close();
+        let status = status?;
+        close?;
+        Ok(status.files_added > 0
+            || status.files_modified > 0
+            || status.files_deleted > 0
+            || status.files_pending > 0
+            || status.files_failed > 0)
+    }
+
     pub(crate) async fn info(&self, options: InfoOptions) -> Result<InfoResult, EngineError> {
         let requested_root = resolve_root(options.root.as_deref())?;
         let requested_location = workspace_index_location(&requested_root)?;
@@ -226,53 +340,6 @@ impl WorkspaceIndexService {
         let factory = self.storage_factory()?;
         reset_workspace_index(&location, factory.as_ref())?;
         Ok(true)
-    }
-
-    pub(crate) fn disable_index(options: &InfoOptions) -> Result<InfoResult, EngineError> {
-        let location = workspace_index_location_from_option(options.root.as_deref())?;
-        let _lock = acquire_home_lock(&location.home, LockMode::Write, "index.disable")?;
-        let existing = read_workspace_manifest(&location.home)?;
-        let now = epoch_millis();
-        let manifest = WorkspaceManifest::new(
-            WorkspaceIndexInfo {
-                id: existing.as_ref().map_or_else(
-                    || Uuid::new_v4().to_string(),
-                    |manifest| manifest.id.clone(),
-                ),
-                name: existing.as_ref().map_or_else(
-                    || workspace_name(&location.root),
-                    |manifest| manifest.name.clone(),
-                ),
-                path: location.home.clone(),
-                roots: existing.as_ref().map_or_else(
-                    || vec![default_root_path(&location.root)],
-                    |manifest| manifest.index_info().roots,
-                ),
-                policy: WorkspaceIndexPolicy::Disabled,
-                embedding: None,
-                index_version: None,
-                generation: None,
-                created_epoch_ms: existing
-                    .as_ref()
-                    .map_or(now, |manifest| manifest.created_time),
-                updated_epoch_ms: now,
-            },
-            existing.map_or_else(EmbeddingRuntimeConfig::default, |manifest| {
-                manifest.embedding_runtime
-            }),
-        )?;
-        write_workspace_manifest(&location.home, &manifest)?;
-        Ok(InfoResult {
-            root: location.root,
-            indexed: false,
-            index_policy: WorkspaceIndexPolicy::Disabled,
-            home: location.home,
-            index_path: location.index_path,
-            source: InfoSource::Unindexed,
-            workspace_index: Some(manifest.index_info()),
-            status: None,
-            suggestion: Some("indexing is disabled for this workspace".to_owned()),
-        })
     }
 
     fn storage_factory(&self) -> Result<&Arc<dyn WorkspaceIndexStorageFactory>, EngineError> {
@@ -354,6 +421,40 @@ fn acquire_model(
                 ..CreateEmbeddingModelOptions::default()
             },
             options.embedding_concurrency,
+        ))
+        .map_err(|error| model_error(&error))
+}
+
+fn acquire_search_model(
+    models: &ModelRuntimeManager,
+    manifest: &WorkspaceManifest,
+    embedding_concurrency: Option<usize>,
+) -> Result<ModelRuntimeLease, EngineError> {
+    let schema = manifest.embedding.as_ref().ok_or_else(|| {
+        workspace_index_unavailable(&manifest.path, "embedding schema is missing")
+    })?;
+    let reference = format!("{}/{}", schema.provider, schema.model);
+    let local = schema.provider == "local";
+    models
+        .acquire(ModelRuntimeRequest::new(
+            reference,
+            CreateEmbeddingModelOptions {
+                api_key: (!local)
+                    .then(|| {
+                        manifest
+                            .embedding_runtime
+                            .api_key
+                            .clone()
+                            .or_else(environment_api_key)
+                    })
+                    .flatten(),
+                endpoint: (!local)
+                    .then(|| manifest.embedding_runtime.endpoint.clone())
+                    .flatten(),
+                device: local.then(|| manifest.embedding_runtime.device.unwrap_or(Device::Auto)),
+                ..CreateEmbeddingModelOptions::default()
+            },
+            embedding_concurrency,
         ))
         .map_err(|error| model_error(&error))
 }
@@ -606,6 +707,12 @@ fn workspace_suggestion(manifest: &WorkspaceManifest, indexed: bool) -> Option<S
     }
 }
 
+fn workspace_index_unavailable(root: &Path, reason: &str) -> EngineError {
+    EngineError::CapabilityUnavailable {
+        capability: format!("workspace index at {} ({reason})", root.display()),
+    }
+}
+
 fn model_error(error: &ModelError) -> EngineError {
     let mut message = error.to_string();
     if let Some(code) = error.code() {
@@ -818,13 +925,6 @@ mod tests {
             .expect("workspace info");
         assert!(info.indexed);
         assert_eq!(info.status.expect("index status").files_stored, 0);
-
-        let disabled = WorkspaceIndexService::disable_index(&InfoOptions {
-            root: Some(directory.path().to_path_buf()),
-            include_status: false,
-        })
-        .expect("disable index");
-        assert!(!disabled.indexed);
 
         assert!(
             service

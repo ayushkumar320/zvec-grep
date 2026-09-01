@@ -4,6 +4,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
+    time::Instant,
 };
 
 use crate::{
@@ -14,6 +15,7 @@ use crate::{
             result::{
                 ContentRange, ContextCoverage, ContextDiagnostics, ContextItem, ContextItemKind,
                 ContextItemStatus, ContextSource, EmptyReason, MatchedBy, RgDiagnostics,
+                TimingEntry,
             },
         },
         index::{IndexOptions, IndexResult},
@@ -22,9 +24,11 @@ use crate::{
     indexing::service::WorkspaceIndexService,
     lexical::{
         LexicalSearchService,
+        structure::enrich_lexical_items_with_structure,
         types::{LexicalCoverage, LexicalOptions, LexicalSearchReply, LexicalSearchRequest},
     },
     models::ModelRuntimeManager,
+    search::context::normalize_context_request,
 };
 
 const DEFAULT_MAX_CONCURRENT_LEXICAL_SEARCHES: usize = 2;
@@ -61,23 +65,22 @@ impl EngineService {
     ) -> Result<ContextResult, EngineError> {
         self.ensure_open()?;
         let root = resolve_root(options.root.as_deref())?;
+        let normalized = normalize_context_request(&options)?;
         if !options.rg {
-            return Err(unavailable("context"));
+            return self
+                .indexing
+                .context(&self.models, &options, &normalized)
+                .await;
         }
         if !options.rg_options.extra_args.is_empty() {
             return Err(EngineError::invalid_input(
                 "context rg_options.extra_args is not supported by the embedded backend",
             ));
         }
-        let query = options
-            .query
-            .iter()
-            .chain(&options.queries)
-            .cloned()
-            .collect::<Vec<_>>();
+        let structure_max_file_size_bytes = options.max_file_size_bytes;
         let request = LexicalSearchRequest {
             root: Some(root.clone()),
-            patterns: query.clone(),
+            patterns: normalized.rg_patterns,
             pattern_files: options.rg_options.pattern_files,
             paths: options.rg_paths,
             limit: options.limit,
@@ -101,7 +104,22 @@ impl EngineService {
             },
         };
         let reply = self.lexical.search(&root, &request).await?;
-        Ok(context_from_lexical(query.join("\n"), reply))
+        let mut result = context_from_lexical(normalized.display_query, reply);
+        let structure_started = Instant::now();
+        let enrichment =
+            enrich_lexical_items_with_structure(&root, result.items, structure_max_file_size_bytes);
+        result.items = enrichment.items;
+        result.diagnostics.structure = Some(enrichment.diagnostics);
+        result.diagnostics.timings.push(TimingEntry {
+            name: "structure_enrichment".to_owned(),
+            duration_micros: structure_started
+                .elapsed()
+                .as_micros()
+                .try_into()
+                .unwrap_or(u64::MAX),
+            count: None,
+        });
+        Ok(result)
     }
 
     /// Creates or refreshes the workspace index.
@@ -134,19 +152,6 @@ impl EngineService {
         std::future::ready(self.indexing.drop_index(&options)).await
     }
 
-    /// Disables indexing for a workspace and returns its updated information.
-    ///
-    /// # Errors
-    ///
-    /// Returns an engine error when workspace metadata cannot be updated.
-    pub(crate) async fn disable_index(
-        &self,
-        options: InfoOptions,
-    ) -> Result<InfoResult, EngineError> {
-        self.ensure_open()?;
-        std::future::ready(WorkspaceIndexService::disable_index(&options)).await
-    }
-
     /// Closes this service and rejects subsequent requests.
     pub(crate) fn close(&self) {
         self.closed.store(true, Ordering::Release);
@@ -164,7 +169,15 @@ impl EngineService {
 
 fn context_from_lexical(query: String, reply: LexicalSearchReply) -> ContextResult {
     let hits_returned = reply.matches.len();
-    let empty_reason = (hits_returned == 0).then_some(EmptyReason::NoMatches);
+    let empty_reason = (hits_returned == 0).then_some({
+        if !reply.diagnostics.missing_paths.is_empty()
+            && reply.diagnostics.searched_paths.is_empty()
+        {
+            EmptyReason::NoSearchableFiles
+        } else {
+            EmptyReason::NoMatches
+        }
+    });
     ContextResult {
         query,
         root: reply.root,
@@ -185,17 +198,24 @@ fn context_from_lexical(query: String, reply: LexicalSearchReply) -> ContextResu
                 range: lexical_range(item.range),
                 excerpt_range: item.excerpt_range.map(lexical_range),
                 content: item.content,
+                content_role: Some(crate::api::context::result::ContextContentRole::Source),
                 outline: None,
                 status: ContextItemStatus::Fresh,
                 score: None,
                 matched_by: MatchedBy::Lexical,
                 metadata: None,
                 entity_id: None,
+                container: None,
+                trace: None,
+                query_groups: Vec::new(),
+                selection_reason: None,
+                coverage_group: None,
             })
             .collect(),
+        group_results: Vec::new(),
         diagnostics: ContextDiagnostics {
             empty_reason,
-            hits_returned,
+            index: None,
             rg: Some(RgDiagnostics {
                 backend: reply.diagnostics.backend,
                 command: reply.diagnostics.command,
@@ -206,6 +226,7 @@ fn context_from_lexical(query: String, reply: LexicalSearchReply) -> ContextResu
                 limit: reply.diagnostics.limit,
                 truncated: reply.diagnostics.truncated,
             }),
+            structure: None,
             timings: Vec::new(),
         },
     }
@@ -224,10 +245,4 @@ fn resolve_root(root: Option<&Path>) -> Result<PathBuf, EngineError> {
     std::path::absolute(root.unwrap_or_else(|| Path::new("."))).map_err(|error| {
         EngineError::backend("workspace", format!("failed to resolve root: {error}"))
     })
-}
-
-fn unavailable(capability: &str) -> EngineError {
-    EngineError::CapabilityUnavailable {
-        capability: capability.to_owned(),
-    }
 }

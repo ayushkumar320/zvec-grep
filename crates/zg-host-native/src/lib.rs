@@ -17,5 +17,6 @@ pub use api::{
     WorkspaceWatcherFactoryPort,
 };
 pub use error::HostError;
+pub use file_type::{DetectedFileType, detect_file_type, max_file_size};
 pub use scanner::NativeScanner;
 pub use watcher::{NativeWatcherConfig, NativeWatcherFactory};

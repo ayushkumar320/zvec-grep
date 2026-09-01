@@ -21,7 +21,7 @@ zg.close();
 
 `ZvecGrep` is normally shared for the lifetime of a process. Workspace root is
 request state, so the same instance can serve multiple workspaces. It exposes
-typed `context`, `index`, `info`, `drop_index`, and `disable_index` methods. It
+typed `context`, `index`, `info`, and `drop_index` methods. It
 calls its private services directly; there is no public command dispatcher,
 operation envelope, adapter registry or Core layer between a method and its
 implementation.
@@ -38,9 +38,10 @@ embedding calls may execute concurrently against those shared resources.
 surfaces model downloads through `IndexProgress::embedding`. The reporter is
 runtime-only and is omitted from serialized daemon requests.
 
-Only `zg query --rg` is implemented end to end today. The other methods already
-have their final typed shape and return `capability_unavailable` until their
-service implementations land.
+`zg query --rg`, workspace discovery, `info`, and idempotent `drop_index` are
+wired end to end. Indexed search and indexing are assembled around the private
+storage SPI; they become available to the public engine once a concrete storage
+factory is installed in the production composition root.
 
 Lexical search runs in-process with ripgrep's `grep` and `ignore` crates; the
 binary and ordinary CI jobs do not require a system `rg` executable.

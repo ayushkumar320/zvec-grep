@@ -80,7 +80,6 @@ pub enum DaemonCommand {
     Context(ContextOptions),
     Index(IndexOptions),
     DropIndex(InfoOptions),
-    DisableIndex(InfoOptions),
     Info(InfoOptions),
 }
 
@@ -181,7 +180,6 @@ pub enum DaemonReply {
     Context(Box<ContextResult>),
     Index(Box<IndexResult>),
     DropIndex(bool),
-    DisableIndex(Box<InfoResult>),
     Info(Box<InfoResult>),
 }
 

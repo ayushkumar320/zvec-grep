@@ -3840,6 +3840,7 @@ version = "0.0.1"
 dependencies = [
  "async-trait",
  "futures-util",
+ "globset",
  "grep",
  "half",
  "httpdate",

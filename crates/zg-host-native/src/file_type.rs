@@ -8,12 +8,13 @@ pub(crate) const DEFAULT_MAX_DATA_FILE_SIZE_BYTES: u64 = 16 * 1024 * 1024;
 pub(crate) const DEFAULT_MAX_IMAGE_FILE_SIZE_BYTES: u64 = 10 * 1024 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct DetectedFileType {
+pub struct DetectedFileType {
     pub kind: FileKind,
     pub format: String,
 }
 
-pub(crate) fn detect_file_type(path: &Path) -> Option<DetectedFileType> {
+#[must_use]
+pub fn detect_file_type(path: &Path) -> Option<DetectedFileType> {
     let name = path.file_name()?.to_string_lossy();
     match name.as_ref() {
         "Dockerfile" => return Some(file_type(FileKind::Code, "dockerfile")),
@@ -71,7 +72,8 @@ pub(crate) fn detect_file_type(path: &Path) -> Option<DetectedFileType> {
     Some(detected)
 }
 
-pub(crate) fn max_file_size(kind: FileKind, explicit: Option<u64>) -> u64 {
+#[must_use]
+pub fn max_file_size(kind: FileKind, explicit: Option<u64>) -> u64 {
     explicit.unwrap_or(match kind {
         FileKind::Code => DEFAULT_MAX_CODE_FILE_SIZE_BYTES,
         FileKind::Text => DEFAULT_MAX_TEXT_FILE_SIZE_BYTES,

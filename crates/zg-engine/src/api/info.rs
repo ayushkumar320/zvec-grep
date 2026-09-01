@@ -1,4 +1,4 @@
-//! Types used by `info`, `drop_index`, and `disable_index`.
+//! Types used by `info` and `drop_index`.
 
 pub use options::InfoOptions;
 pub use result::InfoResult;

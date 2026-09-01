@@ -13,6 +13,7 @@ mod lexical;
 #[allow(dead_code)]
 mod models;
 mod payload;
+mod search;
 mod service;
 mod storage;
 mod workspace;
@@ -54,10 +55,6 @@ impl ZvecGrep {
 
     pub async fn drop_index(&self, options: InfoOptions) -> Result<bool, EngineError> {
         self.service.drop_index(options).await
-    }
-
-    pub async fn disable_index(&self, options: InfoOptions) -> Result<InfoResult, EngineError> {
-        self.service.disable_index(options).await
     }
 
     pub fn close(&self) {

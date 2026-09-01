@@ -1,5 +1,6 @@
 //! Private lexical search service backed by ripgrep's embedded `grep` crates.
 
+pub(crate) mod structure;
 pub(crate) mod types;
 
 use std::{
