@@ -369,6 +369,7 @@ fn executable_path(path: &Path) -> bool {
 }
 
 fn qoder_ide_candidates() -> Vec<PathBuf> {
+    #[cfg(any(target_os = "macos", windows))]
     let home = home_dir();
     #[cfg(target_os = "macos")]
     return vec![
