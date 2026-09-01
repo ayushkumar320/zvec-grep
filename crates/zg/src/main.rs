@@ -54,6 +54,7 @@ fn install_darwin_metal_residency_mitigation() -> io::Result<()> {
 }
 
 #[cfg(not(target_os = "macos"))]
+#[allow(clippy::unnecessary_wraps)]
 fn install_darwin_metal_residency_mitigation() -> io::Result<()> {
     Ok(())
 }
