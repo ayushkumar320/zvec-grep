@@ -73,17 +73,17 @@ pub(super) fn vector_content_for_fragment(
 
 pub(super) fn validate_source_file(file: &SourceFile) -> Result<(), EngineError> {
     if file.id.trim().is_empty() {
-        return Err(EngineError::invalid_input(
+        return Err(EngineError::invalid_argument(
             "extractor source requires a non-empty file id",
         ));
     }
     if file.absolute_path.to_string_lossy().trim().is_empty() {
-        return Err(EngineError::invalid_input(
+        return Err(EngineError::invalid_argument(
             "extractor source requires a non-empty absolute file path",
         ));
     }
     if file.relative_path.to_string_lossy().trim().is_empty() {
-        return Err(EngineError::invalid_input(
+        return Err(EngineError::invalid_argument(
             "extractor source requires a non-empty relative file path",
         ));
     }

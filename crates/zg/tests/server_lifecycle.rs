@@ -229,8 +229,8 @@ fn server_on_exposes_only_agent_search_and_off_stops_it() -> Result<(), Box<dyn 
         }
     });
     let response = post_json(port, Some(&session), &call.to_string())?;
-    assert!(response.contains("error_code: capability_unavailable"));
-    assert!(response.contains("capability unavailable: workspace index at"));
+    assert!(response.contains("error[ZG.ENGINE.NOT_FOUND]"));
+    assert!(response.contains("workspace index at"));
     assert!(response.contains("no workspace manifest was found"));
     assert!(response.contains("\"isError\":true"));
 

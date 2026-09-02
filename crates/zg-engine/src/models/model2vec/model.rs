@@ -195,7 +195,7 @@ impl Model2VecEmbeddingModel {
             )
             .await
             .map_err(|error| {
-                ModelError::uncoded(format!("Unable to write tokenizer config: {error}"))
+                ModelError::storage_failure(format!("Unable to write tokenizer config: {error}"))
             })?;
         }
         Ok(tokenizer_directory)
@@ -213,10 +213,10 @@ impl Model2VecEmbeddingModel {
             return Ok(local_path.to_path_buf());
         }
         let parent = local_path.parent().ok_or_else(|| {
-            ModelError::uncoded("Model2Vec cache path does not have a parent directory")
+            ModelError::storage_failure("Model2Vec cache path does not have a parent directory")
         })?;
         fs::create_dir_all(parent).await.map_err(|error| {
-            ModelError::uncoded(format!(
+            ModelError::storage_failure(format!(
                 "Unable to create Model2Vec cache directory: {error}"
             ))
         })?;
@@ -240,18 +240,20 @@ impl Model2VecEmbeddingModel {
                 fs::rename(&partial_path, local_path)
                     .await
                     .map_err(|error| {
-                        ModelError::uncoded(format!(
+                        ModelError::storage_failure(format!(
                             "Unable to publish Model2Vec artifact: {error}"
                         ))
                     })
             }
-            Ok(()) => Err(ModelError::uncoded("Downloaded model file is empty")),
+            Ok(()) => Err(ModelError::storage_failure(
+                "Downloaded model file is empty",
+            )),
             Err(error) => Err(error),
         };
         if let Err(cause) = result {
             let _ = fs::remove_file(&partial_path).await;
-            return Err(ModelError::coded(
-                "ZVEC_GREP.ENGINE.MODELS.MODEL2VEC_DOWNLOAD_FAILED",
+            return Err(ModelError::new(
+                crate::EngineError::STORAGE_FAILURE,
                 "Unable to download Model2Vec model artifact",
                 Some(format!("model={} url={url}", self.entry.reference)),
             )
@@ -269,8 +271,8 @@ impl Model2VecEmbeddingModel {
 
     fn ensure_not_disposed(&self) -> Result<(), ModelError> {
         if self.disposed.load(Ordering::Acquire) {
-            return Err(ModelError::coded(
-                "ZVEC_GREP.ENGINE.MODELS.MODEL2VEC_DISPOSED",
+            return Err(ModelError::new(
+                crate::EngineError::RESOURCE_CLOSED,
                 "Model2Vec embedding model is disposed",
                 Some(format!("model={}", self.entry.reference)),
             ));
@@ -323,15 +325,13 @@ impl EmbeddingModel for Model2VecEmbeddingModel {
             })
             .await?;
         let result = computation.map_err(|cause| {
-            ModelError::coded(
-                "ZVEC_GREP.ENGINE.MODELS.MODEL2VEC_EMBED_FAILED",
+            cause.wrap(
                 "Model2Vec embedding failed",
                 Some(format!(
                     "model={} repo={}",
                     self.entry.reference, self.entry.repo
                 )),
             )
-            .with_cause(cause)
         })?;
         validate_result(&self.info, contents.len(), &result)?;
         Ok(result)
@@ -387,10 +387,10 @@ impl Model2VecDependencies for DefaultModel2VecDependencies {
     async fn load_tokenizer(&self, source: &Path) -> Result<Arc<dyn TokenizerRuntime>, ModelError> {
         let tokenizer_path = source.join("tokenizer.json");
         let tokenizer_json = fs::read(&tokenizer_path).await.map_err(|error| {
-            ModelError::uncoded(format!("Unable to read Model2Vec tokenizer: {error}"))
+            ModelError::storage_failure(format!("Unable to read Model2Vec tokenizer: {error}"))
         })?;
         let tokenizer = Tokenizer::from_file(&tokenizer_path).map_err(|error| {
-            ModelError::uncoded("Unable to load Model2Vec tokenizer").with_cause(error)
+            ModelError::storage_failure("Unable to load Model2Vec tokenizer").with_cause(error)
         })?;
         let unknown_token_id = resolve_unknown_token_id(&tokenizer, &tokenizer_json);
         Ok(Arc::new(HuggingFaceTokenizer {
@@ -419,20 +419,23 @@ impl Model2VecDependencies for DefaultModel2VecDependencies {
             .get(url)
             .send()
             .await
-            .map_err(|error| ModelError::uncoded(error.to_string()))?;
+            .map_err(|error| ModelError::storage_failure(error.to_string()))?;
         if !response.status().is_success() {
-            return Err(ModelError::uncoded(format!("HTTP {}", response.status())));
+            return Err(ModelError::storage_failure(format!(
+                "HTTP {}",
+                response.status()
+            )));
         }
         let total_bytes = response.content_length();
         let mut file = fs::File::create(destination).await.map_err(|error| {
-            ModelError::uncoded(format!("Unable to create partial model artifact: {error}"))
+            ModelError::storage_failure(format!("Unable to create partial model artifact: {error}"))
         })?;
         let mut downloaded_bytes = 0_u64;
         let mut stream = response.bytes_stream();
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|error| ModelError::uncoded(error.to_string()))?;
+            let chunk = chunk.map_err(|error| ModelError::storage_failure(error.to_string()))?;
             file.write_all(&chunk).await.map_err(|error| {
-                ModelError::uncoded(format!("Unable to write model artifact: {error}"))
+                ModelError::storage_failure(format!("Unable to write model artifact: {error}"))
             })?;
             downloaded_bytes = downloaded_bytes.saturating_add(chunk.len() as u64);
             on_progress(ArtifactDownloadProgress {
@@ -441,7 +444,7 @@ impl Model2VecDependencies for DefaultModel2VecDependencies {
             });
         }
         file.flush().await.map_err(|error| {
-            ModelError::uncoded(format!("Unable to flush model artifact: {error}"))
+            ModelError::storage_failure(format!("Unable to flush model artifact: {error}"))
         })?;
         Ok(())
     }
@@ -457,7 +460,9 @@ impl TokenizerRuntime for HuggingFaceTokenizer {
         self.tokenizer
             .encode(text, false)
             .map(|encoding| encoding.get_ids().to_vec())
-            .map_err(|error| ModelError::uncoded("Model2Vec tokenization failed").with_cause(error))
+            .map_err(|error| {
+                ModelError::internal("Model2Vec tokenization failed").with_cause(error)
+            })
     }
 
     fn unknown_token_id(&self) -> Option<u32> {
@@ -510,14 +515,14 @@ fn embed_static_token_list(
         }
         let start = row
             .checked_mul(table.dimension)
-            .ok_or_else(|| ModelError::uncoded("Static embedding table offset overflow"))?;
+            .ok_or_else(|| ModelError::internal("Static embedding table offset overflow"))?;
         for (column, value) in vector.iter_mut().enumerate() {
             *value += f64::from(table.values[start + column]);
         }
     }
     let divisor = f64::from(
         u32::try_from(token_ids.len())
-            .map_err(|_| ModelError::uncoded("Model2Vec token count exceeds u32"))?,
+            .map_err(|_| ModelError::internal("Model2Vec token count exceeds u32"))?,
     );
     let mut squared_norm = 0.0_f64;
     for value in &mut vector {
@@ -541,14 +546,14 @@ fn js_number_to_float32(value: f64) -> f32 {
 }
 
 fn out_of_range_token_error(token_id: u32, rows: usize) -> ModelError {
-    ModelError::uncoded(format!(
+    ModelError::internal(format!(
         "Tokenizer returned out-of-range token id: id={token_id} rows={rows}"
     ))
 }
 
 fn check_cancelled(signal: Option<&CancellationToken>) -> Result<(), ModelError> {
     if signal.is_some_and(CancellationToken::is_cancelled) {
-        return Err(ModelError::uncoded("Model2Vec embedding was cancelled"));
+        return Err(ModelError::cancelled("Model2Vec embedding was cancelled"));
     }
     Ok(())
 }
@@ -579,7 +584,9 @@ fn file_name(path: &str) -> Result<&str, ModelError> {
     Path::new(path)
         .file_name()
         .and_then(|name| name.to_str())
-        .ok_or_else(|| ModelError::uncoded(format!("Model artifact has no file name: {path}")))
+        .ok_or_else(|| {
+            ModelError::storage_failure(format!("Model artifact has no file name: {path}"))
+        })
 }
 
 fn partial_path(path: &Path) -> PathBuf {
@@ -747,10 +754,7 @@ mod tests {
             )
             .await
             .expect_err("disposed model should reject embedding");
-        assert_eq!(
-            error.code(),
-            Some("ZVEC_GREP.ENGINE.MODELS.MODEL2VEC_DISPOSED")
-        );
+        assert_eq!(error.code(), crate::EngineError::RESOURCE_CLOSED);
     }
 
     #[tokio::test]
@@ -829,10 +833,7 @@ mod tests {
             .embed(&[], EmbeddingOptions::default())
             .await
             .expect_err("empty batch must fail");
-        assert_eq!(
-            empty.code(),
-            Some("ZVEC_GREP.ENGINE.MODELS.EMBEDDING_EMPTY_INPUT")
-        );
+        assert_eq!(empty.code(), crate::EngineError::INVALID_ARGUMENT);
         let blank = model
             .embed(
                 &[Content::Text("  ".to_owned())],
@@ -840,10 +841,7 @@ mod tests {
             )
             .await
             .expect_err("blank text must fail");
-        assert_eq!(
-            blank.code(),
-            Some("ZVEC_GREP.ENGINE.MODELS.EMBEDDING_EMPTY_TEXT")
-        );
+        assert_eq!(blank.code(), crate::EngineError::INVALID_ARGUMENT);
     }
 
     #[tokio::test]
@@ -937,10 +935,7 @@ mod tests {
             .await
             .expect_err("out-of-range token id should fail");
 
-        assert_eq!(
-            error.code(),
-            Some("ZVEC_GREP.ENGINE.MODELS.MODEL2VEC_EMBED_FAILED")
-        );
+        assert_eq!(error.code(), crate::EngineError::INTERNAL);
         assert!(
             error
                 .cause()
@@ -974,10 +969,7 @@ mod tests {
             .await
             .expect_err("cancelled embedding should fail");
 
-        assert_eq!(
-            error.code(),
-            Some("ZVEC_GREP.ENGINE.MODELS.MODEL2VEC_EMBED_FAILED")
-        );
+        assert_eq!(error.code(), crate::EngineError::CANCELLED);
         assert!(
             error
                 .cause()
@@ -1133,7 +1125,7 @@ mod tests {
             });
             tokio::fs::write(destination, b"asset")
                 .await
-                .map_err(|error| crate::models::spi::ModelError::uncoded(error.to_string()))
+                .map_err(|error| crate::models::spi::ModelError::internal(error.to_string()))
         }
     }
 }

@@ -525,7 +525,7 @@ struct FileTypePatterns {
 
 fn normalize_root(mut root: RootSpec) -> Result<RootSpec, HostError> {
     root.path = std::path::absolute(&root.path).map_err(|error| {
-        HostError::backend(
+        HostError::storage_failure(
             "native-scanner",
             format!("could not resolve root {}: {error}", root.path.display()),
         )
@@ -592,7 +592,7 @@ fn read_configured_ignore_rules(root: &RootSpec) -> Result<Vec<IgnoreRule>, Host
             root.path.join(path)
         };
         let content = fs::read(&absolute).map_err(|error| {
-            HostError::backend(
+            HostError::storage_failure(
                 "native-scanner",
                 format!("could not read ignore file {}: {error}", absolute.display()),
             )
@@ -792,7 +792,7 @@ fn resolve_type_names(
             aliases.get(extension_name).copied().unwrap_or(&name)
         };
         let Some(type_patterns) = type_map.get(resolved) else {
-            return Err(HostError::invalid_input(format!(
+            return Err(HostError::invalid_argument(format!(
                 "unknown ripgrep file type: {raw_name}"
             )));
         };

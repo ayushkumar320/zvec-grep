@@ -94,13 +94,17 @@ struct BlockingControl {
 impl BlockingControl {
     fn check(&self) -> Result<(), HostError> {
         if self.cancellation.is_cancelled() {
-            return Err(HostError::Cancelled);
+            return Err(HostError::cancelled(
+                "native scanner operation was cancelled",
+            ));
         }
         if self
             .deadline
             .is_some_and(|deadline| Instant::now() >= deadline)
         {
-            return Err(HostError::DeadlineExceeded);
+            return Err(HostError::deadline_exceeded(
+                "native scanner operation exceeded its deadline",
+            ));
         }
         Ok(())
     }
@@ -112,9 +116,15 @@ async fn acquire_slot<'a>(
 ) -> Result<tokio::sync::SemaphorePermit<'a>, HostError> {
     control_check(control)?;
     tokio::select! {
-        () = control.cancellation.cancelled() => Err(HostError::Cancelled),
-        () = deadline_wait(control.deadline) => Err(HostError::DeadlineExceeded),
-        permit = slots.acquire() => permit.map_err(|_| HostError::Closed),
+        () = control.cancellation.cancelled() => {
+            Err(HostError::cancelled("native scanner operation was cancelled"))
+        },
+        () = deadline_wait(control.deadline) => Err(HostError::deadline_exceeded(
+            "native scanner operation exceeded its deadline",
+        )),
+        permit = slots.acquire() => permit.map_err(|_| {
+            HostError::internal("native scanner concurrency limiter closed unexpectedly")
+        }),
     }
 }
 
@@ -130,10 +140,14 @@ where
     };
     let task = tokio::task::spawn_blocking(move || function(blocking_control));
     tokio::select! {
-        () = control.cancellation.cancelled() => Err(HostError::Cancelled),
-        () = deadline_wait(control.deadline) => Err(HostError::DeadlineExceeded),
+        () = control.cancellation.cancelled() => {
+            Err(HostError::cancelled("native scanner operation was cancelled"))
+        },
+        () = deadline_wait(control.deadline) => Err(HostError::deadline_exceeded(
+            "native scanner operation exceeded its deadline",
+        )),
         result = task => result
-            .map_err(|error| HostError::Internal { message: format!("native scanner worker failed: {error}") })?,
+            .map_err(|error| HostError::internal(format!("native scanner worker failed: {error}")))?,
     }
 }
 
@@ -147,13 +161,17 @@ async fn deadline_wait(deadline: Option<Instant>) {
 
 fn control_check(control: &TaskControl) -> Result<(), HostError> {
     if control.cancellation.is_cancelled() {
-        return Err(HostError::Cancelled);
+        return Err(HostError::cancelled(
+            "native scanner operation was cancelled",
+        ));
     }
     if control
         .deadline
         .is_some_and(|deadline| Instant::now() >= deadline)
     {
-        return Err(HostError::DeadlineExceeded);
+        return Err(HostError::deadline_exceeded(
+            "native scanner operation exceeded its deadline",
+        ));
     }
     Ok(())
 }
@@ -221,7 +239,7 @@ impl ScanScope {
             .iter()
             .map(|path| {
                 if !path.is_absolute() {
-                    return Err(HostError::invalid_input(format!(
+                    return Err(HostError::invalid_argument(format!(
                         "scan scope must be an absolute path: {}",
                         path.display()
                     )));
@@ -262,19 +280,19 @@ fn validate_domains(
     for root in roots {
         let policy = RootPolicy::new(root.clone(), resolver)?;
         let metadata = fs::metadata(policy.root_path()).map_err(|error| {
-            HostError::invalid_input(format!(
+            HostError::invalid_argument(format!(
                 "workspace root {} could not be inspected: {error}",
                 policy.root_path().display()
             ))
         })?;
         if !metadata.is_file() && !metadata.is_dir() {
-            return Err(HostError::invalid_input(format!(
+            return Err(HostError::invalid_argument(format!(
                 "workspace root {} must be a file or directory",
                 policy.root_path().display()
             )));
         }
         let canonical_path = fs::canonicalize(policy.root_path()).map_err(|error| {
-            HostError::invalid_input(format!(
+            HostError::invalid_argument(format!(
                 "workspace root {} could not be resolved: {error}",
                 policy.root_path().display()
             ))
@@ -288,7 +306,7 @@ fn validate_domains(
     for left_index in 0..domains.len() {
         for right_index in (left_index + 1)..domains.len() {
             if domains_overlap(&domains[left_index], &domains[right_index])? {
-                return Err(HostError::invalid_input(format!(
+                return Err(HostError::invalid_argument(format!(
                     "workspace roots overlap: left={} right={}",
                     domains[left_index].policy.root_path().display(),
                     domains[right_index].policy.root_path().display()
@@ -301,7 +319,7 @@ fn validate_domains(
 
 fn domains_overlap(left: &ScanDomain, right: &ScanDomain) -> Result<bool, HostError> {
     if is_same_file(left.policy.root_path(), right.policy.root_path()).map_err(|error| {
-        HostError::backend(
+        HostError::storage_failure(
             "native-scanner",
             format!("root identity check failed: {error}"),
         )
@@ -445,8 +463,8 @@ fn walk(
         let absolute_path = entry.path();
         let relative_path = absolute_path
             .strip_prefix(policy.root_path())
-            .map_err(|error| HostError::Internal {
-                message: format!("scanner produced an out-of-root path: {error}"),
+            .map_err(|error| {
+                HostError::internal(format!("scanner produced an out-of-root path: {error}"))
             })?;
         let relative_display = normalize_relative_path(relative_path);
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -621,13 +639,13 @@ fn read_batch_sync(
             file.root.join(&file.relative_path)
         };
         let bytes = fs::read(&absolute_path).map_err(|error| {
-            HostError::backend(
+            HostError::storage_failure(
                 "native-scanner",
                 format!("could not read source {}: {error}", absolute_path.display()),
             )
         })?;
         let metadata = fs::metadata(&absolute_path).map_err(|error| {
-            HostError::backend(
+            HostError::storage_failure(
                 "native-scanner",
                 format!(
                     "could not inspect source {}: {error}",
@@ -653,7 +671,7 @@ fn validate_relative_path(path: &Path) -> Result<(), HostError> {
             .components()
             .any(|component| !matches!(component, Component::Normal(_)))
     {
-        return Err(HostError::invalid_input(format!(
+        return Err(HostError::invalid_argument(format!(
             "source path must be a non-empty relative path: {}",
             path.display()
         )));

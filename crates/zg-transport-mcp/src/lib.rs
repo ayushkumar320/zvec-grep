@@ -25,7 +25,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use zg_cli::parse_managed_rg_args;
 use zg_engine::{
-    EngineError, ErrorCode, ZvecGrep,
+    EngineError, ErrorReport, ErrorSite, ZvecGrep,
     api::{
         context::{
             ContextOptions, ContextResult,
@@ -142,8 +142,8 @@ pub enum IndexOperationState {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IndexOperationError {
-    pub code: ErrorCode,
-    pub message: String,
+    pub report: ErrorReport,
+    pub retryable: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -668,6 +668,19 @@ struct IndexOutput {
 struct IndexJobErrorOutput {
     code: String,
     message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    help: Option<String>,
+    origin: ErrorSiteOutput,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reported_at: Option<ErrorSiteOutput>,
+    retryable: bool,
+}
+
+#[derive(Clone, Debug, JsonSchema, Serialize)]
+struct ErrorSiteOutput {
+    file: String,
+    line: u32,
+    column: u32,
 }
 
 #[derive(Clone, Debug, JsonSchema, Serialize)]
@@ -1419,10 +1432,9 @@ fn epoch_millis(value: i64, name: &str) -> Result<u64, String> {
 
 fn error_result(error: &EngineError) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(format!(
-        "error_code: {}\nerror_message: {}\nretryable: {}",
-        error_code_label(error.code()),
-        error,
-        false
+        "{}\nretryable: {}",
+        error.report(),
+        error.is_retryable()
     ))])
 }
 
@@ -1435,7 +1447,8 @@ fn structured_result(value: impl Serialize) -> CallToolResult {
             result
         }
         Err(error) => CallToolResult::error(vec![ContentBlock::text(format!(
-            "error_code: internal\nerror_message: failed to serialize tool result: {error}"
+            "error_code: {}\nerror_message: failed to serialize tool result: {error}",
+            EngineError::INTERNAL
         ))]),
     }
 }
@@ -1458,10 +1471,7 @@ fn index_operation_to_result(reply: &IndexOperationResult) -> CallToolResult {
         reused: reply.reused,
         action: Some(IndexActionOutput::Index),
         dropped: None,
-        error: reply.error.as_ref().map(|error| IndexJobErrorOutput {
-            code: error_code_label(error.code).to_owned(),
-            message: error.message.clone(),
-        }),
+        error: reply.error.as_ref().map(index_job_error_output),
     })
 }
 
@@ -1564,11 +1574,27 @@ impl From<IndexRuntimeSnapshot> for IndexRuntimeStatusOutput {
                 files_failed: progress.files_failed,
                 detail: progress.detail,
             }),
-            error: runtime.error.map(|error| IndexJobErrorOutput {
-                code: error_code_label(error.code).to_owned(),
-                message: error.message,
-            }),
+            error: runtime.error.as_ref().map(index_job_error_output),
         }
+    }
+}
+
+fn index_job_error_output(error: &IndexOperationError) -> IndexJobErrorOutput {
+    IndexJobErrorOutput {
+        code: error.report.code.clone(),
+        message: error.report.message.clone(),
+        help: error.report.help.clone(),
+        origin: error_site_output(&error.report.origin),
+        reported_at: error.report.reported_at.as_ref().map(error_site_output),
+        retryable: error.retryable,
+    }
+}
+
+fn error_site_output(site: &ErrorSite) -> ErrorSiteOutput {
+    ErrorSiteOutput {
+        file: site.file.clone(),
+        line: site.line,
+        column: site.column,
     }
 }
 
@@ -1640,18 +1666,6 @@ const fn is_false(value: &bool) -> bool {
 
 fn context_result_to_tool_result(reply: &ContextResult) -> CallToolResult {
     CallToolResult::success(vec![ContentBlock::text(format_context_result(reply))])
-}
-
-fn error_code_label(code: ErrorCode) -> &'static str {
-    match code {
-        ErrorCode::InvalidInput => "invalid_input",
-        ErrorCode::CapabilityUnavailable => "capability_unavailable",
-        ErrorCode::BackendFailure => "backend_failure",
-        ErrorCode::Cancelled => "cancelled",
-        ErrorCode::DeadlineExceeded => "deadline_exceeded",
-        ErrorCode::Closed => "closed",
-        ErrorCode::Internal => "internal",
-    }
 }
 
 fn format_context_result(reply: &ContextResult) -> String {
@@ -1742,12 +1756,13 @@ mod tests {
     use std::{path::PathBuf, sync::Arc};
 
     use rmcp::ServerHandler;
-    use zg_engine::ZvecGrep;
+    use rmcp::model::ContentBlock;
+    use zg_engine::{EngineError, ZvecGrep};
 
     use super::{
         AGENT_TOOL_NAME, FULL_TOOL_NAMES, FreshnessInput, IndexInput, IndexToolRequest,
         PathListInput, QueryListInput, RgInput, SearchInput, ServerStatusProvider,
-        ServerStatusSnapshot, ZvecGrepMcpServer,
+        ServerStatusSnapshot, ZvecGrepMcpServer, error_result,
     };
 
     struct FixedStatus;
@@ -1795,6 +1810,21 @@ mod tests {
             freshness: FreshnessInput::Eventual,
             auto_update: true,
         }
+    }
+
+    #[test]
+    fn engine_error_retryability_matches_the_shared_contract() {
+        let busy = error_result(&EngineError::resource_busy("workspace is locked"));
+        let storage = error_result(&EngineError::storage_failure("manifest is corrupt"));
+
+        let ContentBlock::Text(busy) = &busy.content[0] else {
+            panic!("error output must be text");
+        };
+        let ContentBlock::Text(storage) = &storage.content[0] else {
+            panic!("error output must be text");
+        };
+        assert!(busy.text.contains("retryable: true"));
+        assert!(storage.text.contains("retryable: false"));
     }
 
     #[test]

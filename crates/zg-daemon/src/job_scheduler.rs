@@ -15,7 +15,7 @@ use tokio::sync::{Notify, Semaphore};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 use zg_engine::{
-    EngineError,
+    EngineError, ErrorReport,
     api::index::{IndexOptions, IndexResult},
     api::info::InfoOptions,
 };
@@ -49,8 +49,8 @@ pub(crate) enum JobState {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct JobError {
-    pub code: zg_engine::ErrorCode,
-    pub message: String,
+    pub report: ErrorReport,
+    pub retryable: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -433,17 +433,14 @@ fn spawn_job(inner: Arc<SchedulerInner>, job: Arc<ScheduledJob>) {
                 lock(&job.snapshot).state = JobState::Succeeded;
             }
             Err(error) => {
-                let state = if error.code() == zg_engine::ErrorCode::Cancelled {
+                let state = if error.code() == EngineError::CANCELLED {
                     JobState::Cancelled
                 } else {
                     JobState::Failed
                 };
                 let mut snapshot = lock(&job.snapshot);
                 snapshot.state = state;
-                snapshot.error = Some(JobError {
-                    code: error.code(),
-                    message: redact_job_error(&error.to_string()),
-                });
+                snapshot.error = Some(job_error(error));
             }
         }
         finish_job(&inner, &job);
@@ -537,16 +534,22 @@ fn change_path(
     }
 }
 
+#[track_caller]
 fn finish_cancelled(job: &ScheduledJob, message: &str) {
     let mut snapshot = lock(&job.snapshot);
     snapshot.state = JobState::Cancelled;
-    snapshot.error = Some(JobError {
-        code: zg_engine::ErrorCode::Cancelled,
-        message: message.to_owned(),
-    });
+    snapshot.error = Some(job_error(EngineError::cancelled(message)));
 }
 
-fn redact_job_error(message: &str) -> String {
+fn job_error(error: EngineError) -> JobError {
+    let retryable = error.is_retryable();
+    let mut report = error.into_report();
+    report.message = redact_job_error_text(&report.message);
+    report.help = report.help.map(|help| redact_job_error_text(&help));
+    JobError { report, retryable }
+}
+
+fn redact_job_error_text(message: &str) -> String {
     let mut redacted = redact_bearer_credentials(message);
     for name in [
         "authorization",
@@ -1014,7 +1017,7 @@ mod tests {
                 .expect("scheduler should attach cancellation")
                 .cancelled()
                 .await;
-            Err(EngineError::Cancelled)
+            Err(EngineError::cancelled("indexing was cancelled"))
         }
     }
 
@@ -1043,8 +1046,7 @@ mod tests {
     #[async_trait]
     impl IndexExecutor for SecretBearingErrorExecutor {
         async fn index(&self, _options: IndexOptions) -> Result<IndexResult, EngineError> {
-            Err(EngineError::backend(
-                "fixture",
+            Err(EngineError::internal(
                 "authorization: Bearer super-secret api_key=also-secret token = third-secret",
             ))
         }
@@ -1071,6 +1073,7 @@ mod tests {
             .job
             .error
             .expect("failed job should retain a safe error")
+            .report
             .message;
 
         assert!(!message.contains("super-secret"));

@@ -16,6 +16,7 @@ use std::{fmt, net::SocketAddr, path::PathBuf, str::FromStr, sync::Arc, time::Du
 pub use controller::{DaemonInstanceRecord, DaemonStatus, start_server, stop_server};
 pub use stdio::run_stdio_bridge;
 use thiserror::Error;
+use zg_engine::ErrorReport;
 use zg_engine::ZvecGrep;
 pub use zg_transport_mcp::McpToolset;
 
@@ -124,8 +125,11 @@ pub enum DaemonError {
     McpBridge(String),
     #[error("resident daemon is not ready")]
     NotReady,
-    #[error("resident daemon request failed ({code}): {message}")]
-    Remote { code: String, message: String },
+    #[error("resident daemon request failed:\n{report}\nretryable: {retryable}")]
+    Remote {
+        report: Box<ErrorReport>,
+        retryable: bool,
+    },
 }
 
 /// Resolves the daemon home without changing process-global state.
@@ -186,8 +190,8 @@ pub async fn execute_command(
     match serde_json::from_slice::<zg_daemon_protocol::ExecutionResult>(&reply)? {
         zg_daemon_protocol::ExecutionResult::Success(reply) => Ok(reply),
         zg_daemon_protocol::ExecutionResult::Failure(error) => Err(DaemonError::Remote {
-            code: format!("{:?}", error.code),
-            message: error.message,
+            report: Box::new(error.report),
+            retryable: error.retryable,
         }),
     }
 }

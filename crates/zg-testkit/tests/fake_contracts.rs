@@ -53,7 +53,8 @@ async fn zvec_grep_executes_typed_requests_directly() {
         })
         .await
         .expect_err("closed service must reject requests");
-    assert!(matches!(error, EngineError::Closed));
+    assert_eq!(error.code(), EngineError::RESOURCE_CLOSED);
+    assert!(error.reported_at().is_some());
 }
 
 #[test]

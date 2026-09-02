@@ -24,8 +24,8 @@ pub fn create_embedding_model(
     options: Option<CreateEmbeddingModelOptions>,
 ) -> Result<Arc<dyn EmbeddingModel>, ModelError> {
     let entry = get_embedding_model_catalog_entry(reference).ok_or_else(|| {
-        ModelError::coded(
-            "ZVEC_GREP.ENGINE.MODELS.EMBEDDING_CATALOG_MODEL_NOT_FOUND",
+        ModelError::new(
+            crate::EngineError::NOT_FOUND,
             "Embedding model is not in the zvec-grep catalog",
             Some(format!("embedding={reference}")),
         )
@@ -43,8 +43,8 @@ pub fn create_embedding_model(
     if let Some(config) = entry.llama_cpp_config() {
         return Ok(Arc::new(LlamaCppEmbeddingModel::new(config, options)));
     }
-    Err(ModelError::coded(
-        "ZVEC_GREP.ENGINE.MODELS.EMBEDDING_MODEL_NOT_IMPLEMENTED",
+    Err(ModelError::new(
+        crate::EngineError::UNSUPPORTED,
         "Embedding catalog entry is not implemented",
         Some(format!("backend={} reference={reference}", entry.backend())),
     ))
@@ -81,9 +81,6 @@ mod tests {
         let unknown = create_embedding_model("missing", None)
             .err()
             .expect("unknown model should fail catalog lookup");
-        assert_eq!(
-            unknown.code(),
-            Some("ZVEC_GREP.ENGINE.MODELS.EMBEDDING_CATALOG_MODEL_NOT_FOUND")
-        );
+        assert_eq!(unknown.code(), crate::EngineError::NOT_FOUND);
     }
 }

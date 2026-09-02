@@ -5,16 +5,14 @@
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use zg_engine::{
-    ErrorCode,
-    api::{
-        context::{ContextOptions, ContextResult},
-        index::{IndexOptions, IndexResult, progress::IndexProgress},
-        info::{InfoOptions, InfoResult},
-    },
+use zg_engine::ErrorReport;
+use zg_engine::api::{
+    context::{ContextOptions, ContextResult},
+    index::{IndexOptions, IndexResult, progress::IndexProgress},
+    info::{InfoOptions, InfoResult},
 };
 
-pub const CURRENT_DAEMON_PROTOCOL_VERSION: u32 = 2;
+pub const CURRENT_DAEMON_PROTOCOL_VERSION: u32 = 3;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct DaemonRequest {
@@ -158,7 +156,7 @@ pub enum RequestEventKind {
     IndexProgress { progress: IndexProgress },
     Warning { code: String, message: String },
     Completed { result_count: usize },
-    Failed { code: ErrorCode },
+    Failed { report: ErrorReport },
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -185,13 +183,14 @@ pub enum DaemonReply {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ErrorReply {
-    pub code: ErrorCode,
-    pub message: String,
+    #[serde(flatten)]
+    pub report: ErrorReport,
     pub retryable: bool,
 }
 
 #[cfg(test)]
 mod tests {
+    use zg_engine::EngineError;
     use zg_engine::api::{
         context::ContextOptions,
         index::progress::{
@@ -201,8 +200,8 @@ mod tests {
 
     use super::{
         CURRENT_DAEMON_PROTOCOL_VERSION, DaemonCommand, DaemonRequest, DaemonRequestKind,
-        DaemonResponse, DaemonResponseKind, ExecuteRequest, HelloRequest, Principal, RequestEvent,
-        RequestEventKind, RequestId, TraceContext,
+        DaemonResponse, DaemonResponseKind, ErrorReply, ExecuteRequest, ExecutionResult,
+        HelloRequest, Principal, RequestEvent, RequestEventKind, RequestId, TraceContext,
     };
 
     #[test]
@@ -264,5 +263,24 @@ mod tests {
         let decoded: DaemonResponse =
             serde_json::from_str(&encoded).expect("progress should deserialize");
         assert_eq!(decoded, response);
+    }
+
+    #[test]
+    fn complete_error_report_round_trips() {
+        let result = ExecutionResult::Failure(ErrorReply {
+            report: EngineError::resource_busy("workspace index is locked")
+                .with_help("Retry after the active indexing operation finishes.")
+                .report(),
+            retryable: true,
+        });
+
+        let value = serde_json::to_value(&result).expect("error reply should serialize");
+        assert_eq!(value["value"]["code"], EngineError::RESOURCE_BUSY);
+        assert!(value["value"].get("origin").is_some());
+        assert!(value["value"].get("help").is_some());
+
+        let decoded: ExecutionResult =
+            serde_json::from_value(value).expect("error reply should deserialize");
+        assert_eq!(decoded, result);
     }
 }

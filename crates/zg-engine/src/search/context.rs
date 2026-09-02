@@ -67,7 +67,7 @@ pub(crate) fn normalize_context_request(
         .map(|(index, route)| {
             let query = route.query.trim();
             if query.is_empty() {
-                return Err(EngineError::invalid_input(format!(
+                return Err(EngineError::invalid_argument(format!(
                     "context route {index} requires a non-empty query"
                 )));
             }
@@ -81,7 +81,7 @@ pub(crate) fn normalize_context_request(
         && routes.is_empty()
         && (!options.rg || options.rg_options.pattern_files.is_empty())
     {
-        return Err(EngineError::invalid_input(
+        return Err(EngineError::invalid_argument(
             "context requires a non-empty query or route",
         ));
     }

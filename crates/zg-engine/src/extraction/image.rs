@@ -9,7 +9,7 @@ use super::{EntityFragment, ImageSource, make_entity_id, validate_source_file};
 pub(super) fn extract(source: &ImageSource) -> Result<Vec<EntityFragment>, EngineError> {
     validate_source_file(&source.file)?;
     if source.data.is_empty() {
-        return Err(EngineError::invalid_input(
+        return Err(EngineError::invalid_argument(
             "image extractor requires non-empty image data",
         ));
     }

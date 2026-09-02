@@ -209,7 +209,7 @@ pub(crate) async fn search_workspace_index(
 
 fn resolve_routes(routes: &[ContextRoute]) -> Result<Vec<ResolvedSearchRoute>, EngineError> {
     if routes.is_empty() {
-        return Err(EngineError::invalid_input(
+        return Err(EngineError::invalid_argument(
             "search plan requires at least one route",
         ));
     }
@@ -220,7 +220,7 @@ fn resolve_routes(routes: &[ContextRoute]) -> Result<Vec<ResolvedSearchRoute>, E
         .map(|(index, route)| {
             let query = route.query.trim();
             if query.is_empty() {
-                return Err(EngineError::invalid_input(format!(
+                return Err(EngineError::invalid_argument(format!(
                     "search route {index} requires a non-empty query"
                 )));
             }
@@ -248,7 +248,7 @@ fn validate_modified_range(plan: &SearchPlan) -> Result<(), EngineError> {
         plan.modified_before_epoch_ms
             .is_some_and(|before| after > before)
     }) {
-        Err(EngineError::invalid_input(
+        Err(EngineError::invalid_argument(
             "modified-after must not be later than modified-before",
         ))
     } else {
@@ -259,8 +259,8 @@ fn validate_modified_range(plan: &SearchPlan) -> Result<(), EngineError> {
 fn require_embedding_model(
     model: Option<&dyn SearchEmbeddingRuntime>,
 ) -> Result<&dyn SearchEmbeddingRuntime, EngineError> {
-    model.ok_or_else(|| EngineError::CapabilityUnavailable {
-        capability: "vector search embedding model".to_owned(),
+    model.ok_or_else(|| {
+        EngineError::unsupported("vector search requires a configured embedding model")
     })
 }
 
@@ -274,8 +274,7 @@ async fn embed_vector_routes(
         .collect::<Vec<_>>();
     let maximum = model.info().limits.max_batch_size;
     if maximum == 0 {
-        return Err(EngineError::backend(
-            "models",
+        return Err(EngineError::internal(
             "embedding model has a zero query batch limit",
         ));
     }
@@ -288,10 +287,9 @@ async fn embed_vector_routes(
         let embedded = model
             .embed_queries(&queries)
             .await
-            .map_err(|error| model_error(&error))?;
+            .map_err(ModelError::into_engine_error)?;
         if embedded.len() != batch.len() {
-            return Err(EngineError::backend(
-                "models",
+            return Err(EngineError::internal(
                 "embedding model returned the wrong number of query vectors",
             ));
         }
@@ -697,7 +695,9 @@ impl PathMatcher {
     fn path(pattern: &str) -> Result<Self, EngineError> {
         let normalized = normalize_pattern(pattern);
         if normalized.is_empty() {
-            return Err(EngineError::invalid_input("path filter must not be empty"));
+            return Err(EngineError::invalid_argument(
+                "path filter must not be empty",
+            ));
         }
         let absolute = is_absolute_pattern(&normalized);
         let matcher = has_glob(&normalized)
@@ -747,7 +747,7 @@ fn ordered_globs(
                 .strip_prefix('!')
                 .map_or((false, pattern), |pattern| (true, pattern.trim()));
             if pattern.is_empty() {
-                return Err(EngineError::invalid_input("glob must not be empty"));
+                return Err(EngineError::invalid_argument("glob must not be empty"));
             }
             Ok(OrderedGlob {
                 matcher: compile_glob(pattern, insensitive)?,
@@ -783,7 +783,9 @@ fn compile_glob(pattern: &str, case_insensitive: bool) -> Result<GlobMatcher, En
     builder
         .build()
         .map(|glob| glob.compile_matcher())
-        .map_err(|error| EngineError::invalid_input(format!("invalid glob {pattern:?}: {error}")))
+        .map_err(|error| {
+            EngineError::invalid_argument(format!("invalid glob {pattern:?}: {error}"))
+        })
 }
 
 fn build_file_types(included: &[String], excluded: &[String]) -> Result<Types, EngineError> {
@@ -796,7 +798,7 @@ fn build_file_types(included: &[String], excluded: &[String]) -> Result<Types, E
         builder.negate(&file_type_name(name));
     }
     builder.build().map_err(|error| {
-        EngineError::invalid_input(format!("invalid ripgrep file type selection: {error}"))
+        EngineError::invalid_argument(format!("invalid ripgrep file type selection: {error}"))
     })
 }
 
@@ -848,10 +850,6 @@ fn is_absolute_pattern(pattern: &str) -> bool {
 
 fn has_glob(pattern: &str) -> bool {
     pattern.contains(['*', '?', '['])
-}
-
-fn model_error(error: &ModelError) -> EngineError {
-    EngineError::backend("models", error.to_string())
 }
 
 fn rank_as_f64(rank: usize) -> f64 {

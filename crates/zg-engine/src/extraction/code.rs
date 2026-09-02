@@ -153,12 +153,12 @@ fn resolve_options(options: ChunkOptions) -> Result<(usize, usize), EngineError>
         .chunk_overlap_chars
         .unwrap_or(DEFAULT_CODE_CHUNK_OVERLAP_CHARS);
     if max_chars == 0 {
-        return Err(EngineError::invalid_input(
+        return Err(EngineError::invalid_argument(
             "code extractor requires a positive integer chunk size",
         ));
     }
     if overlap_chars >= max_chars {
-        return Err(EngineError::invalid_input(
+        return Err(EngineError::invalid_argument(
             "code extractor requires overlap to be smaller than chunk size",
         ));
     }

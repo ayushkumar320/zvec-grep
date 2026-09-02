@@ -12,13 +12,17 @@ use zg_cli::{
 };
 use zg_daemon::{DaemonStatus, ListenAddress, McpToolset as DaemonMcpToolset, ServerConfig};
 use zg_daemon_protocol::{DaemonCommand, DaemonReply};
-use zg_engine::{ZvecGrep, api::context::ContextOptions};
+use zg_engine::{EngineError, ZvecGrep, api::context::ContextOptions};
 
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("Error: {error}");
+            if let Some(error) = error.downcast_ref::<EngineError>() {
+                eprintln!("{}", error.report());
+            } else {
+                eprintln!("Error: {error}");
+            }
             ExitCode::FAILURE
         }
     }

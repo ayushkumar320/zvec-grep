@@ -22,7 +22,9 @@ impl PathPattern {
     fn build(pattern: &str, case_insensitive: bool, rg_semantics: bool) -> Result<Self, HostError> {
         let normalized = normalize_path_pattern(pattern);
         if normalized.is_empty() {
-            return Err(HostError::invalid_input("glob pattern must not be empty"));
+            return Err(HostError::invalid_argument(
+                "glob pattern must not be empty",
+            ));
         }
         let matcher = if rg_semantics || has_path_glob(&normalized) {
             Some(compile_matcher(&normalized, case_insensitive)?)
@@ -119,7 +121,7 @@ fn compile_matcher(pattern: &str, case_insensitive: bool) -> Result<GlobMatcher,
     builder
         .build()
         .map(|glob| glob.compile_matcher())
-        .map_err(|error| HostError::invalid_input(format!("invalid glob {pattern:?}: {error}")))
+        .map_err(|error| HostError::invalid_argument(format!("invalid glob {pattern:?}: {error}")))
 }
 
 fn normalize_path_for_match(path: &str) -> String {

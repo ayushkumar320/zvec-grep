@@ -14,15 +14,15 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 use zg_engine::{
-    EngineError, ZvecGrep,
+    EngineError, ErrorSite, ZvecGrep,
     api::{
         index::{IndexOptions, IndexResult, options::WorkspaceChange as IndexChange},
         info::InfoOptions,
     },
 };
 use zg_host_native::{
-    DiscoveryOptions as HostDiscoveryOptions, HostError, NativeWatcherFactory, RootSpec,
-    TaskControl, WatchRequest, WorkspaceChange, WorkspaceWatchSessionPort,
+    DiscoveryOptions as HostDiscoveryOptions, HostError, HostErrorSite, NativeWatcherFactory,
+    RootSpec, TaskControl, WatchRequest, WorkspaceChange, WorkspaceWatchSessionPort,
     WorkspaceWatcherFactoryPort,
 };
 
@@ -88,11 +88,6 @@ pub(crate) struct WorkspaceRuntimeSnapshot {
 pub(crate) enum WorkspaceRuntimeError {
     #[error(transparent)]
     Scheduler(#[from] SchedulerError),
-    #[error("workspace root {root} could not be resolved: {source}")]
-    Root {
-        root: PathBuf,
-        source: std::io::Error,
-    },
     #[error("workspace watcher failed: {0}")]
     Watcher(#[from] HostError),
     #[error(transparent)]
@@ -102,17 +97,15 @@ pub(crate) enum WorkspaceRuntimeError {
 impl WorkspaceRuntimeError {
     pub(crate) fn into_engine_error(self) -> EngineError {
         match self {
-            Self::Scheduler(SchedulerError::Closed) => EngineError::Closed,
-            Self::Scheduler(SchedulerError::QueueFull) => {
-                EngineError::backend("daemon scheduler", "the index queue is full")
+            Self::Scheduler(SchedulerError::Closed) => {
+                EngineError::resource_closed("daemon index scheduler has been closed")
             }
-            Self::Scheduler(SchedulerError::UnknownJob(id)) => EngineError::Internal {
-                message: format!("daemon index job {id} disappeared"),
-            },
-            Self::Root { root, source } => EngineError::invalid_input(format!(
-                "workspace root {} could not be resolved: {source}",
-                root.display()
-            )),
+            Self::Scheduler(SchedulerError::QueueFull) => {
+                EngineError::resource_busy("daemon index queue is full")
+            }
+            Self::Scheduler(SchedulerError::UnknownJob(id)) => {
+                EngineError::internal(format!("daemon index job {id} disappeared"))
+            }
             Self::Watcher(error) => map_host_error(error),
             Self::Engine(error) => error,
         }
@@ -352,9 +345,9 @@ impl WorkspaceRuntimeManager {
         runtime.watcher_active.store(false, Ordering::Release);
         close_result?;
         join_result.map_err(|error| {
-            WorkspaceRuntimeError::Watcher(HostError::Internal {
-                message: format!("workspace watcher orchestration failed: {error}"),
-            })
+            WorkspaceRuntimeError::Watcher(HostError::internal(format!(
+                "workspace watcher orchestration failed: {error}"
+            )))
         })?;
         Ok(())
     }
@@ -376,8 +369,8 @@ impl IndexOperationProvider for WorkspaceRuntimeManager {
             state: operation_state(submitted.job.state),
             reused: submitted.reused,
             error: submitted.job.error.map(|error| IndexOperationError {
-                code: error.code,
-                message: error.message,
+                report: error.report,
+                retryable: error.retryable,
             }),
         })
     }
@@ -402,8 +395,8 @@ impl IndexOperationProvider for WorkspaceRuntimeManager {
             progress: job.as_ref().and_then(|job| job.progress.clone()),
             error: job.and_then(|job| {
                 job.error.map(|error| IndexOperationError {
-                    code: error.code,
-                    message: error.message,
+                    report: error.report,
+                    retryable: error.retryable,
                 })
             }),
         })
@@ -426,7 +419,7 @@ async fn watch_loop(
     loop {
         let batch = match session.next_changes(&control).await {
             Ok(batch) => batch,
-            Err(HostError::Cancelled | HostError::Closed) => break,
+            Err(HostError::Cancelled { .. } | HostError::ResourceClosed { .. }) => break,
             Err(error) => {
                 warn!(%error, "workspace watcher session stopped");
                 break;
@@ -483,9 +476,19 @@ fn submission(completed: IndexJobCompletion, reused: bool) -> RuntimeIndexSubmis
 
 fn canonical_root(root: Option<&Path>) -> Result<PathBuf, WorkspaceRuntimeError> {
     let requested = root.unwrap_or_else(|| Path::new("."));
-    std::fs::canonicalize(requested).map_err(|source| WorkspaceRuntimeError::Root {
-        root: requested.to_path_buf(),
-        source,
+    std::fs::canonicalize(requested).map_err(|error| {
+        let message = format!(
+            "failed to resolve workspace root {}: {error}",
+            requested.display()
+        );
+        let error = match error.kind() {
+            std::io::ErrorKind::NotFound => EngineError::not_found(message),
+            std::io::ErrorKind::PermissionDenied => EngineError::permission_denied(message),
+            std::io::ErrorKind::WouldBlock => EngineError::resource_busy(message),
+            std::io::ErrorKind::TimedOut => EngineError::deadline_exceeded(message),
+            _ => EngineError::storage_failure(message),
+        };
+        WorkspaceRuntimeError::Engine(error)
     })
 }
 
@@ -518,13 +521,38 @@ fn map_change(change: WorkspaceChange) -> IndexChange {
 
 fn map_host_error(error: HostError) -> EngineError {
     match error {
-        HostError::InvalidInput { message } => EngineError::invalid_input(message),
-        HostError::BackendFailure { backend, message } => EngineError::backend(backend, message),
-        HostError::Cancelled => EngineError::Cancelled,
-        HostError::DeadlineExceeded => EngineError::DeadlineExceeded,
-        HostError::Closed => EngineError::Closed,
-        HostError::Internal { message } => EngineError::Internal { message },
+        HostError::InvalidArgument { message, origin } => {
+            host_engine_error(EngineError::invalid_argument(message), origin)
+        }
+        HostError::StorageFailure {
+            component,
+            message,
+            origin,
+        } => host_engine_error(
+            EngineError::storage_failure(format!("{component} failed: {message}")),
+            origin,
+        ),
+        HostError::Cancelled { message, origin } => {
+            host_engine_error(EngineError::cancelled(message), origin)
+        }
+        HostError::DeadlineExceeded { message, origin } => {
+            host_engine_error(EngineError::deadline_exceeded(message), origin)
+        }
+        HostError::ResourceClosed { message, origin } => {
+            host_engine_error(EngineError::resource_closed(message), origin)
+        }
+        HostError::Internal { message, origin } => {
+            host_engine_error(EngineError::internal(message), origin)
+        }
     }
+}
+
+fn host_engine_error(error: EngineError, origin: HostErrorSite) -> EngineError {
+    error.with_origin(ErrorSite::new(
+        origin.file(),
+        origin.line(),
+        origin.column(),
+    ))
 }
 
 const fn operation_state(state: JobState) -> IndexOperationState {
@@ -581,7 +609,7 @@ mod tests {
     #[async_trait]
     impl IndexExecutor for FailingExecutor {
         async fn index(&self, _options: IndexOptions) -> Result<IndexResult, EngineError> {
-            Err(EngineError::backend("fixture", "index failed"))
+            Err(EngineError::internal("fixture index failed"))
         }
     }
 
@@ -644,8 +672,12 @@ mod tests {
         ) -> Result<WorkspaceChangeBatch, HostError> {
             let mut receiver = self.receiver.lock().await;
             tokio::select! {
-                () = control.cancellation.cancelled() => Err(HostError::Cancelled),
-                batch = receiver.recv() => batch.ok_or(HostError::Closed),
+                () = control.cancellation.cancelled() => Err(HostError::cancelled(
+                    "workspace watcher operation was cancelled",
+                )),
+                batch = receiver.recv() => batch.ok_or_else(|| HostError::resource_closed(
+                    "workspace watcher change stream has been closed",
+                )),
             }
         }
 

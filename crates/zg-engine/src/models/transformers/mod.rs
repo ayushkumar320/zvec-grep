@@ -204,11 +204,11 @@ impl TransformersEmbeddingModel {
             .await?;
 
         let tokenizer = fs::read(&tokenizer_path).await.map_err(|error| {
-            ModelError::uncoded("Unable to read Transformers tokenizer").with_cause(error)
+            ModelError::storage_failure("Unable to read Transformers tokenizer").with_cause(error)
         })?;
         let tokenizer = Tokenizer::from_bytes(&tokenizer).map_err(|error| {
-            ModelError::coded(
-                "ZVEC_GREP.ENGINE.MODELS.TRANSFORMERS_JS_TOKENIZATION_FAILED",
+            ModelError::new(
+                crate::EngineError::STORAGE_FAILURE,
                 "Transformers.js tokenization failed",
                 Some(format!(
                     "model={} repo={}",
@@ -244,8 +244,8 @@ impl TransformersEmbeddingModel {
         self.download(&url, artifact, destination, reporter)
             .await
             .map_err(|error| {
-                ModelError::coded(
-                    "ZVEC_GREP.ENGINE.MODELS.TRANSFORMERS_JS_DOWNLOAD_FAILED",
+                ModelError::new(
+                    crate::EngineError::STORAGE_FAILURE,
                     "Unable to download Transformers.js model artifact",
                     Some(format!("model={} url={url}", self.entry.reference)),
                 )
@@ -278,8 +278,8 @@ impl TransformersEmbeddingModel {
         self.download(&url, artifact, destination, reporter)
             .await
             .map_err(|error| {
-                ModelError::coded(
-                    "ZVEC_GREP.ENGINE.MODELS.TRANSFORMERS_JS_DOWNLOAD_FAILED",
+                ModelError::new(
+                    crate::EngineError::STORAGE_FAILURE,
                     "Unable to download Transformers.js model artifact",
                     Some(format!("model={} url={url}", self.entry.reference)),
                 )
@@ -297,9 +297,10 @@ impl TransformersEmbeddingModel {
     ) -> Result<(), ModelError> {
         let parent = destination
             .parent()
-            .ok_or_else(|| ModelError::uncoded("Transformers cache path has no parent"))?;
+            .ok_or_else(|| ModelError::storage_failure("Transformers cache path has no parent"))?;
         fs::create_dir_all(parent).await.map_err(|error| {
-            ModelError::uncoded("Unable to create Transformers cache directory").with_cause(error)
+            ModelError::storage_failure("Unable to create Transformers cache directory")
+                .with_cause(error)
         })?;
         let partial = partial_path(destination);
         let response = self
@@ -307,20 +308,25 @@ impl TransformersEmbeddingModel {
             .get(url)
             .send()
             .await
-            .map_err(|error| ModelError::uncoded(error.to_string()))?;
+            .map_err(|error| ModelError::storage_failure(error.to_string()))?;
         if !response.status().is_success() {
-            return Err(ModelError::uncoded(format!("HTTP {}", response.status())));
+            return Err(ModelError::storage_failure(format!(
+                "HTTP {}",
+                response.status()
+            )));
         }
         let total_bytes = response.content_length();
         let mut file = fs::File::create(&partial).await.map_err(|error| {
-            ModelError::uncoded("Unable to create partial Transformers artifact").with_cause(error)
+            ModelError::storage_failure("Unable to create partial Transformers artifact")
+                .with_cause(error)
         })?;
         let mut downloaded_bytes = 0_u64;
         let mut stream = response.bytes_stream();
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|error| ModelError::uncoded(error.to_string()))?;
+            let chunk = chunk.map_err(|error| ModelError::storage_failure(error.to_string()))?;
             file.write_all(&chunk).await.map_err(|error| {
-                ModelError::uncoded("Unable to write Transformers artifact").with_cause(error)
+                ModelError::storage_failure("Unable to write Transformers artifact")
+                    .with_cause(error)
             })?;
             downloaded_bytes = downloaded_bytes.saturating_add(chunk.len() as u64);
             reporter.report(
@@ -332,16 +338,19 @@ impl TransformersEmbeddingModel {
             );
         }
         file.flush().await.map_err(|error| {
-            ModelError::uncoded("Unable to flush Transformers artifact").with_cause(error)
+            ModelError::storage_failure("Unable to flush Transformers artifact").with_cause(error)
         })?;
         if !usable_file(&partial).await {
             let _ = fs::remove_file(&partial).await;
-            return Err(ModelError::uncoded("Downloaded model artifact is empty"));
+            return Err(ModelError::storage_failure(
+                "Downloaded model artifact is empty",
+            ));
         }
         if let Err(error) = fs::rename(&partial, destination).await {
             let _ = fs::remove_file(&partial).await;
             return Err(
-                ModelError::uncoded("Unable to publish Transformers artifact").with_cause(error),
+                ModelError::storage_failure("Unable to publish Transformers artifact")
+                    .with_cause(error),
             );
         }
         Ok(())
@@ -362,8 +371,8 @@ impl TransformersEmbeddingModel {
 
     fn ensure_not_disposed(&self) -> Result<(), ModelError> {
         if self.disposed.load(Ordering::Acquire) {
-            return Err(ModelError::coded(
-                "ZVEC_GREP.ENGINE.MODELS.TRANSFORMERS_JS_DISPOSED",
+            return Err(ModelError::new(
+                crate::EngineError::RESOURCE_CLOSED,
                 "Transformers.js embedding model is disposed",
                 Some(format!("model={}", self.entry.reference)),
             ));
@@ -389,8 +398,8 @@ impl EmbeddingModel for TransformersEmbeddingModel {
             .ensure_loaded(options.on_progress.clone())
             .await
             .map_err(|error| {
-                ModelError::coded(
-                    "ZVEC_GREP.ENGINE.MODELS.TRANSFORMERS_JS_EMBED_FAILED",
+                ModelError::new(
+                    crate::EngineError::INTERNAL,
                     "Transformers.js embedding failed",
                     Some(format!(
                         "model={} repo={}",
@@ -431,20 +440,7 @@ impl EmbeddingModel for TransformersEmbeddingModel {
                     on_progress.as_ref(),
                 )
             })
-            .await?
-            .map_err(|error| {
-                if error.code()
-                    == Some("ZVEC_GREP.ENGINE.MODELS.TRANSFORMERS_JS_TOKENIZATION_FAILED")
-                {
-                    return error;
-                }
-                ModelError::coded(
-                    "ZVEC_GREP.ENGINE.MODELS.TRANSFORMERS_JS_EMBED_FAILED",
-                    "Transformers.js embedding failed",
-                    Some(format!("model={} repo={}", entry.reference, entry.repo)),
-                )
-                .with_cause(error)
-            })?;
+            .await??;
         validate_result(&self.info, contents.len(), &result)?;
         Ok(result)
     }
@@ -626,7 +622,7 @@ impl SessionPool {
         result
             .take()
             .expect("CoreML batch request result was checked")
-            .map_err(ModelError::uncoded)
+            .map_err(ModelError::internal)
     }
 
     fn drain_coreml_batches(&self, entry: TransformersConfig, max_batch_size: usize) {
@@ -785,20 +781,20 @@ fn load_session(
 ) -> Result<Session, ModelError> {
     let builder = Session::builder()
         .map_err(|error| {
-            ModelError::uncoded("Unable to configure ONNX embedding model").with_cause(error)
+            ModelError::internal("Unable to configure ONNX embedding model").with_cause(error)
         })?
         .with_prepacked_weights(prepacked_weights)
         .map_err(|error| {
-            ModelError::uncoded("Unable to share ONNX prepacked weights").with_cause(error)
+            ModelError::internal("Unable to share ONNX prepacked weights").with_cause(error)
         })?;
     let builder = configure_execution_provider(builder, provider)?;
     let mut builder = builder
         .with_optimization_level(GraphOptimizationLevel::All)
         .map_err(|error| {
-            ModelError::uncoded("Unable to configure ONNX embedding model").with_cause(error)
+            ModelError::internal("Unable to configure ONNX embedding model").with_cause(error)
         })?;
     builder.commit_from_file(path).map_err(|error| {
-        ModelError::uncoded(format!(
+        ModelError::storage_failure(format!(
             "Unable to load {} ONNX embedding model",
             provider.name()
         ))
@@ -826,7 +822,8 @@ fn configure_coreml(
     builder
         .with_execution_providers([ort::ep::CoreML::default().build().error_on_failure()])
         .map_err(|error| {
-            ModelError::uncoded("Unable to configure CoreML ONNX embedding model").with_cause(error)
+            ModelError::internal("Unable to configure CoreML ONNX embedding model")
+                .with_cause(error)
         })
 }
 
@@ -834,7 +831,7 @@ fn configure_coreml(
 fn configure_coreml(
     _builder: ort::session::builder::SessionBuilder,
 ) -> Result<ort::session::builder::SessionBuilder, ModelError> {
-    Err(ModelError::uncoded(
+    Err(ModelError::unsupported(
         "CoreML ONNX accelerator is unavailable in this build",
     ))
 }
@@ -846,7 +843,8 @@ fn configure_webgpu(
     builder
         .with_execution_providers([ort::ep::WebGPU::default().build().error_on_failure()])
         .map_err(|error| {
-            ModelError::uncoded("Unable to configure WebGPU ONNX embedding model").with_cause(error)
+            ModelError::internal("Unable to configure WebGPU ONNX embedding model")
+                .with_cause(error)
         })
 }
 
@@ -854,7 +852,7 @@ fn configure_webgpu(
 fn configure_webgpu(
     _builder: ort::session::builder::SessionBuilder,
 ) -> Result<ort::session::builder::SessionBuilder, ModelError> {
-    Err(ModelError::uncoded(
+    Err(ModelError::unsupported(
         "WebGPU ONNX accelerator is unavailable in this build",
     ))
 }
@@ -866,7 +864,7 @@ fn configure_cuda(
     builder
         .with_execution_providers([ort::ep::CUDA::default().build().error_on_failure()])
         .map_err(|error| {
-            ModelError::uncoded("Unable to configure CUDA ONNX embedding model").with_cause(error)
+            ModelError::internal("Unable to configure CUDA ONNX embedding model").with_cause(error)
         })
 }
 
@@ -874,7 +872,7 @@ fn configure_cuda(
 fn configure_cuda(
     _builder: ort::session::builder::SessionBuilder,
 ) -> Result<ort::session::builder::SessionBuilder, ModelError> {
-    Err(ModelError::uncoded(
+    Err(ModelError::unsupported(
         "CUDA ONNX accelerator is unavailable in this build",
     ))
 }
@@ -886,7 +884,7 @@ fn configure_directml(
     builder
         .with_execution_providers([ort::ep::DirectML::default().build().error_on_failure()])
         .map_err(|error| {
-            ModelError::uncoded("Unable to configure DirectML ONNX embedding model")
+            ModelError::internal("Unable to configure DirectML ONNX embedding model")
                 .with_cause(error)
         })
 }
@@ -895,7 +893,7 @@ fn configure_directml(
 fn configure_directml(
     _builder: ort::session::builder::SessionBuilder,
 ) -> Result<ort::session::builder::SessionBuilder, ModelError> {
-    Err(ModelError::uncoded(
+    Err(ModelError::unsupported(
         "DirectML ONNX accelerator is unavailable in this build",
     ))
 }
@@ -955,7 +953,7 @@ fn merge_prepared_batches(batches: &[&PreparedBatch]) -> Result<PreparedBatch, M
         .unwrap_or_default();
     let batch_size = batches.iter().map(|batch| batch.batch_size).sum::<usize>();
     if sequence_length == 0 || batch_size == 0 {
-        return Err(ModelError::uncoded(
+        return Err(ModelError::internal(
             "Unable to merge an empty CoreML embedding batch",
         ));
     }
@@ -1105,19 +1103,19 @@ fn run_session(
             "token_type_ids" => prepared.token_type_ids.clone(),
             "position_ids" => prepared.position_ids.clone(),
             name => {
-                return Err(ModelError::uncoded(format!(
+                return Err(ModelError::internal(format!(
                     "Unsupported ONNX embedding input: {name}"
                 )));
             }
         };
         let tensor = Tensor::from_array(([prepared.batch_size, prepared.sequence_length], data))
             .map_err(|error| {
-                ModelError::uncoded("Unable to create ONNX input tensor").with_cause(error)
+                ModelError::internal("Unable to create ONNX input tensor").with_cause(error)
             })?;
         inputs.insert(input.name().to_owned(), tensor.upcast());
     }
     let outputs = session.run(inputs).map_err(|error| {
-        ModelError::uncoded("ONNX embedding inference failed").with_cause(error)
+        ModelError::internal("ONNX embedding inference failed").with_cause(error)
     })?;
     let named_output = outputs
         .get("last_hidden_state")
@@ -1128,13 +1126,13 @@ fn run_session(
     } else if outputs.len() > 0 {
         &outputs[0]
     } else {
-        return Err(ModelError::uncoded(
+        return Err(ModelError::internal(
             "ONNX embedding model returned no tensor",
         ));
     };
     let (shape, data) = output.try_extract_tensor::<f32>().map_err(|error| {
-        ModelError::coded(
-            "ZVEC_GREP.ENGINE.MODELS.TRANSFORMERS_JS_INVALID_TENSOR",
+        ModelError::new(
+            crate::EngineError::INTERNAL,
             "Transformers.js returned an unexpected tensor",
             None,
         )
@@ -1323,8 +1321,8 @@ fn pool_output(
             .position(|value| !value.is_finite())
             .map(|j| (i, j))
     }) {
-        return Err(ModelError::coded(
-            "ZVEC_GREP.ENGINE.MODELS.TRANSFORMERS_JS_INVALID_TENSOR",
+        return Err(ModelError::new(
+            crate::EngineError::INTERNAL,
             "Transformers.js returned a non-finite tensor value",
             Some(format!("index={vector_index} offset={value_index}")),
         ));
@@ -1351,8 +1349,8 @@ fn narrow_float(value: f64) -> f32 {
 }
 
 fn invalid_tensor(entry: TransformersConfig, shape: &[i64]) -> ModelError {
-    ModelError::coded(
-        "ZVEC_GREP.ENGINE.MODELS.TRANSFORMERS_JS_INVALID_TENSOR",
+    ModelError::new(
+        crate::EngineError::INTERNAL,
         "Transformers.js returned an unexpected tensor",
         Some(format!(
             "expected=batchx{} actual={}",
@@ -1367,8 +1365,8 @@ fn invalid_tensor(entry: TransformersConfig, shape: &[i64]) -> ModelError {
 }
 
 fn tokenization_error(entry: TransformersConfig, cause: impl std::fmt::Display) -> ModelError {
-    ModelError::coded(
-        "ZVEC_GREP.ENGINE.MODELS.TRANSFORMERS_JS_TOKENIZATION_FAILED",
+    ModelError::new(
+        crate::EngineError::INTERNAL,
         "Transformers.js tokenization failed",
         Some(format!("model={} repo={}", entry.reference, entry.repo)),
     )
@@ -1377,7 +1375,7 @@ fn tokenization_error(entry: TransformersConfig, cause: impl std::fmt::Display) 
 
 fn check_cancelled(signal: Option<&CancellationToken>) -> Result<(), ModelError> {
     if signal.is_some_and(CancellationToken::is_cancelled) {
-        return Err(ModelError::uncoded(
+        return Err(ModelError::cancelled(
             "Transformers.js embedding was cancelled",
         ));
     }
@@ -1397,7 +1395,7 @@ fn onnx_artifact(dtype: &str) -> Result<&'static str, ModelError> {
         "fp32" => Ok("onnx/model.onnx"),
         "q8" => Ok("onnx/model_quantized.onnx"),
         "q4" => Ok("onnx/model_q4.onnx"),
-        value => Err(ModelError::uncoded(format!(
+        value => Err(ModelError::internal(format!(
             "Unsupported Transformers.js dtype: {value}"
         ))),
     }

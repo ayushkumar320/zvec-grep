@@ -1,6 +1,5 @@
 use std::{
-    env,
-    fmt::{self, Write as _},
+    env, fmt,
     path::{Path, PathBuf},
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
@@ -200,10 +199,10 @@ impl WorkspaceIndexService {
             workspace_index_unavailable(&location.root, "workspace manifest disappeared")
         })?;
         if manifest.index_policy == WorkspaceIndexPolicy::Disabled {
-            return Err(workspace_index_unavailable(
-                &location.root,
-                "indexing is disabled",
-            ));
+            return Err(EngineError::unsupported(format!(
+                "workspace indexing is disabled at {}",
+                location.root.display()
+            )));
         }
         if !is_indexed(&manifest) {
             return Err(workspace_index_unavailable(
@@ -345,9 +344,7 @@ impl WorkspaceIndexService {
     fn storage_factory(&self) -> Result<&Arc<dyn WorkspaceIndexStorageFactory>, EngineError> {
         self.storage_factory
             .as_ref()
-            .ok_or_else(|| EngineError::CapabilityUnavailable {
-                capability: "workspace storage backend".to_owned(),
-            })
+            .ok_or_else(|| EngineError::unsupported("workspace storage is not configured"))
     }
 }
 
@@ -378,7 +375,7 @@ fn acquire_model(
         .and_then(|embedding| embedding.revision.as_ref())
         .is_some()
     {
-        return Err(EngineError::invalid_input(
+        return Err(EngineError::unsupported(
             "embedding revision overrides are not supported by the catalog-backed runtime",
         ));
     }
@@ -422,7 +419,7 @@ fn acquire_model(
             },
             options.embedding_concurrency,
         ))
-        .map_err(|error| model_error(&error))
+        .map_err(ModelError::into_engine_error)
 }
 
 fn acquire_search_model(
@@ -456,7 +453,7 @@ fn acquire_search_model(
             },
             embedding_concurrency,
         ))
-        .map_err(|error| model_error(&error))
+        .map_err(ModelError::into_engine_error)
 }
 
 fn embedding_reference(
@@ -511,7 +508,7 @@ fn assert_embedding_compatible(
     {
         return Ok(());
     }
-    Err(EngineError::invalid_input(
+    Err(EngineError::invalid_argument(
         "existing index uses a different embedding model; rebuild the index",
     ))
 }
@@ -655,15 +652,13 @@ fn workspace_index_location_from_option(
 fn resolve_root(root: Option<&Path>) -> Result<PathBuf, EngineError> {
     let root = root
         .map_or_else(env::current_dir, |root| Ok(root.to_path_buf()))
-        .map_err(|error| {
-            EngineError::backend("workspace", format!("resolve current directory: {error}"))
-        })?;
+        .map_err(|error| EngineError::from_io("failed to resolve current directory", &error))?;
     if root.is_absolute() {
         Ok(root)
     } else {
         env::current_dir()
             .map(|current| current.join(root))
-            .map_err(|error| EngineError::backend("workspace", error.to_string()))
+            .map_err(|error| EngineError::from_io("failed to resolve workspace root", &error))
     }
 }
 
@@ -707,21 +702,9 @@ fn workspace_suggestion(manifest: &WorkspaceManifest, indexed: bool) -> Option<S
     }
 }
 
+#[track_caller]
 fn workspace_index_unavailable(root: &Path, reason: &str) -> EngineError {
-    EngineError::CapabilityUnavailable {
-        capability: format!("workspace index at {} ({reason})", root.display()),
-    }
-}
-
-fn model_error(error: &ModelError) -> EngineError {
-    let mut message = error.to_string();
-    if let Some(code) = error.code() {
-        message = format!("{code}: {message}");
-    }
-    if let Some(context) = error.context() {
-        write!(&mut message, " ({context})").expect("writing to a String cannot fail");
-    }
-    EngineError::backend("models", message)
+    EngineError::not_found(format!("workspace index at {}: {reason}", root.display()))
 }
 
 fn epoch_millis() -> u64 {

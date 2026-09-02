@@ -14,12 +14,12 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use zg_host_native::{
     DiscoveredFile, DiscoveryOptions as HostDiscoveryOptions, FileKind as HostFileKind, HostError,
-    KnownSourceFile, ReadBatchRequest, RootSpec, ScanRequest, ScanSnapshot,
+    HostErrorSite, KnownSourceFile, ReadBatchRequest, RootSpec, ScanRequest, ScanSnapshot,
     SourceFile as HostSource, TaskControl, WorkspaceScannerPort,
 };
 
 use crate::{
-    EngineError,
+    EngineError, ErrorSite,
     api::{
         index::{
             options::{RootPath, WorkspaceChange},
@@ -145,11 +145,9 @@ pub(crate) async fn index_workspace(
         },
     );
     let finalize_started = Instant::now();
-    context
-        .storage
-        .finalize_writes()
-        .await
-        .map_err(|error| EngineError::backend("indexing", format!("finalize storage: {error}")))?;
+    context.storage.finalize_writes().await.map_err(|error| {
+        EngineError::storage_failure(format!("failed to finalize index storage: {error}"))
+    })?;
     timings.record("index_optimize", finalize_started.elapsed(), 1);
 
     let result = build_index_result(context, &passes, started.elapsed(), timings);
@@ -165,21 +163,18 @@ pub(crate) async fn index_workspace(
                 embedding: None,
             },
         );
-        return Err(EngineError::backend(
-            "indexing",
-            format!(
-                "indexing completed with {} failed files: {}",
-                result.files_failed,
-                final_pass
-                    .stats
-                    .failed_files
-                    .iter()
-                    .take(5)
-                    .map(|path| path.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-        ));
+        return Err(EngineError::internal(format!(
+            "indexing completed with {} failed files: {}",
+            result.files_failed,
+            final_pass
+                .stats
+                .failed_files
+                .iter()
+                .take(5)
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )));
     }
 
     report(
@@ -400,13 +395,10 @@ async fn run_index_pass(
     for file in &diff.deleted {
         throw_if_cancelled(context.signal.as_ref())?;
         context.storage.delete_file(&file.id).map_err(|error| {
-            EngineError::backend(
-                "indexing",
-                format!(
-                    "delete stale file {}: {error}",
-                    file.relative_path.display()
-                ),
-            )
+            EngineError::storage_failure(format!(
+                "delete stale file {}: {error}",
+                file.relative_path.display()
+            ))
         })?;
     }
     timings.record(
@@ -732,7 +724,7 @@ fn apply_embedding_outcome(
                     context.storage,
                     &file.file,
                     "embed",
-                    &EngineError::backend("embedding", reason),
+                    &EngineError::internal(format!("embedding failed: {reason}")),
                 )?;
                 record_file_failed(stats, &file.file, &reason);
                 report_indexing(
@@ -764,14 +756,11 @@ fn commit_file(
     if file.fragments.len() != vectors.len() {
         return Err(CommitError {
             file: Box::new(file.file),
-            error: EngineError::backend(
-                "storage",
-                format!(
-                    "entity/vector count mismatch: fragments={} vectors={}",
-                    file.fragments.len(),
-                    vectors.len()
-                ),
-            ),
+            error: EngineError::internal(format!(
+                "entity/vector count mismatch: fragments={} vectors={}",
+                file.fragments.len(),
+                vectors.len()
+            )),
         });
     }
     let truncated = truncated.into_iter().collect::<HashSet<_>>();
@@ -815,13 +804,10 @@ async fn prepare_candidate(
 ) -> Result<PreparedCandidate, EngineError> {
     let source = read_source(context.scanner, control, &candidate.discovered).await?;
     if source.source_fingerprint != candidate.discovered.source_fingerprint {
-        return Err(EngineError::backend(
-            "indexing",
-            format!(
-                "source changed while being indexed: {}",
-                candidate.file.absolute_path.display()
-            ),
-        ));
+        return Err(EngineError::resource_busy(format!(
+            "source changed while being indexed: {}",
+            candidate.file.absolute_path.display()
+        )));
     }
 
     let mut file = candidate.file.clone();
@@ -929,13 +915,10 @@ fn mark_file_failed(
     storage
         .mark_file_failed(file, &reason)
         .map_err(|mark_error| {
-            EngineError::backend(
-                "indexing",
-                format!(
-                    "record failure for {}: {mark_error}; original={reason}",
-                    file.relative_path.display()
-                ),
-            )
+            EngineError::storage_failure(format!(
+                "record failure for {}: {mark_error}; original={reason}",
+                file.relative_path.display()
+            ))
         })?;
     Ok(reason)
 }
@@ -1160,14 +1143,14 @@ async fn embed_fragment_batch(
                 )
                 .await
                 .map_err(|error| {
-                    ModelError::uncoded(format!(
+                    ModelError::internal(format!(
                         "fragment {} failed after one-by-one fallback: {}",
                         fragment.fragment.id,
                         model_error_text(&error)
                     ))
                 })?;
                 let Some(vector) = embedding.vectors.into_iter().next() else {
-                    return Err(ModelError::uncoded(
+                    return Err(ModelError::internal(
                         "embedding returned no vector for a fragment",
                     ));
                 };
@@ -1194,7 +1177,7 @@ async fn embed_with_retry(
     let mut attempt = 0;
     loop {
         if signal.is_some_and(CancellationToken::is_cancelled) {
-            return Err(ModelError::uncoded("embedding was cancelled"));
+            return Err(ModelError::cancelled("embedding was cancelled"));
         }
         let permit = scheduler.acquire(signal).await?;
         let result = model
@@ -1301,7 +1284,7 @@ async fn abortable_delay(
     if let Some(signal) = signal {
         tokio::select! {
             () = tokio::time::sleep(duration) => Ok(()),
-            () = signal.cancelled() => Err(ModelError::uncoded("embedding was cancelled")),
+            () = signal.cancelled() => Err(ModelError::cancelled("embedding was cancelled")),
         }
     } else {
         tokio::time::sleep(duration).await;
@@ -1310,10 +1293,7 @@ async fn abortable_delay(
 }
 
 fn model_error_text(error: &ModelError) -> String {
-    let mut parts = Vec::new();
-    if let Some(code) = error.code() {
-        parts.push(code.to_owned());
-    }
+    let mut parts = vec![error.code().to_owned()];
     parts.push(error.to_string());
     if let Some(context) = error.context() {
         parts.push(context.to_owned());
@@ -1363,7 +1343,7 @@ fn resolve_embedding_policy(
     model: &EmbeddingModelInfo,
 ) -> Result<EmbeddingConcurrencyPolicy, EngineError> {
     if requested == Some(0) {
-        return Err(EngineError::invalid_input(
+        return Err(EngineError::invalid_argument(
             "embedding_concurrency must be greater than zero",
         ));
     }
@@ -1439,7 +1419,7 @@ impl EmbeddingScheduler {
             tokio::pin!(notified);
             notified.as_mut().enable();
             if signal.is_some_and(CancellationToken::is_cancelled) {
-                return Err(ModelError::uncoded(
+                return Err(ModelError::cancelled(
                     "embedding was cancelled while waiting for capacity",
                 ));
             }
@@ -1465,7 +1445,7 @@ impl EmbeddingScheduler {
                 tokio::select! {
                     () = notified.as_mut() => {}
                     () = signal.cancelled() => {
-                        return Err(ModelError::uncoded(
+                        return Err(ModelError::cancelled(
                             "embedding was cancelled while waiting for capacity",
                         ));
                     }
@@ -1602,29 +1582,28 @@ fn describe_files(files: &[PreparedFile]) -> String {
 
 fn validate_context(context: &IndexingContext<'_>) -> Result<(), EngineError> {
     if context.storage.is_read_only() {
-        return Err(EngineError::invalid_input(
+        return Err(EngineError::invalid_argument(
             "indexing requires writable workspace storage",
         ));
     }
     if context.workspace_index.id.trim().is_empty() {
-        return Err(EngineError::invalid_input(
+        return Err(EngineError::invalid_argument(
             "indexing requires a workspace index id",
         ));
     }
     if context.workspace_index.roots.is_empty() {
-        return Err(EngineError::invalid_input(
+        return Err(EngineError::invalid_argument(
             "indexing requires at least one workspace root",
         ));
     }
     if context.workspace_index.policy != WorkspaceIndexPolicy::Enabled {
-        return Err(EngineError::invalid_input(
+        return Err(EngineError::invalid_argument(
             "indexing requires an enabled workspace",
         ));
     }
     if context.embedding_model.info().limits.max_batch_size == 0 {
-        return Err(EngineError::backend(
-            "embedding",
-            "model max_batch_size must be greater than zero",
+        return Err(EngineError::internal(
+            "embedding model max_batch_size must be greater than zero",
         ));
     }
     if let Some(schema) = &context.workspace_index.embedding {
@@ -1634,7 +1613,7 @@ fn validate_context(context: &IndexingContext<'_>) -> Result<(), EngineError> {
             || schema.dimension != model.dimension
             || schema.metric != metric_name(model.metric)
         {
-            return Err(EngineError::invalid_input(format!(
+            return Err(EngineError::invalid_argument(format!(
                 "workspace embedding schema does not match model {}",
                 model.reference
             )));
@@ -1705,11 +1684,11 @@ fn scanned_files(
             let kind = discovered
                 .kind_hint
                 .map(file_kind)
-                .ok_or_else(|| EngineError::backend("native_scanner", "file kind is missing"))?;
+                .ok_or_else(|| EngineError::internal("native scanner omitted the file kind"))?;
             let format = discovered
                 .format_hint
                 .clone()
-                .ok_or_else(|| EngineError::backend("native_scanner", "file format is missing"))?;
+                .ok_or_else(|| EngineError::internal("native scanner omitted the file format"))?;
             Ok(ScannedFile {
                 file: FileInfo {
                     id: make_file_id(workspace_index_id, &absolute_path),
@@ -1752,7 +1731,7 @@ fn image_format(format: &str) -> Result<ImageFormat, EngineError> {
         "jpeg" | "jpg" => Ok(ImageFormat::Jpeg),
         "webp" => Ok(ImageFormat::Webp),
         "gif" => Ok(ImageFormat::Gif),
-        _ => Err(EngineError::invalid_input(format!(
+        _ => Err(EngineError::unsupported(format!(
             "unsupported image format {format}"
         ))),
     }
@@ -1773,10 +1752,10 @@ async fn read_source(
         .await
         .map_err(map_host_error)?;
     if sources.len() != 1 {
-        return Err(EngineError::backend(
-            "native_scanner",
-            format!("read_batch returned {} sources for one file", sources.len()),
-        ));
+        return Err(EngineError::internal(format!(
+            "native scanner returned {} sources for one requested file",
+            sources.len()
+        )));
     }
     Ok(sources.remove(0))
 }
@@ -1897,7 +1876,7 @@ fn task_control(signal: Option<CancellationToken>) -> TaskControl {
 
 fn throw_if_cancelled(signal: Option<&CancellationToken>) -> Result<(), EngineError> {
     if signal.is_some_and(CancellationToken::is_cancelled) {
-        Err(EngineError::Cancelled)
+        Err(EngineError::cancelled("indexing was cancelled"))
     } else {
         Ok(())
     }
@@ -1905,13 +1884,39 @@ fn throw_if_cancelled(signal: Option<&CancellationToken>) -> Result<(), EngineEr
 
 fn map_host_error(error: HostError) -> EngineError {
     match error {
-        HostError::InvalidInput { message } => EngineError::invalid_input(message),
-        HostError::BackendFailure { backend, message } => EngineError::backend(backend, message),
-        HostError::Cancelled => EngineError::Cancelled,
-        HostError::DeadlineExceeded => EngineError::DeadlineExceeded,
-        HostError::Closed => EngineError::Closed,
-        HostError::Internal { message } => EngineError::Internal { message },
+        HostError::InvalidArgument { message, origin } => {
+            host_engine_error(EngineError::INVALID_ARGUMENT, message, origin)
+        }
+        HostError::StorageFailure {
+            component,
+            message,
+            origin,
+        } => host_engine_error(
+            EngineError::STORAGE_FAILURE,
+            format!("{component} failed: {message}"),
+            origin,
+        ),
+        HostError::Cancelled { message, origin } => {
+            host_engine_error(EngineError::CANCELLED, message, origin)
+        }
+        HostError::DeadlineExceeded { message, origin } => {
+            host_engine_error(EngineError::DEADLINE_EXCEEDED, message, origin)
+        }
+        HostError::ResourceClosed { message, origin } => {
+            host_engine_error(EngineError::RESOURCE_CLOSED, message, origin)
+        }
+        HostError::Internal { message, origin } => {
+            host_engine_error(EngineError::INTERNAL, message, origin)
+        }
     }
+}
+
+fn host_engine_error(code: &'static str, message: String, origin: HostErrorSite) -> EngineError {
+    EngineError::new_at(
+        code,
+        message,
+        ErrorSite::new(origin.file(), origin.line(), origin.column()),
+    )
 }
 
 fn build_index_result(
@@ -2388,9 +2393,12 @@ mod tests {
 
     #[test]
     fn keeps_host_errors_outside_the_engine_api_boundary() {
-        let error = map_host_error(HostError::Cancelled);
-        assert_eq!(error.code(), crate::ErrorCode::Cancelled);
-        let invalid = map_host_error(HostError::invalid_input("bad root"));
-        assert_eq!(invalid.code(), crate::ErrorCode::InvalidInput);
+        let origin_line = line!() + 1;
+        let error = map_host_error(HostError::cancelled("native host operation was cancelled"));
+        assert_eq!(error.code(), EngineError::CANCELLED);
+        assert!(error.origin().file.ends_with("src/indexing/pipeline.rs"));
+        assert_eq!(error.origin().line, origin_line);
+        let invalid = map_host_error(HostError::invalid_argument("bad root"));
+        assert_eq!(invalid.code(), EngineError::INVALID_ARGUMENT);
     }
 }

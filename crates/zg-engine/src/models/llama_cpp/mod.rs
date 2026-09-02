@@ -222,7 +222,7 @@ impl LlamaCppEmbeddingModel {
         fs::create_dir_all(&self.model_cache_dir)
             .await
             .map_err(|error| {
-                ModelError::uncoded("Unable to create llama.cpp model cache directory")
+                ModelError::storage_failure("Unable to create llama.cpp model cache directory")
                     .with_cause(error)
             })?;
         let destination = self.model_cache_dir.join(cache_file_name(self.entry.uri));
@@ -238,14 +238,15 @@ impl LlamaCppEmbeddingModel {
         if let Err(error) = result {
             let _ = fs::remove_file(&partial).await;
             return Err(
-                ModelError::uncoded("Unable to download llama.cpp model artifact")
+                ModelError::storage_failure("Unable to download llama.cpp model artifact")
                     .with_cause(error),
             );
         }
         if let Err(error) = fs::rename(&partial, &destination).await {
             let _ = fs::remove_file(&partial).await;
             return Err(
-                ModelError::uncoded("Unable to publish llama.cpp model artifact").with_cause(error),
+                ModelError::storage_failure("Unable to publish llama.cpp model artifact")
+                    .with_cause(error),
             );
         }
         validate_gguf_file(&destination, self.entry.uri).await?;
@@ -260,27 +261,30 @@ impl LlamaCppEmbeddingModel {
         reporter: &ModelDownloadProgressReporter,
     ) -> Result<(), ModelError> {
         let response = self.client.get(url).send().await.map_err(|error| {
-            ModelError::uncoded("Unable to request llama.cpp model artifact").with_cause(error)
+            ModelError::storage_failure("Unable to request llama.cpp model artifact")
+                .with_cause(error)
         })?;
         if !response.status().is_success() {
-            return Err(ModelError::uncoded(format!(
+            return Err(ModelError::storage_failure(format!(
                 "Unable to download llama.cpp model artifact: HTTP {}",
                 response.status()
             )));
         }
         let total_bytes = response.content_length();
         let mut output = fs::File::create(destination).await.map_err(|error| {
-            ModelError::uncoded("Unable to create partial llama.cpp model artifact")
+            ModelError::storage_failure("Unable to create partial llama.cpp model artifact")
                 .with_cause(error)
         })?;
         let mut downloaded_bytes = 0_u64;
         let mut stream = response.bytes_stream();
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|error| {
-                ModelError::uncoded("Unable to read llama.cpp model download").with_cause(error)
+                ModelError::storage_failure("Unable to read llama.cpp model download")
+                    .with_cause(error)
             })?;
             output.write_all(&chunk).await.map_err(|error| {
-                ModelError::uncoded("Unable to write llama.cpp model download").with_cause(error)
+                ModelError::storage_failure("Unable to write llama.cpp model download")
+                    .with_cause(error)
             })?;
             downloaded_bytes = downloaded_bytes.saturating_add(chunk.len() as u64);
             reporter.report(
@@ -292,14 +296,15 @@ impl LlamaCppEmbeddingModel {
             );
         }
         output.flush().await.map_err(|error| {
-            ModelError::uncoded("Unable to flush llama.cpp model download").with_cause(error)
+            ModelError::storage_failure("Unable to flush llama.cpp model download")
+                .with_cause(error)
         })
     }
 
     fn ensure_not_disposed(&self) -> Result<(), ModelError> {
         if self.disposed.load(Ordering::Acquire) {
-            return Err(ModelError::coded(
-                "ZVEC_GREP.ENGINE.MODELS.LLAMA_CPP_DISPOSED",
+            return Err(ModelError::new(
+                crate::EngineError::RESOURCE_CLOSED,
                 "llama.cpp embedding model is disposed",
                 Some(format!("model={}", self.entry.reference)),
             ));
@@ -418,13 +423,14 @@ fn load_gpu_model(path: &Path, device_index: usize) -> Result<LoadedLlamaModel, 
     let params = LlamaModelParams::default()
         .with_devices(&[device_index])
         .map_err(|error| {
-            ModelError::uncoded("Unable to select llama.cpp GPU device").with_cause(error)
+            ModelError::internal("Unable to select llama.cpp GPU device").with_cause(error)
         })?
         .with_n_gpu_layers(u32::MAX);
     LlamaModel::load_from_file(llama_backend()?, path, &params)
         .map(|model| loaded_llama_model(model, true))
         .map_err(|error| {
-            ModelError::uncoded("Unable to load llama.cpp GPU embedding model").with_cause(error)
+            ModelError::storage_failure("Unable to load llama.cpp GPU embedding model")
+                .with_cause(error)
         })
 }
 
@@ -433,7 +439,8 @@ fn load_cpu_model(path: &Path) -> Result<LoadedLlamaModel, ModelError> {
     LlamaModel::load_from_file(llama_backend()?, path, &params)
         .map(|model| loaded_llama_model(model, false))
         .map_err(|error| {
-            ModelError::uncoded("Unable to load llama.cpp embedding model").with_cause(error)
+            ModelError::storage_failure("Unable to load llama.cpp embedding model")
+                .with_cause(error)
         })
 }
 
@@ -520,7 +527,7 @@ fn embed_texts(
         .min(loaded.model.n_ctx_train() as usize)
         .max(1);
     let context_size_u32 = u32::try_from(context_size).map_err(|error| {
-        ModelError::uncoded("llama.cpp context size is too large").with_cause(error)
+        ModelError::internal("llama.cpp context size is too large").with_cause(error)
     })?;
     let mut truncated = Vec::new();
     let mut inputs = Vec::with_capacity(texts.len());
@@ -530,7 +537,7 @@ fn embed_texts(
             .model
             .str_to_token(text, AddBos::Always)
             .map_err(|error| {
-                ModelError::uncoded("Unable to tokenize llama.cpp embedding input")
+                ModelError::internal("Unable to tokenize llama.cpp embedding input")
                     .with_cause(error)
             })?;
         if tokens.len() > context_size {
@@ -620,7 +627,7 @@ impl LlamaContextPool {
                 .is_err()
             {
                 first_error.get_or_insert_with(|| {
-                    ModelError::uncoded("llama.cpp context worker stopped unexpectedly")
+                    ModelError::internal("llama.cpp context worker stopped unexpectedly")
                 });
                 continue;
             }
@@ -630,7 +637,7 @@ impl LlamaContextPool {
         let mut vectors = (0..input_count).map(|_| None).collect::<Vec<_>>();
         for (receiver, worker) in pending {
             let result = receiver.recv().map_err(|error| {
-                ModelError::uncoded("llama.cpp context worker failed").with_cause(error)
+                ModelError::internal("llama.cpp context worker failed").with_cause(error)
             });
             drop(worker);
             match result {
@@ -642,7 +649,7 @@ impl LlamaContextPool {
                     }
                 }
                 Ok(Err(error)) => {
-                    first_error.get_or_insert_with(|| ModelError::uncoded(error));
+                    first_error.get_or_insert_with(|| ModelError::internal(error));
                 }
                 Err(error) => {
                     first_error.get_or_insert(error);
@@ -657,7 +664,7 @@ impl LlamaContextPool {
             .enumerate()
             .map(|(index, vector)| {
                 vector.ok_or_else(|| {
-                    ModelError::uncoded(format!(
+                    ModelError::internal(format!(
                         "llama.cpp context worker returned no vector for input {index}"
                     ))
                 })
@@ -732,7 +739,7 @@ impl LlamaContextPool {
             .name(format!("zg-llama-context-{worker_id}"))
             .spawn(move || llama_context_worker(&model, &receiver))
             .map_err(|error| {
-                ModelError::uncoded("Unable to create llama.cpp context worker").with_cause(error)
+                ModelError::internal("Unable to create llama.cpp context worker").with_cause(error)
             })?;
         Ok(Arc::new(LlamaContextWorker {
             busy: AtomicBool::new(false),
@@ -821,7 +828,7 @@ fn create_llama_context(
     model
         .new_context(llama_backend()?, params)
         .map_err(|error| {
-            ModelError::uncoded("Unable to create llama.cpp embedding context").with_cause(error)
+            ModelError::internal("Unable to create llama.cpp embedding context").with_cause(error)
         })
 }
 
@@ -837,13 +844,14 @@ fn run_llama_worker_job(
         batch
             .add_sequence(&input.tokens, 0, false)
             .map_err(|error| {
-                ModelError::uncoded("Unable to prepare llama.cpp embedding batch").with_cause(error)
+                ModelError::internal("Unable to prepare llama.cpp embedding batch")
+                    .with_cause(error)
             })?;
         context.decode(&mut batch).map_err(|error| {
-            ModelError::uncoded("llama.cpp embedding inference failed").with_cause(error)
+            ModelError::internal("llama.cpp embedding inference failed").with_cause(error)
         })?;
         let vector = context.embeddings_seq_ith(0).map_err(|error| {
-            ModelError::uncoded("Unable to read llama.cpp embedding output").with_cause(error)
+            ModelError::internal("Unable to read llama.cpp embedding output").with_cause(error)
         })?;
         vectors.push((input.index, vector.to_vec()));
     }
@@ -852,7 +860,7 @@ fn run_llama_worker_job(
 
 fn llama_batch_capacity(token_count: usize, context_size: u32) -> Result<u32, ModelError> {
     let required = u32::try_from(token_count.max(1)).map_err(|error| {
-        ModelError::uncoded("llama.cpp embedding batch is too large").with_cause(error)
+        ModelError::internal("llama.cpp embedding batch is too large").with_cause(error)
     })?;
     let rounded = required.checked_next_power_of_two().unwrap_or(context_size);
     Ok(rounded.max(32.min(context_size)).min(context_size))
@@ -878,12 +886,10 @@ fn format_text(text: &str, purpose: EmbeddingPurpose, format: &str) -> String {
 }
 
 fn embed_error(entry: LlamaCppConfig, cause: ModelError) -> ModelError {
-    ModelError::coded(
-        "ZVEC_GREP.ENGINE.MODELS.LLAMA_CPP_EMBED_FAILED",
+    cause.wrap(
         "llama.cpp embedding failed",
         Some(format!("model={}", entry.reference)),
     )
-    .with_cause(cause)
 }
 
 fn llama_backend() -> Result<&'static LlamaBackend, ModelError> {
@@ -897,24 +903,24 @@ fn llama_backend() -> Result<&'static LlamaBackend, ModelError> {
     }) {
         Ok(backend) => Ok(backend),
         Err(error) => {
-            Err(ModelError::uncoded("Unable to initialize llama.cpp backend").with_cause(error))
+            Err(ModelError::internal("Unable to initialize llama.cpp backend").with_cause(error))
         }
     }
 }
 
 fn check_cancelled(signal: Option<&CancellationToken>) -> Result<(), ModelError> {
     if signal.is_some_and(CancellationToken::is_cancelled) {
-        return Err(ModelError::uncoded("llama.cpp embedding was cancelled"));
+        return Err(ModelError::cancelled("llama.cpp embedding was cancelled"));
     }
     Ok(())
 }
 
 fn hugging_face_url(uri: &str) -> Result<String, ModelError> {
-    let model = uri
-        .strip_prefix("hf:")
-        .ok_or_else(|| ModelError::uncoded(format!("Unsupported llama.cpp model URI: {uri}")))?;
+    let model = uri.strip_prefix("hf:").ok_or_else(|| {
+        ModelError::unsupported(format!("Unsupported llama.cpp model URI: {uri}"))
+    })?;
     let (repository, file) = model.rsplit_once('/').ok_or_else(|| {
-        ModelError::uncoded(format!("Invalid Hugging Face llama.cpp model URI: {uri}"))
+        ModelError::invalid_argument(format!("Invalid Hugging Face llama.cpp model URI: {uri}"))
     })?;
     Ok(format!(
         "https://huggingface.co/{repository}/resolve/main/{file}"
@@ -924,7 +930,7 @@ fn hugging_face_url(uri: &str) -> Result<String, ModelError> {
 fn gguf_artifact_name(uri: &str) -> Result<&str, ModelError> {
     uri.rsplit_once('/')
         .map(|(_, file)| file)
-        .ok_or_else(|| ModelError::uncoded(format!("Invalid llama.cpp model URI: {uri}")))
+        .ok_or_else(|| ModelError::invalid_argument(format!("Invalid llama.cpp model URI: {uri}")))
 }
 
 fn cache_file_name(uri: &str) -> String {
@@ -949,7 +955,7 @@ async fn is_file(path: &Path) -> bool {
 
 async fn validate_gguf_file(path: &Path, uri: &str) -> Result<(), ModelError> {
     let data = fs::read(path).await.map_err(|error| {
-        ModelError::uncoded("Unable to inspect llama.cpp model artifact").with_cause(error)
+        ModelError::storage_failure("Unable to inspect llama.cpp model artifact").with_cause(error)
     })?;
     if data.starts_with(b"GGUF") {
         return Ok(());
@@ -959,11 +965,12 @@ async fn validate_gguf_file(path: &Path, uri: &str) -> Result<(), ModelError> {
     let is_html = sniff.contains("<!doctype") || sniff.contains("<html");
     let got = String::from_utf8_lossy(&data[..data.len().min(4)]);
     fs::remove_file(path).await.map_err(|error| {
-        ModelError::uncoded("Unable to remove invalid llama.cpp model artifact").with_cause(error)
+        ModelError::storage_failure("Unable to remove invalid llama.cpp model artifact")
+            .with_cause(error)
     })?;
     if is_html {
-        return Err(ModelError::coded(
-            "ZVEC_GREP.ENGINE.MODELS.LLAMA_CPP_INVALID_GGUF_HTML",
+        return Err(ModelError::new(
+            crate::EngineError::STORAGE_FAILURE,
             "Downloaded local embedding model is HTML, not GGUF",
             Some(format!(
                 "model={uri} path={} sizeKB={size_kb}",
@@ -971,8 +978,8 @@ async fn validate_gguf_file(path: &Path, uri: &str) -> Result<(), ModelError> {
             )),
         ));
     }
-    Err(ModelError::coded(
-        "ZVEC_GREP.ENGINE.MODELS.LLAMA_CPP_INVALID_GGUF",
+    Err(ModelError::new(
+        crate::EngineError::STORAGE_FAILURE,
         "Local embedding model is not a valid GGUF file",
         Some(format!(
             "model={uri} path={} expected=GGUF actual={got} sizeKB={size_kb}",
@@ -1077,10 +1084,7 @@ mod tests {
         let error = validate_gguf_file(&path, "hf:test/model.gguf")
             .await
             .expect_err("invalid GGUF must fail");
-        assert_eq!(
-            error.code(),
-            Some("ZVEC_GREP.ENGINE.MODELS.LLAMA_CPP_INVALID_GGUF_HTML")
-        );
+        assert_eq!(error.code(), crate::EngineError::STORAGE_FAILURE);
         assert!(!path.exists());
     }
 

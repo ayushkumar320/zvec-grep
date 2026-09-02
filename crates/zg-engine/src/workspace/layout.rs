@@ -89,8 +89,9 @@ fn absolute_path(path: &Path) -> Result<PathBuf, EngineError> {
         .map_err(|error| workspace_io("resolve workspace root", &error))
 }
 
+#[track_caller]
 fn workspace_io(operation: &str, error: &std::io::Error) -> EngineError {
-    EngineError::backend("workspace", format!("{operation}: {error}"))
+    EngineError::from_io(operation, error)
 }
 
 #[cfg(test)]

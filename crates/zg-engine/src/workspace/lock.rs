@@ -175,7 +175,7 @@ fn acquire_exclusive_directory_lock(
 fn write_lock_info(lock_path: &Path, info: &FileLockInfo) -> Result<(), EngineError> {
     let path = lock_path.join(LOCK_INFO_FILE);
     let mut bytes = serde_json::to_vec_pretty(info)
-        .map_err(|error| EngineError::backend("workspace_lock", error.to_string()))?;
+        .map_err(|error| EngineError::internal(format!("failed to encode lock info: {error}")))?;
     bytes.push(b'\n');
     fs::write(&path, bytes).map_err(|error| lock_io("write lock info", &path, &error))
 }
@@ -294,25 +294,24 @@ fn readers_lock_path(lock_path: &Path) -> PathBuf {
     PathBuf::from(path)
 }
 
+#[track_caller]
 fn lock_busy(lock_path: &Path, requested_operation: &str) -> EngineError {
     let owner = read_lock_info(lock_path);
-    EngineError::backend(
-        "workspace_lock",
-        format!(
-            "index unavailable: lock={} operation={} owner_operation={} owner_pid={} owner_host={}",
-            lock_path.display(),
-            requested_operation,
-            owner
-                .as_ref()
-                .map_or("unknown", |info| info.operation.as_str()),
-            owner.as_ref().map_or(0, |info| info.pid),
-            owner
-                .as_ref()
-                .map_or("unknown", |info| info.hostname.as_str())
-        ),
-    )
+    EngineError::resource_busy(format!(
+        "index unavailable: lock={} operation={} owner_operation={} owner_pid={} owner_host={}",
+        lock_path.display(),
+        requested_operation,
+        owner
+            .as_ref()
+            .map_or("unknown", |info| info.operation.as_str()),
+        owner.as_ref().map_or(0, |info| info.pid),
+        owner
+            .as_ref()
+            .map_or("unknown", |info| info.hostname.as_str())
+    ))
 }
 
+#[track_caller]
 fn read_lock_busy(lock_path: &Path, requested_operation: &str) -> EngineError {
     let readers_path = readers_lock_path(lock_path);
     let owner = fs::read_dir(&readers_path).ok().and_then(|entries| {
@@ -320,27 +319,25 @@ fn read_lock_busy(lock_path: &Path, requested_operation: &str) -> EngineError {
             .flatten()
             .find_map(|entry| read_lock_info(&entry.path()))
     });
-    EngineError::backend(
-        "workspace_lock",
-        format!(
-            "index unavailable: lock={} operation={} owner_operation={} owner_pid={} owner_host={}",
-            readers_path.display(),
-            requested_operation,
-            owner
-                .as_ref()
-                .map_or("unknown", |info| info.operation.as_str()),
-            owner.as_ref().map_or(0, |info| info.pid),
-            owner
-                .as_ref()
-                .map_or("unknown", |info| info.hostname.as_str())
-        ),
-    )
+    EngineError::resource_busy(format!(
+        "index unavailable: lock={} operation={} owner_operation={} owner_pid={} owner_host={}",
+        readers_path.display(),
+        requested_operation,
+        owner
+            .as_ref()
+            .map_or("unknown", |info| info.operation.as_str()),
+        owner.as_ref().map_or(0, |info| info.pid),
+        owner
+            .as_ref()
+            .map_or("unknown", |info| info.hostname.as_str())
+    ))
 }
 
+#[track_caller]
 fn lock_io(operation: &str, path: &Path, error: &std::io::Error) -> EngineError {
-    EngineError::backend(
-        "workspace_lock",
-        format!("{operation} {}: {error}", path.display()),
+    EngineError::from_io(
+        format!("{operation} workspace lock {}", path.display()),
+        error,
     )
 }
 

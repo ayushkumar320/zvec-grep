@@ -138,15 +138,15 @@ pub(crate) fn validate_contents(
     contents: &[Content],
 ) -> Result<(), ModelError> {
     if contents.is_empty() {
-        return Err(ModelError::coded(
-            "ZVEC_GREP.ENGINE.MODELS.EMBEDDING_EMPTY_INPUT",
+        return Err(ModelError::new(
+            crate::EngineError::INVALID_ARGUMENT,
             "Embedding requires at least one content item",
             None,
         ));
     }
     if contents.len() > info.limits.max_batch_size {
-        return Err(ModelError::coded(
-            "ZVEC_GREP.ENGINE.MODELS.EMBEDDING_BATCH_TOO_LARGE",
+        return Err(ModelError::new(
+            crate::EngineError::INVALID_ARGUMENT,
             "Embedding batch size exceeds model limit",
             Some(format!(
                 "model={} batchSize={} maxBatchSize={}",
@@ -163,8 +163,8 @@ pub(crate) fn validate_contents(
             Content::Image(_) => EmbeddingInputKind::Image,
         };
         if !info.input_kinds.contains(&kind) {
-            return Err(ModelError::coded(
-                "ZVEC_GREP.ENGINE.MODELS.EMBEDDING_UNSUPPORTED_CONTENT",
+            return Err(ModelError::new(
+                crate::EngineError::UNSUPPORTED,
                 "Embedding model does not support content kind",
                 Some(format!(
                     "model={} index={index} kind={}",
@@ -176,15 +176,15 @@ pub(crate) fn validate_contents(
 
         match content {
             Content::Text(text) if text.trim().is_empty() => {
-                return Err(ModelError::coded(
-                    "ZVEC_GREP.ENGINE.MODELS.EMBEDDING_EMPTY_TEXT",
+                return Err(ModelError::new(
+                    crate::EngineError::INVALID_ARGUMENT,
                     "Embedding text content must not be empty",
                     Some(format!("model={} index={index}", info.reference)),
                 ));
             }
             Content::Image(image) if image.data.is_empty() => {
-                return Err(ModelError::coded(
-                    "ZVEC_GREP.ENGINE.MODELS.EMBEDDING_EMPTY_IMAGE",
+                return Err(ModelError::new(
+                    crate::EngineError::INVALID_ARGUMENT,
                     "Embedding image content must not be empty",
                     Some(format!("model={} index={index}", info.reference)),
                 ));
@@ -196,8 +196,8 @@ pub(crate) fn validate_contents(
                     .is_some_and(|maximum| image.data.len() > maximum) =>
             {
                 let maximum = info.limits.max_image_bytes.unwrap_or_default();
-                return Err(ModelError::coded(
-                    "ZVEC_GREP.ENGINE.MODELS.EMBEDDING_IMAGE_TOO_LARGE",
+                return Err(ModelError::new(
+                    crate::EngineError::INVALID_ARGUMENT,
                     "Embedding image content exceeds model limit",
                     Some(format!(
                         "model={} index={index} imageBytes={} maxImageBytes={maximum}",
@@ -218,8 +218,8 @@ pub(crate) fn validate_result(
     result: &EmbeddingResult,
 ) -> Result<(), ModelError> {
     if result.vectors.len() != input_count {
-        return Err(ModelError::coded(
-            "ZVEC_GREP.ENGINE.MODELS.EMBEDDING_VECTOR_COUNT_MISMATCH",
+        return Err(ModelError::new(
+            crate::EngineError::INTERNAL,
             "Embedding model returned the wrong number of vectors",
             Some(format!(
                 "model={} contentCount={input_count} vectorCount={}",
@@ -230,8 +230,8 @@ pub(crate) fn validate_result(
     }
     for (vector_index, vector) in result.vectors.iter().enumerate() {
         if vector.len() != info.dimension {
-            return Err(ModelError::coded(
-                "ZVEC_GREP.ENGINE.MODELS.EMBEDDING_DIMENSION_MISMATCH",
+            return Err(ModelError::new(
+                crate::EngineError::INTERNAL,
                 "Embedding model returned a vector with the wrong dimension",
                 Some(format!(
                     "model={} vectorIndex={vector_index} expectedDimension={} actualDimension={}",
@@ -242,8 +242,8 @@ pub(crate) fn validate_result(
             ));
         }
         if let Some(value_index) = vector.iter().position(|value| !value.is_finite()) {
-            return Err(ModelError::coded(
-                "ZVEC_GREP.ENGINE.MODELS.EMBEDDING_NON_FINITE_VECTOR_VALUE",
+            return Err(ModelError::new(
+                crate::EngineError::INTERNAL,
                 "Embedding model returned a non-finite vector value",
                 Some(format!(
                     "model={} vectorIndex={vector_index} valueIndex={value_index}",
@@ -256,8 +256,8 @@ pub(crate) fn validate_result(
     let mut seen = HashSet::new();
     for &index in &result.truncated {
         if index >= input_count || !seen.insert(index) {
-            return Err(ModelError::coded(
-                "ZVEC_GREP.ENGINE.MODELS.EMBEDDING_INVALID_TRUNCATED_INPUT_INDEX",
+            return Err(ModelError::new(
+                crate::EngineError::INTERNAL,
                 "Embedding model returned an invalid truncated input index",
                 Some(format!(
                     "model={} index={index} inputCount={input_count}",
@@ -288,7 +288,7 @@ mod tests {
 
         assert_error_code(
             validate_contents(&info, &[]),
-            "ZVEC_GREP.ENGINE.MODELS.EMBEDDING_EMPTY_INPUT",
+            crate::EngineError::INVALID_ARGUMENT,
         );
         assert_error_code(
             validate_contents(
@@ -299,11 +299,11 @@ mod tests {
                     Content::Text("three".to_owned()),
                 ],
             ),
-            "ZVEC_GREP.ENGINE.MODELS.EMBEDDING_BATCH_TOO_LARGE",
+            crate::EngineError::INVALID_ARGUMENT,
         );
         assert_error_code(
             validate_contents(&info, &[Content::Text("  ".to_owned())]),
-            "ZVEC_GREP.ENGINE.MODELS.EMBEDDING_EMPTY_TEXT",
+            crate::EngineError::INVALID_ARGUMENT,
         );
         assert_error_code(
             validate_contents(
@@ -313,7 +313,7 @@ mod tests {
                     format: ImageFormat::Png,
                 })],
             ),
-            "ZVEC_GREP.ENGINE.MODELS.EMBEDDING_EMPTY_IMAGE",
+            crate::EngineError::INVALID_ARGUMENT,
         );
         assert_error_code(
             validate_contents(
@@ -323,7 +323,7 @@ mod tests {
                     format: ImageFormat::Png,
                 })],
             ),
-            "ZVEC_GREP.ENGINE.MODELS.EMBEDDING_IMAGE_TOO_LARGE",
+            crate::EngineError::INVALID_ARGUMENT,
         );
 
         info.input_kinds = vec![EmbeddingInputKind::Text];
@@ -335,7 +335,7 @@ mod tests {
                     format: ImageFormat::Png,
                 })],
             ),
-            "ZVEC_GREP.ENGINE.MODELS.EMBEDDING_UNSUPPORTED_CONTENT",
+            crate::EngineError::UNSUPPORTED,
         );
     }
 
@@ -352,7 +352,7 @@ mod tests {
                     truncated: Vec::new(),
                 },
             ),
-            "ZVEC_GREP.ENGINE.MODELS.EMBEDDING_VECTOR_COUNT_MISMATCH",
+            crate::EngineError::INTERNAL,
         );
         assert_error_code(
             validate_result(
@@ -363,7 +363,7 @@ mod tests {
                     truncated: Vec::new(),
                 },
             ),
-            "ZVEC_GREP.ENGINE.MODELS.EMBEDDING_DIMENSION_MISMATCH",
+            crate::EngineError::INTERNAL,
         );
         assert_error_code(
             validate_result(
@@ -374,7 +374,7 @@ mod tests {
                     truncated: Vec::new(),
                 },
             ),
-            "ZVEC_GREP.ENGINE.MODELS.EMBEDDING_NON_FINITE_VECTOR_VALUE",
+            crate::EngineError::INTERNAL,
         );
         for truncated in [vec![1], vec![0, 0]] {
             assert_error_code(
@@ -386,7 +386,7 @@ mod tests {
                         truncated,
                     },
                 ),
-                "ZVEC_GREP.ENGINE.MODELS.EMBEDDING_INVALID_TRUNCATED_INPUT_INDEX",
+                crate::EngineError::INTERNAL,
             );
         }
     }
@@ -414,7 +414,7 @@ mod tests {
             result
                 .expect_err("validation should reject the fixture")
                 .code(),
-            Some(expected)
+            expected
         );
     }
 }

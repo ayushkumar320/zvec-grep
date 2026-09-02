@@ -295,12 +295,14 @@ impl ModelRuntimeLease {
             tokio::select! {
                 permit = Arc::clone(&self.operation.permits).acquire_owned() => {
                     permit.map_err(|error| {
-                        ModelError::uncoded("Embedding concurrency limiter is closed")
+                        ModelError::internal(
+                            "embedding concurrency limiter closed unexpectedly",
+                        )
                             .with_cause(error)
                     })
                 }
                 () = signal.cancelled() => {
-                    Err(ModelError::uncoded(
+                    Err(ModelError::cancelled(
                         "Embedding was cancelled while waiting for compute capacity",
                     ))
                 }
@@ -310,7 +312,8 @@ impl ModelRuntimeLease {
                 .acquire_owned()
                 .await
                 .map_err(|error| {
-                    ModelError::uncoded("Embedding concurrency limiter is closed").with_cause(error)
+                    ModelError::internal("embedding concurrency limiter closed unexpectedly")
+                        .with_cause(error)
                 })
         }
     }
@@ -427,8 +430,8 @@ fn secret_fingerprint(secret: &str) -> u64 {
 
 fn validate_embedding_concurrency(concurrency: Option<usize>) -> Result<(), ModelError> {
     if concurrency == Some(0) {
-        return Err(ModelError::coded(
-            "ZVEC_GREP.ENGINE.MODELS.INVALID_EMBEDDING_CONCURRENCY",
+        return Err(ModelError::new(
+            crate::EngineError::INVALID_ARGUMENT,
             "Embedding concurrency must be greater than zero",
             None,
         ));
@@ -454,9 +457,9 @@ fn resolve_embedding_concurrency(requested: Option<usize>, info: &EmbeddingModel
 }
 
 fn manager_closed() -> ModelError {
-    ModelError::coded(
-        "ZVEC_GREP.ENGINE.MODELS.RUNTIME_MANAGER_CLOSED",
-        "Embedding model runtime manager is closed",
+    ModelError::new(
+        crate::EngineError::RESOURCE_CLOSED,
+        "embedding model runtime manager has been closed",
         None,
     )
 }
@@ -580,7 +583,7 @@ mod tests {
                 .release
                 .acquire()
                 .await
-                .map_err(|error| ModelError::uncoded(error.to_string()))?;
+                .map_err(|error| ModelError::internal(error.to_string()))?;
             permit.forget();
             self.active.fetch_sub(1, Ordering::AcqRel);
             Ok(EmbeddingResult {
@@ -735,10 +738,7 @@ mod tests {
             ))
             .err()
             .expect("closed manager should reject acquisition");
-        assert_eq!(
-            error.code(),
-            Some("ZVEC_GREP.ENGINE.MODELS.RUNTIME_MANAGER_CLOSED")
-        );
+        assert_eq!(error.code(), crate::EngineError::RESOURCE_CLOSED);
     }
 
     #[tokio::test]
@@ -954,10 +954,7 @@ mod tests {
             .err()
             .expect("zero concurrency should be rejected");
 
-        assert_eq!(
-            error.code(),
-            Some("ZVEC_GREP.ENGINE.MODELS.INVALID_EMBEDDING_CONCURRENCY")
-        );
+        assert_eq!(error.code(), crate::EngineError::INVALID_ARGUMENT);
         assert_eq!(creations.load(Ordering::Acquire), 0);
     }
 

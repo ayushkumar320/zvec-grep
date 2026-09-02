@@ -76,16 +76,14 @@ impl LexicalSearchService {
         request: &LexicalSearchRequest,
     ) -> Result<LexicalSearchReply, EngineError> {
         if request.patterns.is_empty() && request.pattern_files.is_empty() {
-            return Err(EngineError::invalid_input(
+            return Err(EngineError::invalid_argument(
                 "lexical search requires a pattern or pattern file",
             ));
         }
 
-        let _search_slot = self
-            .search_slots
-            .acquire()
-            .await
-            .map_err(|_| EngineError::Closed)?;
+        let _search_slot = self.search_slots.acquire().await.map_err(|_| {
+            EngineError::internal("lexical search concurrency limiter closed unexpectedly")
+        })?;
         let checked_paths = check_paths(root, &request.paths);
         if !request.paths.is_empty() && checked_paths.existing.is_empty() {
             return Ok(empty_reply(root, request, &checked_paths));
@@ -138,9 +136,7 @@ where
 {
     tokio::task::spawn_blocking(function)
         .await
-        .map_err(|error| EngineError::Internal {
-            message: format!("embedded grep worker failed: {error}"),
-        })?
+        .map_err(|error| EngineError::internal(format!("embedded grep worker failed: {error}")))?
 }
 
 fn search_sync(
@@ -206,8 +202,9 @@ fn search_paths_serial(
     let mut lexical_matches = Vec::new();
     let mut searcher = build_searcher();
     for result in walker.build() {
-        let entry =
-            result.map_err(|error| EngineError::backend(EMBEDDED_BACKEND, error.to_string()))?;
+        let entry = result.map_err(|error| {
+            EngineError::storage_failure(format!("failed to traverse workspace: {error}"))
+        })?;
         if !entry
             .file_type()
             .is_some_and(|file_type| file_type.is_file())
@@ -247,7 +244,9 @@ fn search_paths_parallel(
                     return stop_parallel_search(
                         first_error,
                         stopped,
-                        EngineError::backend(EMBEDDED_BACKEND, error.to_string()),
+                        EngineError::storage_failure(format!(
+                            "failed to traverse workspace: {error}"
+                        )),
                     );
                 }
             };
@@ -274,9 +273,7 @@ fn search_paths_parallel(
                 return stop_parallel_search(
                     first_error,
                     stopped,
-                    EngineError::Internal {
-                        message: "embedded grep result collector was poisoned".to_owned(),
-                    },
+                    EngineError::internal("embedded grep result collector was poisoned"),
                 );
             };
             all_matches.extend(file_matches);
@@ -286,17 +283,13 @@ fn search_paths_parallel(
 
     let first_error = first_error
         .into_inner()
-        .map_err(|_| EngineError::Internal {
-            message: "embedded grep error collector was poisoned".to_owned(),
-        })?;
+        .map_err(|_| EngineError::internal("embedded grep error collector was poisoned"))?;
     if let Some(error) = first_error {
         return Err(error);
     }
     lexical_matches
         .into_inner()
-        .map_err(|_| EngineError::Internal {
-            message: "embedded grep result collector was poisoned".to_owned(),
-        })
+        .map_err(|_| EngineError::internal("embedded grep result collector was poisoned"))
 }
 
 fn build_searcher() -> grep::searcher::Searcher {
@@ -325,7 +318,7 @@ fn load_patterns(root: &Path, request: &LexicalSearchRequest) -> Result<Vec<Stri
     for pattern_file in &request.pattern_files {
         let path = resolve_path(root, pattern_file);
         let file_patterns = grep::cli::patterns_from_path(&path).map_err(|error| {
-            EngineError::invalid_input(format!(
+            EngineError::storage_failure(format!(
                 "pattern file {} could not be read: {error}",
                 pattern_file.display()
             ))
@@ -349,7 +342,7 @@ fn build_matcher(
         .fixed_strings(request.options.fixed_strings)
         .word(request.options.word_regexp);
     builder.build_many(patterns).map_err(|error| {
-        EngineError::invalid_input(format!("invalid lexical search pattern: {error}"))
+        EngineError::invalid_argument(format!("invalid lexical search pattern: {error}"))
     })
 }
 
@@ -402,7 +395,7 @@ fn build_walker(
     for ignore_file in &request.options.ignore_files {
         let path = resolve_path(root, ignore_file);
         if let Some(error) = walker.add_ignore(&path) {
-            return Err(EngineError::invalid_input(format!(
+            return Err(EngineError::storage_failure(format!(
                 "ignore file {} could not be loaded: {error}",
                 ignore_file.display()
             )));
@@ -413,11 +406,11 @@ fn build_walker(
         let mut overrides = OverrideBuilder::new(root);
         for glob in &request.options.globs {
             overrides.add(glob).map_err(|error| {
-                EngineError::invalid_input(format!("invalid glob {glob:?}: {error}"))
+                EngineError::invalid_argument(format!("invalid glob {glob:?}: {error}"))
             })?;
         }
         walker.overrides(overrides.build().map_err(|error| {
-            EngineError::invalid_input(format!("invalid glob override: {error}"))
+            EngineError::invalid_argument(format!("invalid glob override: {error}"))
         })?);
     }
 
@@ -437,7 +430,7 @@ fn build_file_types(request: &LexicalSearchRequest) -> Result<ignore::types::Typ
         builder.negate(name);
     }
     builder.build().map_err(|error| {
-        EngineError::invalid_input(format!("invalid ripgrep file type selection: {error}"))
+        EngineError::invalid_argument(format!("invalid ripgrep file type selection: {error}"))
     })
 }
 
@@ -485,9 +478,9 @@ fn search_file(
         }),
     );
     if let Err(error) = search_result {
-        return Err(EngineError::backend(
-            EMBEDDED_BACKEND,
-            format!("{}: {error}", absolute_path.display()),
+        return Err(EngineError::from_io(
+            format!("failed to search {}", absolute_path.display()),
+            &error,
         ));
     }
     Ok(())

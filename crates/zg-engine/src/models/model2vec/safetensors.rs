@@ -36,38 +36,42 @@ pub(super) async fn load_static_embedding_table(
     expected_dimension: usize,
 ) -> Result<StaticEmbeddingTable, ModelError> {
     let mut file = File::open(path).await.map_err(|error| {
-        ModelError::uncoded(format!("Unable to open Safetensors file: {error}"))
+        ModelError::storage_failure(format!("Unable to open Safetensors file: {error}"))
     })?;
     let file_size = file
         .metadata()
         .await
-        .map_err(|error| ModelError::uncoded(format!("Unable to stat Safetensors file: {error}")))?
+        .map_err(|error| {
+            ModelError::storage_failure(format!("Unable to stat Safetensors file: {error}"))
+        })?
         .len();
     if file_size < 9 {
-        return Err(ModelError::uncoded("Safetensors file is too small"));
+        return Err(ModelError::storage_failure("Safetensors file is too small"));
     }
 
     let mut prefix = [0_u8; 8];
     file.read_exact(&mut prefix).await.map_err(|error| {
-        ModelError::uncoded(format!("Unable to read Safetensors header: {error}"))
+        ModelError::storage_failure(format!("Unable to read Safetensors header: {error}"))
     })?;
     let header_length = usize::try_from(u64::from_le_bytes(prefix))
-        .map_err(|_| ModelError::uncoded("Safetensors header length is invalid"))?;
+        .map_err(|_| ModelError::storage_failure("Safetensors header length is invalid"))?;
     let data_start = 8_usize
         .checked_add(header_length)
-        .ok_or_else(|| ModelError::uncoded("Safetensors header length is invalid"))?;
+        .ok_or_else(|| ModelError::storage_failure("Safetensors header length is invalid"))?;
     let data_start_u64 = u64::try_from(data_start)
-        .map_err(|_| ModelError::uncoded("Safetensors header length is invalid"))?;
+        .map_err(|_| ModelError::storage_failure("Safetensors header length is invalid"))?;
     if data_start_u64 > file_size {
-        return Err(ModelError::uncoded("Safetensors header length is invalid"));
+        return Err(ModelError::storage_failure(
+            "Safetensors header length is invalid",
+        ));
     }
 
     let mut header_bytes = vec![0_u8; header_length];
     file.read_exact(&mut header_bytes).await.map_err(|error| {
-        ModelError::uncoded(format!("Unable to read Safetensors header: {error}"))
+        ModelError::storage_failure(format!("Unable to read Safetensors header: {error}"))
     })?;
     let header: Value = serde_json::from_slice(&header_bytes).map_err(|error| {
-        ModelError::uncoded("Safetensors header is invalid JSON").with_cause(error)
+        ModelError::storage_failure("Safetensors header is invalid JSON").with_cause(error)
     })?;
     let location = tensor_location(
         &header,
@@ -81,10 +85,12 @@ pub(super) async fn load_static_embedding_table(
         u64::try_from(location.absolute_start).map_err(|_| invalid_offsets(tensor_name))?,
     ))
     .await
-    .map_err(|error| ModelError::uncoded(format!("Unable to seek Safetensors file: {error}")))?;
+    .map_err(|error| {
+        ModelError::storage_failure(format!("Unable to seek Safetensors file: {error}"))
+    })?;
     let mut data = vec![0_u8; location.byte_length];
     file.read_exact(&mut data).await.map_err(|error| {
-        ModelError::uncoded(format!("Safetensors file ended unexpectedly: {error}"))
+        ModelError::storage_failure(format!("Safetensors file ended unexpectedly: {error}"))
     })?;
 
     let values = match location.dtype {
@@ -184,13 +190,13 @@ fn json_usize(value: &Value) -> Option<usize> {
 }
 
 fn incompatible_tensor(name: &str) -> ModelError {
-    ModelError::uncoded(format!(
+    ModelError::storage_failure(format!(
         "Safetensors tensor '{name}' is missing or incompatible"
     ))
 }
 
 fn invalid_offsets(name: &str) -> ModelError {
-    ModelError::uncoded(format!("Safetensors tensor '{name}' has invalid offsets"))
+    ModelError::storage_failure(format!("Safetensors tensor '{name}' has invalid offsets"))
 }
 
 #[cfg(test)]

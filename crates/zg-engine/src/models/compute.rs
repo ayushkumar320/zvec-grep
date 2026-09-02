@@ -53,7 +53,7 @@ impl ModelComputeRuntime {
         });
         receiver
             .await
-            .map_err(|error| ModelError::uncoded("Model compute worker failed").with_cause(error))
+            .map_err(|error| ModelError::internal("Model compute worker failed").with_cause(error))
     }
 }
 
@@ -68,7 +68,7 @@ impl ComputeInner {
         }) {
             Ok(pool) => Ok(pool),
             Err(error) => {
-                Err(ModelError::uncoded("Unable to create model compute pool").with_cause(error))
+                Err(ModelError::internal("Unable to create model compute pool").with_cause(error))
             }
         }
     }

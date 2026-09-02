@@ -24,7 +24,7 @@ use api::{
     info::{InfoOptions, InfoResult},
 };
 
-pub use error::{EngineError, ErrorCode};
+pub use error::{EngineError, EngineResult, ErrorReport, ErrorSite};
 
 /// Process-level resource counts used by resident daemon diagnostics.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -48,20 +48,32 @@ impl ZvecGrep {
         }
     }
 
-    pub async fn context(&self, options: ContextOptions) -> Result<ContextResult, EngineError> {
-        self.service.context(options).await
+    pub async fn context(&self, options: ContextOptions) -> EngineResult<ContextResult> {
+        self.service
+            .context(options)
+            .await
+            .map_err(|error| error.report_here())
     }
 
-    pub async fn index(&self, options: IndexOptions) -> Result<IndexResult, EngineError> {
-        self.service.index(options).await
+    pub async fn index(&self, options: IndexOptions) -> EngineResult<IndexResult> {
+        self.service
+            .index(options)
+            .await
+            .map_err(|error| error.report_here())
     }
 
-    pub async fn info(&self, options: InfoOptions) -> Result<InfoResult, EngineError> {
-        self.service.info(options).await
+    pub async fn info(&self, options: InfoOptions) -> EngineResult<InfoResult> {
+        self.service
+            .info(options)
+            .await
+            .map_err(|error| error.report_here())
     }
 
-    pub async fn drop_index(&self, options: InfoOptions) -> Result<bool, EngineError> {
-        self.service.drop_index(options).await
+    pub async fn drop_index(&self, options: InfoOptions) -> EngineResult<bool> {
+        self.service
+            .drop_index(options)
+            .await
+            .map_err(|error| error.report_here())
     }
 
     pub fn close(&self) {

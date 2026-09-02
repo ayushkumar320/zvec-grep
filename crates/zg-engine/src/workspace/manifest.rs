@@ -259,8 +259,9 @@ fn write_manifest_file(path: &Path, manifest: &WorkspaceManifest) -> Result<(), 
     set_mode(path, WORKSPACE_MANIFEST_MODE)
         .map_err(|error| manifest_io("set file permissions", path, &error))?;
     let mut writer = BufWriter::new(file);
-    serde_json::to_writer_pretty(&mut writer, manifest)
-        .map_err(|error| EngineError::backend("workspace_manifest", error.to_string()))?;
+    serde_json::to_writer_pretty(&mut writer, manifest).map_err(|error| {
+        EngineError::internal(format!("failed to encode workspace manifest: {error}"))
+    })?;
     writer
         .write_all(b"\n")
         .and_then(|()| writer.flush())
@@ -301,17 +302,19 @@ const fn is_false(value: &bool) -> bool {
     !*value
 }
 
+#[track_caller]
 fn invalid_manifest(message: impl Into<String>) -> EngineError {
-    EngineError::backend(
-        "workspace_manifest",
-        format!("invalid manifest: {}", message.into()),
-    )
+    EngineError::storage_failure(format!("invalid workspace manifest: {}", message.into()))
 }
 
+#[track_caller]
 fn manifest_io(operation: &str, path: &Path, error: &std::io::Error) -> EngineError {
-    EngineError::backend(
-        "workspace_manifest",
-        format!("{operation} {}: {error}", path.display()),
+    EngineError::from_io(
+        format!(
+            "failed to {operation} workspace manifest {}",
+            path.display()
+        ),
+        error,
     )
 }
 

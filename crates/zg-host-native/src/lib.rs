@@ -16,7 +16,7 @@ pub use api::{
     WorkspaceChangeBatch, WorkspaceScannerPort, WorkspaceWatchSessionPort,
     WorkspaceWatcherFactoryPort,
 };
-pub use error::HostError;
+pub use error::{HostError, HostErrorSite};
 pub use file_type::{DetectedFileType, detect_file_type, max_file_size};
 pub use scanner::NativeScanner;
 pub use watcher::{NativeWatcherConfig, NativeWatcherFactory};

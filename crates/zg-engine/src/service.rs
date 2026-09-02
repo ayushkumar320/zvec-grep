@@ -73,7 +73,7 @@ impl EngineService {
                 .await;
         }
         if !options.rg_options.extra_args.is_empty() {
-            return Err(EngineError::invalid_input(
+            return Err(EngineError::unsupported(
                 "context rg_options.extra_args is not supported by the embedded backend",
             ));
         }
@@ -168,7 +168,10 @@ impl EngineService {
 
     fn ensure_open(&self) -> Result<(), EngineError> {
         if self.closed.load(Ordering::Acquire) {
-            Err(EngineError::Closed)
+            Err(
+                EngineError::resource_closed("engine instance has been closed")
+                    .with_help("Create a new ZvecGrep instance before sending another request."),
+            )
         } else {
             Ok(())
         }
@@ -250,7 +253,6 @@ fn lexical_range(range: crate::lexical::types::TextRange) -> ContentRange {
 }
 
 fn resolve_root(root: Option<&Path>) -> Result<PathBuf, EngineError> {
-    std::path::absolute(root.unwrap_or_else(|| Path::new("."))).map_err(|error| {
-        EngineError::backend("workspace", format!("failed to resolve root: {error}"))
-    })
+    std::path::absolute(root.unwrap_or_else(|| Path::new(".")))
+        .map_err(|error| EngineError::from_io("failed to resolve workspace root", &error))
 }

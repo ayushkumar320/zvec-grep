@@ -162,11 +162,12 @@ async fn execute_command(
     Json(command): Json<DaemonCommand>,
 ) -> (StatusCode, Json<ExecutionResult>) {
     if !has_loopback_host(&headers) {
+        let error =
+            zg_engine::EngineError::permission_denied("request is not authorized for this daemon");
         return (
             StatusCode::UNAUTHORIZED,
             Json(ExecutionResult::Failure(ErrorReply {
-                code: zg_engine::ErrorCode::InvalidInput,
-                message: "unauthorized".to_owned(),
+                report: error.report(),
                 retryable: false,
             })),
         );
@@ -187,19 +188,14 @@ async fn execute_command(
                 )
             }
             Ok(submitted) => ExecutionResult::Failure(submitted.job.error.map_or_else(
-                || ErrorReply {
-                    code: zg_engine::ErrorCode::Internal,
-                    message: "daemon index job ended without an error".to_owned(),
-                    retryable: false,
+                || {
+                    error_reply(zg_engine::EngineError::internal(
+                        "daemon index job ended without an error",
+                    ))
                 },
                 |error| ErrorReply {
-                    code: error.code,
-                    message: error.message,
-                    retryable: matches!(
-                        error.code,
-                        zg_engine::ErrorCode::BackendFailure
-                            | zg_engine::ErrorCode::DeadlineExceeded
-                    ),
+                    report: error.report,
+                    retryable: error.retryable,
                 },
             )),
             Err(error) => engine_execution::<DaemonReply>(Err(error.into_engine_error())),
@@ -230,12 +226,8 @@ where
     result.map_or_else(
         |error| {
             ExecutionResult::Failure(ErrorReply {
-                code: error.code(),
-                message: error.to_string(),
-                retryable: matches!(
-                    error.code(),
-                    zg_engine::ErrorCode::BackendFailure | zg_engine::ErrorCode::DeadlineExceeded
-                ),
+                retryable: error.is_retryable(),
+                report: error.report(),
             })
         },
         |reply| ExecutionResult::Success(reply.into()),
@@ -243,11 +235,14 @@ where
 }
 
 fn internal_failure(message: &str) -> ExecutionResult {
-    ExecutionResult::Failure(ErrorReply {
-        code: zg_engine::ErrorCode::Internal,
-        message: message.to_owned(),
-        retryable: false,
-    })
+    ExecutionResult::Failure(error_reply(zg_engine::EngineError::internal(message)))
+}
+
+fn error_reply(error: zg_engine::EngineError) -> ErrorReply {
+    ErrorReply {
+        retryable: error.is_retryable(),
+        report: error.into_report(),
+    }
 }
 
 fn has_loopback_host(headers: &HeaderMap) -> bool {

@@ -39,11 +39,11 @@ impl QwenEmbeddingModel {
         options: CreateEmbeddingModelOptions,
         http: Arc<dyn QwenHttpClient>,
     ) -> Result<Self, ModelError> {
-        let (display_name, code_prefix) = model_spec(entry);
+        let display_name = model_name(entry);
         let api_key = options.api_key.unwrap_or_default().trim().to_owned();
         if api_key.is_empty() {
-            return Err(ModelError::coded(
-                missing_api_key_code(code_prefix),
+            return Err(ModelError::new(
+                crate::EngineError::PERMISSION_DENIED,
                 format!("{display_name} model requires an API key"),
                 Some(format!(
                     "model={}\nhint=Pass --api-key, set ZVEC_GREP_API_KEY, or configure the qwen provider API key.",
@@ -56,8 +56,8 @@ impl QwenEmbeddingModel {
             |value| value.trim().to_owned(),
         );
         if endpoint.is_empty() {
-            return Err(ModelError::coded(
-                missing_endpoint_code(code_prefix),
+            return Err(ModelError::new(
+                crate::EngineError::INVALID_ARGUMENT,
                 format!("{display_name} model requires an endpoint"),
                 Some(format!("model={}", entry.reference)),
             ));
@@ -110,19 +110,14 @@ impl QwenEmbeddingModel {
             "encoding_format": "float",
         });
         let response = self.send(request, signal, trace_headers).await?;
-        let body = parse_response_body(&response, self.entry, text_error_codes(self.entry))?;
+        let body = parse_response_body(&response, self.entry)?;
         if !response.success() {
-            return Err(provider_error(
-                self.entry,
-                &response,
-                &body,
-                text_error_codes(self.entry),
-            ));
+            return Err(provider_error(self.entry, &response, &body));
         }
         let data = body.get("data").and_then(Value::as_array).ok_or_else(|| {
-            ModelError::coded(
-                text_error_codes(self.entry).missing_data,
-                format!("{} response did not include data", model_spec(self.entry).0),
+            ModelError::new(
+                crate::EngineError::INTERNAL,
+                format!("{} response did not include data", model_name(self.entry)),
                 Some(format!("model={}", self.entry.reference)),
             )
         })?;
@@ -140,12 +135,7 @@ impl QwenEmbeddingModel {
             if index >= contents.len() {
                 return Err(index_out_of_range(self.entry, index, contents.len()));
             }
-            let vector = parse_vector(
-                object.get("embedding"),
-                self.entry,
-                index,
-                text_error_codes(self.entry).invalid_vector,
-            )?;
+            let vector = parse_vector(object.get("embedding"), self.entry, index)?;
             vectors[index] = Some(vector);
         }
         Ok(EmbeddingResult {
@@ -174,18 +164,17 @@ impl QwenEmbeddingModel {
             "parameters": { "dimension": self.info.dimension },
         });
         let response = self.send(request, signal, trace_headers).await?;
-        let codes = multimodal_error_codes();
-        let body = parse_response_body(&response, self.entry, codes)?;
+        let body = parse_response_body(&response, self.entry)?;
         if !response.success() {
-            return Err(provider_error(self.entry, &response, &body, codes));
+            return Err(provider_error(self.entry, &response, &body));
         }
         let items = body
             .get("output")
             .and_then(|output| output.get("embeddings"))
             .and_then(Value::as_array)
             .ok_or_else(|| {
-                ModelError::coded(
-                    codes.missing_data,
+                ModelError::new(
+                    crate::EngineError::INTERNAL,
                     "Qwen3 VL embedding response did not include embeddings",
                     Some(format!("model={}", self.entry.reference)),
                 )
@@ -193,8 +182,8 @@ impl QwenEmbeddingModel {
         let mut vectors = vec![None; contents.len()];
         for (fallback_index, item) in items.iter().enumerate() {
             let object = item.as_object().ok_or_else(|| {
-                ModelError::coded(
-                    "ZVEC_GREP.ENGINE.MODELS.QWEN3_VL_EMBEDDING_INVALID_ITEM",
+                ModelError::new(
+                    crate::EngineError::INTERNAL,
                     "Qwen3 VL embedding response included an invalid embedding item",
                     Some(format!(
                         "model={} index={fallback_index}",
@@ -217,12 +206,7 @@ impl QwenEmbeddingModel {
                     contents.len(),
                 ));
             }
-            vectors[index] = Some(parse_vector(
-                object.get("embedding"),
-                self.entry,
-                index,
-                codes.invalid_vector,
-            )?);
+            vectors[index] = Some(parse_vector(object.get("embedding"), self.entry, index)?);
         }
         Ok(EmbeddingResult {
             vectors: collect_vectors(vectors, self.entry)?,
@@ -236,9 +220,8 @@ impl QwenEmbeddingModel {
         signal: Option<CancellationToken>,
         trace_headers: Option<EmbeddingTraceHeaders>,
     ) -> Result<QwenHttpResponse, ModelError> {
-        let (_, code_prefix) = model_spec(self.entry);
         if signal.as_ref().is_some_and(CancellationToken::is_cancelled) {
-            return Err(ModelError::uncoded("Embedding request was cancelled."));
+            return Err(ModelError::cancelled("embedding request was cancelled"));
         }
         self.http
             .post(QwenHttpRequest {
@@ -249,20 +232,6 @@ impl QwenEmbeddingModel {
                 trace_headers,
             })
             .await
-            .map_err(|failure| match failure {
-                HttpFailure::Cancelled => ModelError::uncoded("Embedding request was cancelled."),
-                HttpFailure::Other(cause) => ModelError::coded(
-                    request_failed_code(code_prefix),
-                    format!("{} request failed", model_spec(self.entry).0),
-                    Some(format!(
-                        "model={} endpoint={} timeoutMs={}",
-                        self.entry.reference,
-                        self.endpoint,
-                        REMOTE_TIMEOUT.as_millis()
-                    )),
-                )
-                .with_cause(cause),
-            })
     }
 }
 
@@ -318,14 +287,9 @@ impl QwenHttpResponse {
     }
 }
 
-enum HttpFailure {
-    Cancelled,
-    Other(String),
-}
-
 #[async_trait]
 trait QwenHttpClient: Send + Sync {
-    async fn post(&self, request: QwenHttpRequest) -> Result<QwenHttpResponse, HttpFailure>;
+    async fn post(&self, request: QwenHttpRequest) -> Result<QwenHttpResponse, ModelError>;
 }
 
 struct ReqwestQwenHttpClient {
@@ -338,7 +302,7 @@ impl ReqwestQwenHttpClient {
             .timeout(REMOTE_TIMEOUT)
             .build()
             .map_err(|error| {
-                ModelError::uncoded("Unable to initialize Qwen HTTP client").with_cause(error)
+                ModelError::internal("Unable to initialize Qwen HTTP client").with_cause(error)
             })?;
         Ok(Self { client })
     }
@@ -346,17 +310,18 @@ impl ReqwestQwenHttpClient {
 
 #[async_trait]
 impl QwenHttpClient for ReqwestQwenHttpClient {
-    async fn post(&self, request: QwenHttpRequest) -> Result<QwenHttpResponse, HttpFailure> {
+    async fn post(&self, request: QwenHttpRequest) -> Result<QwenHttpResponse, ModelError> {
         let future = async {
+            let endpoint = request.endpoint.clone();
             let mut request_builder = self
                 .client
                 .post(&request.endpoint)
                 .bearer_auth(&request.bearer_token)
                 .header(reqwest::header::CONTENT_TYPE, "application/json")
-                .body(
-                    serde_json::to_vec(&request.body)
-                        .map_err(|error| HttpFailure::Other(error.to_string()))?,
-                );
+                .body(serde_json::to_vec(&request.body).map_err(|error| {
+                    ModelError::internal("unable to serialize Qwen embedding request")
+                        .with_cause(error)
+                })?);
             if let Some(headers) = &request.trace_headers {
                 request_builder = request_builder.header("traceparent", &headers.traceparent);
                 if let Some(tracestate) = &headers.tracestate {
@@ -366,10 +331,9 @@ impl QwenHttpClient for ReqwestQwenHttpClient {
                     request_builder = request_builder.header("baggage", baggage);
                 }
             }
-            let response = request_builder
-                .send()
-                .await
-                .map_err(|error| HttpFailure::Other(error.to_string()))?;
+            let response = request_builder.send().await.map_err(|error| {
+                qwen_http_error("failed to send Qwen embedding request", &endpoint, error)
+            })?;
             let status = response.status().as_u16();
             let retry_after = response
                 .headers()
@@ -379,7 +343,9 @@ impl QwenHttpClient for ReqwestQwenHttpClient {
             let body = response
                 .bytes()
                 .await
-                .map_err(|error| HttpFailure::Other(error.to_string()))?
+                .map_err(|error| {
+                    qwen_http_error("failed to read Qwen embedding response", &endpoint, error)
+                })?
                 .to_vec();
             Ok(QwenHttpResponse {
                 status,
@@ -390,7 +356,9 @@ impl QwenHttpClient for ReqwestQwenHttpClient {
         if let Some(signal) = request.signal {
             tokio::select! {
                 result = future => result,
-                () = signal.cancelled() => Err(HttpFailure::Cancelled),
+                () = signal.cancelled() => {
+                    Err(ModelError::cancelled("embedding request was cancelled"))
+                },
             }
         } else {
             future.await
@@ -398,50 +366,32 @@ impl QwenHttpClient for ReqwestQwenHttpClient {
     }
 }
 
-#[derive(Clone, Copy)]
-struct ErrorCodes {
-    invalid_json: &'static str,
-    api_error: &'static str,
-    missing_data: &'static str,
-    invalid_vector: &'static str,
-}
-
-fn text_error_codes(entry: QwenConfig) -> ErrorCodes {
-    if entry.model == "text-embedding-v4" {
-        ErrorCodes {
-            invalid_json: "ZVEC_GREP.ENGINE.MODELS.QWEN_TEXT_EMBEDDING_V4_INVALID_JSON",
-            api_error: "ZVEC_GREP.ENGINE.MODELS.QWEN_TEXT_EMBEDDING_V4_API_ERROR",
-            missing_data: "ZVEC_GREP.ENGINE.MODELS.QWEN_TEXT_EMBEDDING_V4_MISSING_DATA",
-            invalid_vector: "ZVEC_GREP.ENGINE.MODELS.QWEN_TEXT_EMBEDDING_V4_INVALID_VECTOR",
-        }
+#[track_caller]
+fn qwen_http_error(message: &str, endpoint: &str, error: reqwest::Error) -> ModelError {
+    let context = Some(format!(
+        "endpoint={endpoint} timeoutMs={}",
+        REMOTE_TIMEOUT.as_millis()
+    ));
+    if error.is_timeout() {
+        ModelError::new(crate::EngineError::DEADLINE_EXCEEDED, message, context).with_cause(error)
     } else {
-        ErrorCodes {
-            invalid_json: "ZVEC_GREP.ENGINE.MODELS.QWEN37_TEXT_EMBEDDING_INVALID_JSON",
-            api_error: "ZVEC_GREP.ENGINE.MODELS.QWEN37_TEXT_EMBEDDING_API_ERROR",
-            missing_data: "ZVEC_GREP.ENGINE.MODELS.QWEN37_TEXT_EMBEDDING_MISSING_DATA",
-            invalid_vector: "ZVEC_GREP.ENGINE.MODELS.QWEN37_TEXT_EMBEDDING_INVALID_VECTOR",
-        }
-    }
-}
-
-const fn multimodal_error_codes() -> ErrorCodes {
-    ErrorCodes {
-        invalid_json: "ZVEC_GREP.ENGINE.MODELS.QWEN3_VL_EMBEDDING_INVALID_JSON",
-        api_error: "ZVEC_GREP.ENGINE.MODELS.QWEN3_VL_EMBEDDING_API_ERROR",
-        missing_data: "ZVEC_GREP.ENGINE.MODELS.QWEN3_VL_EMBEDDING_MISSING_EMBEDDINGS",
-        invalid_vector: "ZVEC_GREP.ENGINE.MODELS.QWEN3_VL_EMBEDDING_INVALID_VECTOR",
+        ModelError::new(crate::EngineError::INTERNAL, message, context).with_cause(error)
     }
 }
 
 fn parse_response_body(
     response: &QwenHttpResponse,
     entry: QwenConfig,
-    codes: ErrorCodes,
 ) -> Result<Value, ModelError> {
     serde_json::from_slice(&response.body).map_err(|error| {
-        ModelError::coded(
-            codes.invalid_json,
-            format!("{} response was not valid JSON", model_spec(entry).0),
+        let code = if response.success() {
+            crate::EngineError::INTERNAL
+        } else {
+            provider_error_code(response.status)
+        };
+        ModelError::new(
+            code,
+            format!("{} response was not valid JSON", model_name(entry)),
             Some(format!(
                 "model={} status={}",
                 entry.reference, response.status
@@ -451,12 +401,8 @@ fn parse_response_body(
     })
 }
 
-fn provider_error(
-    entry: QwenConfig,
-    response: &QwenHttpResponse,
-    body: &Value,
-    codes: ErrorCodes,
-) -> ModelError {
+#[track_caller]
+fn provider_error(entry: QwenConfig, response: &QwenHttpResponse, body: &Value) -> ModelError {
     let (code, error_type, message) = if let Some(error) = body
         .as_object()
         .and_then(|body| body.get("error"))
@@ -492,14 +438,26 @@ fn provider_error(
         .as_deref()
         .and_then(retry_after_millis)
         .map_or_else(String::new, |millis| format!(" retryAfterMs={millis}"));
-    ModelError::coded(
-        codes.api_error,
-        format!("{} request returned an error", model_spec(entry).0),
+    ModelError::new(
+        provider_error_code(response.status),
+        format!("{} request returned an error", model_name(entry)),
         Some(format!(
             "model={} status={}{} providerCode={} providerType={} providerMessage={}",
             entry.model, response.status, retry_after, code, error_type, message
         )),
     )
+}
+
+fn provider_error_code(status: u16) -> &'static str {
+    match status {
+        400 | 413 | 422 => crate::EngineError::INVALID_ARGUMENT,
+        401 | 403 => crate::EngineError::PERMISSION_DENIED,
+        404 => crate::EngineError::NOT_FOUND,
+        405 | 501 => crate::EngineError::UNSUPPORTED,
+        408 | 504 => crate::EngineError::DEADLINE_EXCEEDED,
+        409 | 423 | 429 => crate::EngineError::RESOURCE_BUSY,
+        _ => crate::EngineError::INTERNAL,
+    }
 }
 
 fn retry_after_millis(value: &str) -> Option<u128> {
@@ -521,14 +479,13 @@ fn parse_vector(
     value: Option<&Value>,
     entry: QwenConfig,
     index: usize,
-    code: &'static str,
 ) -> Result<Vec<f32>, ModelError> {
     let values = value.and_then(Value::as_array).ok_or_else(|| {
-        ModelError::coded(
-            code,
+        ModelError::new(
+            crate::EngineError::INTERNAL,
             format!(
                 "{} response included an invalid embedding",
-                model_spec(entry).0
+                model_name(entry)
             ),
             Some(format!("model={} index={index}", entry.reference)),
         )
@@ -553,8 +510,8 @@ fn collect_vectors(
         .enumerate()
         .map(|(index, vector)| {
             vector.ok_or_else(|| {
-                ModelError::coded(
-                    "ZVEC_GREP.ENGINE.MODELS.EMBEDDING_INVALID_VECTOR",
+                ModelError::new(
+                    crate::EngineError::INTERNAL,
                     "Embedding model returned a non-array vector",
                     Some(format!("model={} vectorIndex={index}", entry.reference)),
                 )
@@ -574,14 +531,9 @@ fn json_integer(value: &Value) -> Option<i64> {
 }
 
 fn invalid_text_index(entry: QwenConfig, index: &str) -> ModelError {
-    let code = if entry.model == "text-embedding-v4" {
-        "ZVEC_GREP.ENGINE.MODELS.QWEN_TEXT_EMBEDDING_V4_INVALID_INDEX"
-    } else {
-        "ZVEC_GREP.ENGINE.MODELS.QWEN37_TEXT_EMBEDDING_INVALID_INDEX"
-    };
-    ModelError::coded(
-        code,
-        format!("{} response included an invalid index", model_spec(entry).0),
+    ModelError::new(
+        crate::EngineError::INTERNAL,
+        format!("{} response included an invalid index", model_name(entry)),
         Some(format!("model={} index={index}", entry.reference)),
     )
 }
@@ -591,14 +543,9 @@ fn index_out_of_range(
     index: impl std::fmt::Display,
     count: usize,
 ) -> ModelError {
-    let code = if entry.model == "text-embedding-v4" {
-        "ZVEC_GREP.ENGINE.MODELS.QWEN_TEXT_EMBEDDING_V4_INDEX_OUT_OF_RANGE"
-    } else {
-        "ZVEC_GREP.ENGINE.MODELS.QWEN37_TEXT_EMBEDDING_INDEX_OUT_OF_RANGE"
-    };
-    ModelError::coded(
-        code,
-        format!("{} response index was out of range", model_spec(entry).0),
+    ModelError::new(
+        crate::EngineError::INTERNAL,
+        format!("{} response index was out of range", model_name(entry)),
         Some(format!(
             "model={} index={index} inputCount={count}",
             entry.reference
@@ -611,8 +558,8 @@ fn multimodal_index_out_of_range(
     index: impl std::fmt::Display,
     count: usize,
 ) -> ModelError {
-    ModelError::coded(
-        "ZVEC_GREP.ENGINE.MODELS.QWEN3_VL_EMBEDDING_INDEX_OUT_OF_RANGE",
+    ModelError::new(
+        crate::EngineError::INTERNAL,
         "Qwen3 VL embedding response index was out of range",
         Some(format!(
             "model={} index={index} inputCount={count}",
@@ -632,8 +579,8 @@ fn validate_multimodal_contents(entry: QwenConfig, contents: &[Content]) -> Resu
             image.format,
             ImageFormat::Jpeg | ImageFormat::Png | ImageFormat::Webp
         ) {
-            return Err(ModelError::coded(
-                "ZVEC_GREP.ENGINE.MODELS.QWEN3_VL_EMBEDDING_UNSUPPORTED_IMAGE_FORMAT",
+            return Err(ModelError::new(
+                crate::EngineError::UNSUPPORTED,
                 "Qwen3 VL embedding model does not support image format",
                 Some(format!(
                     "model={} index={index} format={}",
@@ -644,8 +591,8 @@ fn validate_multimodal_contents(entry: QwenConfig, contents: &[Content]) -> Resu
         }
     }
     if image_count > MAX_MULTIMODAL_IMAGES {
-        return Err(ModelError::coded(
-            "ZVEC_GREP.ENGINE.MODELS.QWEN3_VL_EMBEDDING_TOO_MANY_IMAGES",
+        return Err(ModelError::new(
+            crate::EngineError::INVALID_ARGUMENT,
             "Qwen3 VL embedding image count exceeds model limit",
             Some(format!(
                 "model={} imageCount={image_count} maxImageCount={MAX_MULTIMODAL_IMAGES}",
@@ -684,35 +631,11 @@ fn bytes_to_base64(bytes: &[u8]) -> String {
     output
 }
 
-fn model_spec(entry: QwenConfig) -> (&'static str, &'static str) {
+fn model_name(entry: QwenConfig) -> &'static str {
     match entry.model {
-        "text-embedding-v4" => ("Qwen text-embedding-v4", "v4"),
-        "qwen3.7-text-embedding" => ("Qwen3.7 text embedding", "v37"),
-        _ => ("Qwen3 VL embedding", "vl"),
-    }
-}
-
-fn missing_api_key_code(prefix: &str) -> &'static str {
-    match prefix {
-        "v4" => "ZVEC_GREP.ENGINE.MODELS.QWEN_TEXT_EMBEDDING_V4_MISSING_API_KEY",
-        "v37" => "ZVEC_GREP.ENGINE.MODELS.QWEN37_TEXT_EMBEDDING_MISSING_API_KEY",
-        _ => "ZVEC_GREP.ENGINE.MODELS.QWEN3_VL_EMBEDDING_MISSING_API_KEY",
-    }
-}
-
-fn missing_endpoint_code(prefix: &str) -> &'static str {
-    match prefix {
-        "v4" => "ZVEC_GREP.ENGINE.MODELS.QWEN_TEXT_EMBEDDING_V4_MISSING_ENDPOINT",
-        "v37" => "ZVEC_GREP.ENGINE.MODELS.QWEN37_TEXT_EMBEDDING_MISSING_ENDPOINT",
-        _ => "ZVEC_GREP.ENGINE.MODELS.QWEN3_VL_EMBEDDING_MISSING_ENDPOINT",
-    }
-}
-
-fn request_failed_code(prefix: &str) -> &'static str {
-    match prefix {
-        "v4" => "ZVEC_GREP.ENGINE.MODELS.QWEN_TEXT_EMBEDDING_V4_REQUEST_FAILED",
-        "v37" => "ZVEC_GREP.ENGINE.MODELS.QWEN37_TEXT_EMBEDDING_REQUEST_FAILED",
-        _ => "ZVEC_GREP.ENGINE.MODELS.QWEN3_VL_EMBEDDING_REQUEST_FAILED",
+        "text-embedding-v4" => "Qwen text-embedding-v4",
+        "qwen3.7-text-embedding" => "Qwen3.7 text embedding",
+        _ => "Qwen3 VL embedding",
     }
 }
 
@@ -730,7 +653,7 @@ mod tests {
 
     #[async_trait]
     impl QwenHttpClient for MockHttp {
-        async fn post(&self, request: QwenHttpRequest) -> Result<QwenHttpResponse, HttpFailure> {
+        async fn post(&self, request: QwenHttpRequest) -> Result<QwenHttpResponse, ModelError> {
             assert_eq!(request.endpoint, "https://example.test/embed");
             assert_eq!(request.bearer_token, "secret");
             self.requests
@@ -741,7 +664,7 @@ mod tests {
                 .lock()
                 .expect("response lock")
                 .take()
-                .ok_or_else(|| HttpFailure::Other("missing response".to_owned()))
+                .ok_or_else(|| ModelError::internal("mock Qwen response is missing"))
         }
     }
 
@@ -879,10 +802,7 @@ mod tests {
             )
             .await
             .expect_err("GIF must be rejected");
-        assert_eq!(
-            error.code(),
-            Some("ZVEC_GREP.ENGINE.MODELS.QWEN3_VL_EMBEDDING_UNSUPPORTED_IMAGE_FORMAT")
-        );
+        assert_eq!(error.code(), crate::EngineError::UNSUPPORTED);
     }
 
     #[tokio::test]
@@ -908,10 +828,19 @@ mod tests {
             )
             .await
             .expect_err("invalid JSON");
-        assert_eq!(
-            error.code(),
-            Some("ZVEC_GREP.ENGINE.MODELS.QWEN_TEXT_EMBEDDING_V4_INVALID_JSON")
-        );
+        assert_eq!(error.code(), crate::EngineError::INTERNAL);
+
+        let invalid_provider_body = QwenHttpResponse {
+            status: 429,
+            retry_after: Some("1".to_owned()),
+            body: b"rate limited".to_vec(),
+        };
+        let error = parse_response_body(
+            &invalid_provider_body,
+            config("text", "text-embedding-v4", 3),
+        )
+        .expect_err("non-JSON provider error");
+        assert_eq!(error.code(), crate::EngineError::RESOURCE_BUSY);
 
         let provider_error_response = Arc::new(MockHttp {
             response: Mutex::new(Some(QwenHttpResponse {
@@ -941,16 +870,30 @@ mod tests {
             )
             .await
             .expect_err("provider error");
-        assert_eq!(
-            error.code(),
-            Some("ZVEC_GREP.ENGINE.MODELS.QWEN_TEXT_EMBEDDING_V4_API_ERROR")
-        );
+        assert_eq!(error.code(), crate::EngineError::RESOURCE_BUSY);
         let context = error.context().expect("provider context");
         assert!(context.contains("status=429 retryAfterMs=1500"));
         assert!(context.contains("providerCode=rate_limit"));
         assert!(context.contains("providerType=throttled"));
         assert!(context.contains("providerMessage=slow down"));
         assert!(!context.contains("secret"));
+
+        assert_eq!(
+            provider_error_code(400),
+            crate::EngineError::INVALID_ARGUMENT
+        );
+        assert_eq!(
+            provider_error_code(401),
+            crate::EngineError::PERMISSION_DENIED
+        );
+        assert_eq!(provider_error_code(404), crate::EngineError::NOT_FOUND);
+        assert_eq!(provider_error_code(405), crate::EngineError::UNSUPPORTED);
+        assert_eq!(
+            provider_error_code(408),
+            crate::EngineError::DEADLINE_EXCEEDED
+        );
+        assert_eq!(provider_error_code(429), crate::EngineError::RESOURCE_BUSY);
+        assert_eq!(provider_error_code(500), crate::EngineError::INTERNAL);
     }
 
     #[test]
@@ -961,9 +904,6 @@ mod tests {
         )
         .err()
         .expect("missing API key");
-        assert_eq!(
-            error.code(),
-            Some("ZVEC_GREP.ENGINE.MODELS.QWEN37_TEXT_EMBEDDING_MISSING_API_KEY")
-        );
+        assert_eq!(error.code(), crate::EngineError::PERMISSION_DENIED);
     }
 }

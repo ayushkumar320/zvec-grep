@@ -47,8 +47,8 @@ pub fn resolve_embedding_reference(
     if let Some(reference) = &environment_reference
         && get_embedding_model_catalog_entry(reference).is_none()
     {
-        return Err(ModelError::coded(
-            "ZVEC_GREP.ENGINE.CONFIG.EMBEDDING_ENVIRONMENT_INVALID",
+        return Err(ModelError::new(
+            crate::EngineError::INVALID_ARGUMENT,
             format!(
                 "Invalid ZVEC_GREP_EMBEDDING: unsupported model {reference}. Run `zg help models` to list supported models."
             ),
@@ -100,10 +100,7 @@ mod tests {
             ..ResolveEmbeddingReferenceOptions::default()
         })
         .expect_err("unsupported environment model must fail");
-        assert_eq!(
-            error.code(),
-            Some("ZVEC_GREP.ENGINE.CONFIG.EMBEDDING_ENVIRONMENT_INVALID")
-        );
+        assert_eq!(error.code(), crate::EngineError::INVALID_ARGUMENT);
         assert!(error.to_string().contains("zg help models"));
     }
 }
