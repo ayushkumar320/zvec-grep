@@ -126,6 +126,33 @@ async fn scanner_matches_typescript_defaults_and_explicit_includes() -> TestResu
 }
 
 #[tokio::test]
+async fn scanner_limits_discovery_to_requested_scope_paths() -> TestResult {
+    let temporary = tempdir()?;
+    let root = temporary.path();
+    mkdir(root, "unrelated/deep")?;
+    write(root, "changed.txt", "changed\n")?;
+    write(root, "unrelated/deep/untouched.txt", "untouched\n")?;
+
+    let scanner = NativeScanner::default();
+    let snapshot = scanner
+        .discover(
+            &ScanRequest {
+                roots: vec![root_spec(root)],
+                scope_paths: vec![root.join("changed.txt")],
+                known_files: Vec::new(),
+            },
+            &control(),
+        )
+        .await?;
+
+    assert_eq!(
+        relative_paths(&snapshot.files),
+        BTreeSet::from([PathBuf::from("changed.txt")])
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn scanner_matches_typescript_types_depth_size_binary_and_known_files() -> TestResult {
     let temporary = tempdir()?;
     let root = temporary.path();
@@ -221,6 +248,7 @@ async fn scanner_rejects_overlapping_roots() -> TestResult {
         .discover(
             &ScanRequest {
                 roots: vec![root_spec(root), root_spec(&root.join("child"))],
+                scope_paths: Vec::new(),
                 known_files: Vec::new(),
             },
             &control(),
@@ -245,6 +273,7 @@ async fn discover(
                     recursive: true,
                     discovery,
                 }],
+                scope_paths: Vec::new(),
                 known_files,
             },
             &control(),

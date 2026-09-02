@@ -28,7 +28,7 @@ use crate::{
     },
     change_set::ChangeSet,
     pattern::normalize_relative_path,
-    policy::{FileTypeResolver, RootPolicy},
+    policy::{FileTypeResolver, PathInterest, RootPolicy},
 };
 
 const DEFAULT_RAW_EVENT_CAPACITY: usize = 4_096;
@@ -424,15 +424,39 @@ fn normalize_present_or_removed_path(
     root_is_file: bool,
     path: &Path,
 ) -> Option<WorkspaceChange> {
-    let metadata = std::fs::metadata(path).ok();
+    normalize_present_or_removed_path_with(policy, root_is_file, path, |path| {
+        std::fs::metadata(path).ok()
+    })
+}
+
+fn normalize_present_or_removed_path_with(
+    policy: &RootPolicy,
+    root_is_file: bool,
+    path: &Path,
+    metadata: impl FnOnce(&Path) -> Option<std::fs::Metadata>,
+) -> Option<WorkspaceChange> {
+    if path == policy.root_path() && !root_is_file {
+        return Some(WorkspaceChange::Rescan);
+    }
+    match normalize_gitignore_change(policy, root_is_file, path) {
+        GitignoreChange::NotGitignore => {}
+        GitignoreChange::Ignored => return None,
+        GitignoreChange::Reconcile(change) => return Some(change),
+    }
+    let interest = policy.classify_path_interest(path);
+    if interest.is_empty() {
+        return None;
+    }
+    let metadata = metadata(path);
     if metadata.is_none() {
-        return normalize_removed_path(policy, root_is_file, path, true);
+        return normalize_removed_path_with_interest(policy, root_is_file, path, true, interest);
     }
     normalize_present_path(
         policy,
         root_is_file,
         path,
         metadata.is_some_and(|value| value.is_dir()),
+        interest,
     )
 }
 
@@ -441,15 +465,10 @@ fn normalize_present_path(
     root_is_file: bool,
     path: &Path,
     is_directory: bool,
+    interest: PathInterest,
 ) -> Option<WorkspaceChange> {
-    if path == policy.root_path() && !root_is_file {
-        return Some(WorkspaceChange::Rescan);
-    }
     let relative = relative_change_path(policy, root_is_file, path)?;
-    if path.file_name().is_some_and(|name| name == ".gitignore") {
-        return Some(WorkspaceChange::RescanDirectory(parent_scope(&relative)));
-    }
-    if !policy.path_can_affect_index(path, is_directory) {
+    if !policy.path_interest_can_affect_index(path, is_directory, interest) {
         return None;
     }
     Some(if is_directory {
@@ -468,17 +487,62 @@ fn normalize_removed_path(
     if path == policy.root_path() && !root_is_file {
         return Some(WorkspaceChange::Rescan);
     }
-    let relative = relative_change_path(policy, root_is_file, path)?;
-    if path.file_name().is_some_and(|name| name == ".gitignore") {
-        return Some(WorkspaceChange::RescanDirectory(parent_scope(&relative)));
+    match normalize_gitignore_change(policy, root_is_file, path) {
+        GitignoreChange::NotGitignore => {}
+        GitignoreChange::Ignored => return None,
+        GitignoreChange::Reconcile(change) => return Some(change),
     }
-    if !policy.path_can_affect_index(path, false) {
+    let interest = policy.classify_path_interest(path);
+    if interest.is_empty() {
+        return None;
+    }
+    normalize_removed_path_with_interest(policy, root_is_file, path, prefix, interest)
+}
+
+fn normalize_removed_path_with_interest(
+    policy: &RootPolicy,
+    root_is_file: bool,
+    path: &Path,
+    prefix: bool,
+    interest: PathInterest,
+) -> Option<WorkspaceChange> {
+    let relative = relative_change_path(policy, root_is_file, path)?;
+    if !policy.path_interest_can_affect_index(path, false, interest) {
         return None;
     }
     Some(if prefix {
         WorkspaceChange::DeletePrefix(relative)
     } else {
         WorkspaceChange::Delete(relative)
+    })
+}
+
+enum GitignoreChange {
+    NotGitignore,
+    Ignored,
+    Reconcile(WorkspaceChange),
+}
+
+fn normalize_gitignore_change(
+    policy: &RootPolicy,
+    root_is_file: bool,
+    path: &Path,
+) -> GitignoreChange {
+    if path.file_name().is_none_or(|name| name != ".gitignore") {
+        return GitignoreChange::NotGitignore;
+    }
+    if root_is_file && path == policy.root_path() {
+        return GitignoreChange::Reconcile(WorkspaceChange::RescanDirectory(PathBuf::new()));
+    }
+    let Some(parent) = path.parent() else {
+        return GitignoreChange::Ignored;
+    };
+    if !policy.path_can_affect_index(parent, true) {
+        return GitignoreChange::Ignored;
+    }
+    policy.invalidate_gitignore_rules(parent);
+    relative_change_path(policy, root_is_file, path).map_or(GitignoreChange::Ignored, |relative| {
+        GitignoreChange::Reconcile(WorkspaceChange::RescanDirectory(parent_scope(&relative)))
     })
 }
 
@@ -570,5 +634,129 @@ fn lock_task(
     match mutex.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        path::PathBuf,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
+
+    use tempfile::tempdir;
+
+    use crate::{DiscoveryOptions, RootSpec};
+
+    use super::{FileTypeResolver, RootPolicy, normalize_present_or_removed_path_with};
+
+    #[test]
+    fn definitely_ignored_watcher_paths_skip_metadata() {
+        let root = tempdir().expect("watch root");
+        let ignored = root.path().join("node_modules/pkg/index.js");
+        let policy = RootPolicy::new(
+            RootSpec {
+                path: root.path().to_path_buf(),
+                recursive: true,
+                discovery: DiscoveryOptions::default(),
+            },
+            &FileTypeResolver::new(),
+        )
+        .expect("watch policy");
+        let metadata_calls = AtomicUsize::new(0);
+
+        let change = normalize_present_or_removed_path_with(&policy, false, &ignored, |_| {
+            metadata_calls.fetch_add(1, Ordering::AcqRel);
+            None
+        });
+
+        assert!(change.is_none());
+        assert_eq!(metadata_calls.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn ignored_gitignore_changes_do_not_schedule_reconcile_or_read_metadata() {
+        let root = tempdir().expect("watch root");
+        let ignored = root.path().join("node_modules/pkg/.gitignore");
+        let policy = RootPolicy::new(
+            RootSpec {
+                path: root.path().to_path_buf(),
+                recursive: true,
+                discovery: DiscoveryOptions::default(),
+            },
+            &FileTypeResolver::new(),
+        )
+        .expect("watch policy");
+        let metadata_calls = AtomicUsize::new(0);
+
+        let change = normalize_present_or_removed_path_with(&policy, false, &ignored, |_| {
+            metadata_calls.fetch_add(1, Ordering::AcqRel);
+            None
+        });
+
+        assert!(change.is_none());
+        assert_eq!(metadata_calls.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn explicit_includes_keep_ignored_directory_files_watchable() {
+        let root = tempdir().expect("watch root");
+        let included = root.path().join("node_modules/pkg/index.js");
+        fs::create_dir_all(included.parent().expect("included parent")).expect("included parent");
+        fs::write(&included, "module.exports = 1;\n").expect("included fixture");
+        let policy = RootPolicy::new(
+            RootSpec {
+                path: root.path().to_path_buf(),
+                recursive: true,
+                discovery: DiscoveryOptions {
+                    include_paths: vec!["node_modules/pkg/index.js".to_owned()],
+                    ..DiscoveryOptions::default()
+                },
+            },
+            &FileTypeResolver::new(),
+        )
+        .expect("watch policy");
+        let metadata_calls = AtomicUsize::new(0);
+
+        let change = normalize_present_or_removed_path_with(&policy, false, &included, |path| {
+            metadata_calls.fetch_add(1, Ordering::AcqRel);
+            fs::metadata(path).ok()
+        });
+
+        assert_eq!(
+            change,
+            Some(crate::WorkspaceChange::Upsert(
+                "node_modules/pkg/index.js".into()
+            ))
+        );
+        assert_eq!(metadata_calls.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn root_gitignore_changes_reconcile_without_reading_target_metadata() {
+        let root = tempdir().expect("watch root");
+        let gitignore = root.path().join(".gitignore");
+        let policy = RootPolicy::new(
+            RootSpec {
+                path: root.path().to_path_buf(),
+                recursive: true,
+                discovery: DiscoveryOptions::default(),
+            },
+            &FileTypeResolver::new(),
+        )
+        .expect("watch policy");
+        let metadata_calls = AtomicUsize::new(0);
+
+        let change = normalize_present_or_removed_path_with(&policy, false, &gitignore, |_| {
+            metadata_calls.fetch_add(1, Ordering::AcqRel);
+            None
+        });
+
+        assert_eq!(
+            change,
+            Some(crate::WorkspaceChange::RescanDirectory(PathBuf::new()))
+        );
+        assert_eq!(metadata_calls.load(Ordering::Acquire), 0);
     }
 }

@@ -11,35 +11,46 @@ use rmcp::transport::streamable_http_server::{
 };
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::{info, warn};
 use zg_daemon_protocol::{DaemonCommand, DaemonReply, ErrorReply, ExecutionResult};
 use zg_engine::ZvecGrep;
-use zg_transport_mcp::{McpToolset, ServerStatusProvider, ServerStatusSnapshot, ZvecGrepMcpServer};
+use zg_transport_mcp::{
+    IndexOperationProvider, McpToolset, ServerStatusProvider, ServerStatusSnapshot,
+    ZvecGrepMcpServer,
+};
 
-use crate::{DaemonError, ServerConfig, controller::InstanceLock};
+use crate::{
+    DaemonError, ServerConfig, controller::InstanceLock, job_scheduler::JobState,
+    workspace_runtime::WorkspaceRuntimeManager,
+};
 
 #[derive(Clone)]
 struct ControlState {
     shutdown: CancellationToken,
     engine: Arc<ZvecGrep>,
+    runtimes: WorkspaceRuntimeManager,
 }
 
 struct RuntimeStatusProvider {
     started: Instant,
     shutdown: CancellationToken,
+    runtimes: WorkspaceRuntimeManager,
+    engine: Arc<ZvecGrep>,
 }
 
 impl ServerStatusProvider for RuntimeStatusProvider {
     fn snapshot(&self) -> ServerStatusSnapshot {
+        let runtime = self.runtimes.snapshot();
+        let engine = self.engine.runtime_snapshot();
         ServerStatusSnapshot {
             version: env!("CARGO_PKG_VERSION").to_owned(),
             uptime_ms: u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX),
             shutting_down: self.shutdown.is_cancelled(),
-            active_runtimes: 0,
-            queued_jobs: 0,
-            running_jobs: 0,
-            loaded_models: 0,
-            active_model_leases: 0,
+            active_runtimes: runtime.active_runtimes,
+            queued_jobs: runtime.jobs.queued,
+            running_jobs: runtime.jobs.running,
+            loaded_models: engine.loaded_models,
+            active_model_leases: engine.active_model_leases,
         }
     }
 }
@@ -57,13 +68,21 @@ pub(crate) async fn run_server(
         }
     };
     let shutdown = CancellationToken::new();
+    let runtimes = WorkspaceRuntimeManager::native(Arc::clone(&engine));
     let status: Arc<dyn ServerStatusProvider> = Arc::new(RuntimeStatusProvider {
         started: Instant::now(),
         shutdown: shutdown.clone(),
+        runtimes: runtimes.clone(),
+        engine: Arc::clone(&engine),
     });
+    let index_operations: Arc<dyn IndexOperationProvider> = Arc::new(runtimes.clone());
     let mcp_server = match config.mcp_toolset {
         McpToolset::Agent => ZvecGrepMcpServer::agent(Arc::clone(&engine)),
-        McpToolset::Full => ZvecGrepMcpServer::full(Arc::clone(&engine), status),
+        McpToolset::Full => ZvecGrepMcpServer::full_with_index_operations(
+            Arc::clone(&engine),
+            status,
+            index_operations,
+        ),
     };
     let mcp_config = StreamableHttpServerConfig::default()
         .with_cancellation_token(shutdown.child_token())
@@ -87,6 +106,7 @@ pub(crate) async fn run_server(
         .with_state(ControlState {
             shutdown: shutdown.clone(),
             engine: Arc::clone(&engine),
+            runtimes: runtimes.clone(),
         });
 
     if let Err(error) = instance.mark_ready().await {
@@ -99,10 +119,19 @@ pub(crate) async fn run_server(
         wait_for_shutdown_signal().await;
         signal_shutdown.cancel();
     });
+    let runtime_shutdown = shutdown.clone();
+    let runtime_manager = runtimes.clone();
+    let runtime_shutdown_task = tokio::spawn(async move {
+        runtime_shutdown.cancelled().await;
+        if let Err(error) = runtime_manager.shutdown_all().await {
+            warn!(%error, "daemon runtime shutdown was incomplete");
+        }
+    });
     let serve_result = axum::serve(listener, app)
         .with_graceful_shutdown(shutdown.clone().cancelled_owned())
         .await;
     shutdown.cancel();
+    let _ = runtime_shutdown_task.await;
     engine.close();
     let release_result = instance.release().await;
     serve_result?;
@@ -143,28 +172,62 @@ async fn execute_command(
         );
     }
     let result = match command {
-        DaemonCommand::Context(request) => state
-            .engine
-            .context(request)
-            .await
-            .map(|reply| DaemonReply::Context(Box::new(reply))),
-        DaemonCommand::Index(request) => state
-            .engine
-            .index(request)
-            .await
-            .map(|reply| DaemonReply::Index(Box::new(reply))),
-        DaemonCommand::DropIndex(request) => state
-            .engine
-            .drop_index(request)
-            .await
-            .map(DaemonReply::DropIndex),
-        DaemonCommand::Info(request) => state
-            .engine
-            .info(request)
-            .await
-            .map(|reply| DaemonReply::Info(Box::new(reply))),
+        DaemonCommand::Context(request) => engine_execution(
+            state
+                .engine
+                .context(request)
+                .await
+                .map(|reply| DaemonReply::Context(Box::new(reply))),
+        ),
+        DaemonCommand::Index(request) => match state.runtimes.submit_index(request, true).await {
+            Ok(submitted) if submitted.job.state == JobState::Succeeded => {
+                submitted.result.map_or_else(
+                    || internal_failure("successful daemon index job had no result"),
+                    |reply| ExecutionResult::Success(DaemonReply::Index(Box::new(reply))),
+                )
+            }
+            Ok(submitted) => ExecutionResult::Failure(submitted.job.error.map_or_else(
+                || ErrorReply {
+                    code: zg_engine::ErrorCode::Internal,
+                    message: "daemon index job ended without an error".to_owned(),
+                    retryable: false,
+                },
+                |error| ErrorReply {
+                    code: error.code,
+                    message: error.message,
+                    retryable: matches!(
+                        error.code,
+                        zg_engine::ErrorCode::BackendFailure
+                            | zg_engine::ErrorCode::DeadlineExceeded
+                    ),
+                },
+            )),
+            Err(error) => engine_execution::<DaemonReply>(Err(error.into_engine_error())),
+        },
+        DaemonCommand::DropIndex(request) => engine_execution(
+            state
+                .runtimes
+                .drop_index(request)
+                .await
+                .map(DaemonReply::DropIndex)
+                .map_err(crate::workspace_runtime::WorkspaceRuntimeError::into_engine_error),
+        ),
+        DaemonCommand::Info(request) => engine_execution(
+            state
+                .engine
+                .info(request)
+                .await
+                .map(|reply| DaemonReply::Info(Box::new(reply))),
+        ),
     };
-    let result = result.map_or_else(
+    (StatusCode::OK, Json(result))
+}
+
+fn engine_execution<T>(result: Result<T, zg_engine::EngineError>) -> ExecutionResult
+where
+    T: Into<DaemonReply>,
+{
+    result.map_or_else(
         |error| {
             ExecutionResult::Failure(ErrorReply {
                 code: error.code(),
@@ -175,9 +238,16 @@ async fn execute_command(
                 ),
             })
         },
-        ExecutionResult::Success,
-    );
-    (StatusCode::OK, Json(result))
+        |reply| ExecutionResult::Success(reply.into()),
+    )
+}
+
+fn internal_failure(message: &str) -> ExecutionResult {
+    ExecutionResult::Failure(ErrorReply {
+        code: zg_engine::ErrorCode::Internal,
+        message: message.to_owned(),
+        retryable: false,
+    })
 }
 
 fn has_loopback_host(headers: &HeaderMap) -> bool {

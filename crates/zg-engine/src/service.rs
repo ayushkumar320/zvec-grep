@@ -158,6 +158,14 @@ impl EngineService {
         self.models.close();
     }
 
+    pub(crate) fn runtime_snapshot(&self) -> crate::EngineRuntimeSnapshot {
+        let models = self.models.snapshot();
+        crate::EngineRuntimeSnapshot {
+            loaded_models: models.cached_runtimes,
+            active_model_leases: models.active_leases,
+        }
+    }
+
     fn ensure_open(&self) -> Result<(), EngineError> {
         if self.closed.load(Ordering::Acquire) {
             Err(EngineError::Closed)

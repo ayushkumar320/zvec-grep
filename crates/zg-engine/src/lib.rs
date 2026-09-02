@@ -26,6 +26,13 @@ use api::{
 
 pub use error::{EngineError, ErrorCode};
 
+/// Process-level resource counts used by resident daemon diagnostics.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct EngineRuntimeSnapshot {
+    pub loaded_models: usize,
+    pub active_model_leases: usize,
+}
+
 /// Reusable zvec-grep engine. One instance may serve multiple workspaces.
 #[derive(Clone, Debug)]
 pub struct ZvecGrep {
@@ -60,10 +67,31 @@ impl ZvecGrep {
     pub fn close(&self) {
         self.service.close();
     }
+
+    #[must_use]
+    pub fn runtime_snapshot(&self) -> EngineRuntimeSnapshot {
+        self.service.runtime_snapshot()
+    }
 }
 
 impl Default for ZvecGrep {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{EngineRuntimeSnapshot, ZvecGrep};
+
+    #[test]
+    fn fresh_engine_reports_an_empty_process_runtime() {
+        assert_eq!(
+            ZvecGrep::new().runtime_snapshot(),
+            EngineRuntimeSnapshot {
+                loaded_models: 0,
+                active_model_leases: 0,
+            }
+        );
     }
 }

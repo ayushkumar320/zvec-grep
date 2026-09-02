@@ -172,6 +172,7 @@ fn discover_sync(
 ) -> Result<ScanSnapshot, HostError> {
     control.check()?;
     let domains = validate_domains(&request.roots, resolver)?;
+    let scope = ScanScope::new(&request.scope_paths)?;
     let known_files = normalize_known_files(&request.known_files);
     let mut files = Vec::new();
     let mut diagnostics = ScanDiagnostics::default();
@@ -181,13 +182,21 @@ fn discover_sync(
         if domain.metadata.is_file() {
             scan_root_file(
                 &domain.policy,
+                &scope,
                 &known_files,
                 &mut files,
                 &mut diagnostics,
                 control,
             )?;
         } else if domain.metadata.is_dir() {
-            scan_root_directory(&domain, &known_files, &mut files, &mut diagnostics, control)?;
+            scan_root_directory(
+                &domain,
+                &scope,
+                &known_files,
+                &mut files,
+                &mut diagnostics,
+                control,
+            )?;
         }
     }
     files.sort_by(|left, right| {
@@ -199,6 +208,50 @@ fn discover_sync(
         left.root == right.root && left.relative_path == right.relative_path
     });
     Ok(ScanSnapshot { files, diagnostics })
+}
+
+#[derive(Debug)]
+struct ScanScope {
+    paths: Vec<PathBuf>,
+}
+
+impl ScanScope {
+    fn new(paths: &[PathBuf]) -> Result<Self, HostError> {
+        let mut normalized = paths
+            .iter()
+            .map(|path| {
+                if !path.is_absolute() {
+                    return Err(HostError::invalid_input(format!(
+                        "scan scope must be an absolute path: {}",
+                        path.display()
+                    )));
+                }
+                Ok(path.clone())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        normalized.sort();
+        normalized.dedup();
+        let mut compacted: Vec<PathBuf> = Vec::with_capacity(normalized.len());
+        for path in normalized {
+            if compacted.iter().any(|parent| path.starts_with(parent)) {
+                continue;
+            }
+            compacted.push(path);
+        }
+        Ok(Self { paths: compacted })
+    }
+
+    fn includes_file(&self, path: &Path) -> bool {
+        self.paths.is_empty() || self.paths.iter().any(|scope| path.starts_with(scope))
+    }
+
+    fn intersects_directory(&self, path: &Path) -> bool {
+        self.paths.is_empty()
+            || self
+                .paths
+                .iter()
+                .any(|scope| scope.starts_with(path) || path.starts_with(scope))
+    }
 }
 
 fn validate_domains(
@@ -302,11 +355,15 @@ struct KnownFileKey {
 
 fn scan_root_file(
     policy: &RootPolicy,
+    scope: &ScanScope,
     known_files: &HashSet<KnownFileKey>,
     files: &mut Vec<DiscoveredFile>,
     diagnostics: &mut ScanDiagnostics,
     control: &BlockingControl,
 ) -> Result<(), HostError> {
+    if !scope.includes_file(policy.root_path()) {
+        return Ok(());
+    }
     let Some(name) = policy.root_path().file_name() else {
         return Ok(());
     };
@@ -330,11 +387,15 @@ fn scan_root_file(
 
 fn scan_root_directory(
     domain: &ScanDomain,
+    scope: &ScanScope,
     known_files: &HashSet<KnownFileKey>,
     files: &mut Vec<DiscoveredFile>,
     diagnostics: &mut ScanDiagnostics,
     control: &BlockingControl,
 ) -> Result<(), HostError> {
+    if !scope.intersects_directory(domain.policy.root_path()) {
+        return Ok(());
+    }
     let root_name = domain
         .policy
         .root_path()
@@ -346,6 +407,7 @@ fn scan_root_directory(
     let mut visited = HashSet::from([domain.canonical_path.clone()]);
     walk(
         &domain.policy,
+        scope,
         domain.policy.root_path(),
         0,
         &domain.policy.initial_ignore_rules(),
@@ -360,6 +422,7 @@ fn scan_root_directory(
 #[allow(clippy::too_many_arguments)]
 fn walk(
     policy: &RootPolicy,
+    scope: &ScanScope,
     current_path: &Path,
     depth: usize,
     parent_ignore_rules: &[IgnoreRule],
@@ -402,6 +465,9 @@ fn walk(
         };
 
         if is_directory {
+            if !scope.intersects_directory(&absolute_path) {
+                continue;
+            }
             if !policy.root().recursive
                 || policy
                     .root()
@@ -425,6 +491,7 @@ fn walk(
             }
             walk(
                 policy,
+                scope,
                 &absolute_path,
                 depth + 1,
                 &ignore_rules,
@@ -434,6 +501,9 @@ fn walk(
                 diagnostics,
                 control,
             )?;
+            continue;
+        }
+        if !scope.includes_file(&absolute_path) {
             continue;
         }
         if !is_file

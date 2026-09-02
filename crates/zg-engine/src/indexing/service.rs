@@ -146,7 +146,7 @@ impl WorkspaceIndexService {
             embedding_model: &model,
             embedding_concurrency: options.embedding_concurrency,
             on_progress: options.on_progress,
-            signal: None,
+            signal: options.signal,
             changes: &options.changes,
         })
         .await;

@@ -93,6 +93,9 @@ pub trait ClockPort: Send + Sync {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ScanRequest {
     pub roots: Vec<RootSpec>,
+    /// Absolute file or directory paths that bound discovery within `roots`.
+    /// An empty list scans every configured root.
+    pub scope_paths: Vec<PathBuf>,
     /// Previously indexed source fingerprints keyed by root and relative path.
     /// A scanner may reuse matching metadata without repeating binary sniffing.
     pub known_files: Vec<KnownSourceFile>,

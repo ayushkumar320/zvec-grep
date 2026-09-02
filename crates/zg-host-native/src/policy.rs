@@ -2,7 +2,8 @@ use std::{
     collections::{HashMap, HashSet},
     fs,
     path::Path,
-    sync::{Arc, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
+    time::SystemTime,
 };
 
 use crate::HostError;
@@ -146,6 +147,33 @@ pub(crate) struct RootPolicy {
     ordered_globs: Vec<OrderedGlob>,
     file_types: FileTypePatterns,
     base_ignore_rules: Vec<IgnoreRule>,
+    gitignore_cache: Arc<Mutex<HashMap<std::path::PathBuf, GitignoreCacheEntry>>>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct PathInterest {
+    file: bool,
+    directory: bool,
+}
+
+impl PathInterest {
+    pub fn is_empty(self) -> bool {
+        !self.file && !self.directory
+    }
+
+    fn allows(self, is_directory: bool) -> bool {
+        if is_directory {
+            self.directory
+        } else {
+            self.file
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct GitignoreCacheEntry {
+    fingerprint: Option<(u64, SystemTime)>,
+    rules: Vec<IgnoreRule>,
 }
 
 impl RootPolicy {
@@ -169,6 +197,7 @@ impl RootPolicy {
             ordered_globs,
             file_types,
             base_ignore_rules,
+            gitignore_cache: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -249,32 +278,67 @@ impl RootPolicy {
     }
 
     pub fn path_can_affect_index(&self, absolute_path: &Path, is_directory: bool) -> bool {
+        self.path_interest_can_affect_index(
+            absolute_path,
+            is_directory,
+            self.classify_path_interest(absolute_path),
+        )
+    }
+
+    /// Evaluates discovery and ignore rules once before a watcher pays for
+    /// target metadata. Both shapes are retained when metadata is required.
+    pub fn classify_path_interest(&self, absolute_path: &Path) -> PathInterest {
         let Ok(path_from_root) = absolute_path.strip_prefix(&self.root.path) else {
-            return false;
+            return PathInterest::default();
         };
         if path_from_root.as_os_str().is_empty() {
-            return true;
+            return PathInterest {
+                file: true,
+                directory: true,
+            };
         }
         let depth = path_from_root.components().count();
-        if (!self.root.recursive
-            && (is_directory || absolute_path.parent() != Some(self.root.path.as_path())))
-            || self.root.discovery.max_depth.is_some_and(|max_depth| {
-                if is_directory {
-                    depth >= max_depth
-                } else {
-                    depth > max_depth
-                }
-            })
-        {
-            return false;
+        let file_shape_allowed = (self.root.recursive
+            || absolute_path.parent() == Some(self.root.path.as_path()))
+            && self
+                .root
+                .discovery
+                .max_depth
+                .is_none_or(|maximum| depth <= maximum);
+        let directory_shape_allowed = self.root.recursive
+            && self
+                .root
+                .discovery
+                .max_depth
+                .is_none_or(|maximum| depth < maximum);
+        if !file_shape_allowed && !directory_shape_allowed {
+            return PathInterest::default();
         }
         let relative_path = normalize_relative_path(path_from_root);
         let name = absolute_path
             .file_name()
             .map_or_else(String::new, |value| value.to_string_lossy().into_owned());
         let rules = self.rules_for_directory(absolute_path.parent().unwrap_or(&self.root.path));
-        self.path_can_be_scanned(&relative_path, &name, is_directory, &rules)
+        PathInterest {
+            file: file_shape_allowed
+                && self.path_can_be_scanned(&relative_path, &name, false, &rules),
+            directory: directory_shape_allowed
+                && self.path_can_be_scanned(&relative_path, &name, true, &rules),
+        }
+    }
+
+    pub fn path_interest_can_affect_index(
+        &self,
+        absolute_path: &Path,
+        is_directory: bool,
+        interest: PathInterest,
+    ) -> bool {
+        interest.allows(is_directory)
             && !self.has_excluded_nested_git_ancestor(absolute_path, is_directory)
+    }
+
+    pub fn invalidate_gitignore_rules(&self, directory: &Path) {
+        lock(&self.gitignore_cache).remove(directory);
     }
 
     pub fn matches_file_selection(&self, relative_path: &str) -> bool {
@@ -314,13 +378,32 @@ impl RootPolicy {
 
     fn read_gitignore_rules(&self, directory: &Path) -> Vec<IgnoreRule> {
         let path = directory.join(".gitignore");
-        let Ok(content) = fs::read(path) else {
-            return Vec::new();
-        };
-        let base_path = directory
-            .strip_prefix(&self.root.path)
-            .map_or_else(|_| String::new(), normalize_relative_path);
-        parse_gitignore_rules(&String::from_utf8_lossy(&content), &base_path).unwrap_or_default()
+        let fingerprint = fs::metadata(&path)
+            .ok()
+            .and_then(|metadata| Some((metadata.len(), metadata.modified().ok()?)));
+        if let Some(cached) = lock(&self.gitignore_cache).get(directory)
+            && cached.fingerprint == fingerprint
+        {
+            return cached.rules.clone();
+        }
+        let rules = fs::read(path).map_or_else(
+            |_| Vec::new(),
+            |content| {
+                let base_path = directory
+                    .strip_prefix(&self.root.path)
+                    .map_or_else(|_| String::new(), normalize_relative_path);
+                parse_gitignore_rules(&String::from_utf8_lossy(&content), &base_path)
+                    .unwrap_or_default()
+            },
+        );
+        lock(&self.gitignore_cache).insert(
+            directory.to_path_buf(),
+            GitignoreCacheEntry {
+                fingerprint,
+                rules: rules.clone(),
+            },
+        );
+        rules
     }
 
     fn ignored_path_explicitly_included(
@@ -376,6 +459,12 @@ impl RootPolicy {
         }
         false
     }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 #[derive(Clone, Debug)]
@@ -718,9 +807,10 @@ fn resolve_type_names(
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{fs, path::PathBuf};
 
     use crate::{DiscoveryOptions, RootSpec};
+    use tempfile::tempdir;
 
     use super::{FileTypeResolver, RootPolicy, parse_gitignore_rules};
 
@@ -765,5 +855,28 @@ mod tests {
         )
         .expect("included policy");
         assert!(included.path_can_be_scanned(".vscode", ".vscode", true, &[]));
+    }
+
+    #[test]
+    fn gitignore_cache_is_invalidated_when_the_watched_file_changes() {
+        let directory = tempdir().expect("policy root");
+        let ignored = directory.path().join("volatile.txt");
+        fs::write(directory.path().join(".gitignore"), "volatile.txt\n")
+            .expect("initial ignore file");
+        fs::write(&ignored, "fixture\n").expect("ignored fixture");
+        let policy = RootPolicy::new(
+            RootSpec {
+                path: directory.path().to_path_buf(),
+                recursive: true,
+                discovery: DiscoveryOptions::default(),
+            },
+            &FileTypeResolver::new(),
+        )
+        .expect("policy");
+
+        assert!(!policy.path_can_affect_index(&ignored, false));
+        fs::write(directory.path().join(".gitignore"), "").expect("updated ignore file");
+        policy.invalidate_gitignore_rules(directory.path());
+        assert!(policy.path_can_affect_index(&ignored, false));
     }
 }

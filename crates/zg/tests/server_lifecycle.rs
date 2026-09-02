@@ -344,9 +344,24 @@ fn full_toolset_exposes_lifecycle_tools_and_runs_managed_rg() -> Result<(), Box<
     assert!(response.contains("resident workspace manager"));
     assert!(response.contains("\"isError\":false"));
 
-    let status = json!({
+    let index = json!({
         "jsonrpc": "2.0",
         "id": 4,
+        "method": "tools/call",
+        "params": {
+            "name": "zvec_grep_index",
+            "arguments": { "root": home.path(), "wait": false }
+        }
+    });
+    let response = post_json(port, Some(&session), &index.to_string())?;
+    assert!(response.contains("\"state\":\"queued\""));
+    assert!(response.contains("\"job_id\":"));
+    assert!(!response.contains("generation-"));
+    assert!(response.contains("\"isError\":false"));
+
+    let status = json!({
+        "jsonrpc": "2.0",
+        "id": 5,
         "method": "tools/call",
         "params": {
             "name": "zvec_grep_server_status",
@@ -355,12 +370,13 @@ fn full_toolset_exposes_lifecycle_tools_and_runs_managed_rg() -> Result<(), Box<
     });
     let response = post_json(port, Some(&session), &status.to_string())?;
     assert!(response.contains("active_runtimes"));
+    assert!(response.contains("\"active_runtimes\":1"));
     assert!(response.contains("structuredContent"));
     assert!(response.contains("\"isError\":false"));
 
     let index_status = json!({
         "jsonrpc": "2.0",
-        "id": 5,
+        "id": 6,
         "method": "tools/call",
         "params": {
             "name": "zvec_grep_index_status",
@@ -371,6 +387,8 @@ fn full_toolset_exposes_lifecycle_tools_and_runs_managed_rg() -> Result<(), Box<
     assert!(response.contains("\"indexed\":false"));
     assert!(response.contains("\"index_policy\":\"undecided\""));
     assert!(response.contains("\"source\":\"unindexed\""));
+    assert!(response.contains("\"runtime\":"));
+    assert!(response.contains("\"job_state\":\"failed\""));
     assert!(response.contains("\"isError\":false"));
 
     let output = guard.stop()?;

@@ -9,6 +9,7 @@ use std::{
     sync::Arc,
 };
 
+use async_trait::async_trait;
 use chrono::{DateTime, Local, NaiveDate, TimeZone};
 use rmcp::{
     ErrorData, RoleServer, ServerHandler,
@@ -32,7 +33,7 @@ use zg_engine::{
             result::{ContentRange, ContextItem, ContextItemStatus, MatchedBy},
         },
         index::{
-            IndexOptions, IndexResult,
+            IndexOptions,
             options::{
                 Device, DiscoveryOptions as IndexDiscoveryOptions, EmbeddingModelSpec, RootPath,
             },
@@ -130,9 +131,87 @@ pub trait ServerStatusProvider: Send + Sync {
     fn snapshot(&self) -> ServerStatusSnapshot;
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IndexOperationState {
+    Queued,
+    Running,
+    Succeeded,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IndexOperationError {
+    pub code: ErrorCode,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IndexOperationResult {
+    pub root: PathBuf,
+    pub job_id: String,
+    pub state: IndexOperationState,
+    pub reused: bool,
+    pub error: Option<IndexOperationError>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IndexRuntimeSnapshot {
+    pub watcher_active: bool,
+    pub dirty_revision: u64,
+    pub indexed_revision: u64,
+    pub active_job_id: Option<String>,
+    pub job_state: Option<IndexOperationState>,
+    pub progress: Option<zg_engine::api::index::progress::IndexProgress>,
+    pub error: Option<IndexOperationError>,
+}
+
+#[async_trait]
+pub trait IndexOperationProvider: Send + Sync {
+    async fn submit_index(
+        &self,
+        options: IndexOptions,
+        wait: bool,
+    ) -> Result<IndexOperationResult, EngineError>;
+
+    async fn drop_index(&self, options: InfoOptions) -> Result<bool, EngineError>;
+
+    fn runtime_snapshot(&self, _root: &Path) -> Option<IndexRuntimeSnapshot> {
+        None
+    }
+}
+
+struct DirectIndexOperationProvider {
+    engine: Arc<ZvecGrep>,
+}
+
+#[async_trait]
+impl IndexOperationProvider for DirectIndexOperationProvider {
+    async fn submit_index(
+        &self,
+        options: IndexOptions,
+        _wait: bool,
+    ) -> Result<IndexOperationResult, EngineError> {
+        let root = request_root(options.root.as_deref());
+        let result = self.engine.index(options).await?;
+        Ok(IndexOperationResult {
+            root,
+            job_id: format!("generation-{}", result.generation),
+            state: IndexOperationState::Succeeded,
+            reused: false,
+            error: None,
+        })
+    }
+
+    async fn drop_index(&self, options: InfoOptions) -> Result<bool, EngineError> {
+        self.engine.drop_index(options).await
+    }
+}
+
 #[derive(Clone)]
 pub struct ZvecGrepMcpServer {
     engine: Arc<ZvecGrep>,
+    index_operations: Arc<dyn IndexOperationProvider>,
     status: Option<Arc<dyn ServerStatusProvider>>,
     toolset: McpToolset,
     router: ToolRouter<Self>,
@@ -149,10 +228,32 @@ impl ZvecGrepMcpServer {
         Self::build(engine, McpToolset::Full, Some(status))
     }
 
+    #[must_use]
+    pub fn full_with_index_operations(
+        engine: Arc<ZvecGrep>,
+        status: Arc<dyn ServerStatusProvider>,
+        index_operations: Arc<dyn IndexOperationProvider>,
+    ) -> Self {
+        Self::build_with_index_operations(engine, McpToolset::Full, Some(status), index_operations)
+    }
+
     fn build(
         engine: Arc<ZvecGrep>,
         toolset: McpToolset,
         status: Option<Arc<dyn ServerStatusProvider>>,
+    ) -> Self {
+        let index_operations: Arc<dyn IndexOperationProvider> =
+            Arc::new(DirectIndexOperationProvider {
+                engine: Arc::clone(&engine),
+            });
+        Self::build_with_index_operations(engine, toolset, status, index_operations)
+    }
+
+    fn build_with_index_operations(
+        engine: Arc<ZvecGrep>,
+        toolset: McpToolset,
+        status: Option<Arc<dyn ServerStatusProvider>>,
+        index_operations: Arc<dyn IndexOperationProvider>,
     ) -> Self {
         let mut router = Self::tool_router();
         if toolset == McpToolset::Agent {
@@ -164,6 +265,7 @@ impl ZvecGrepMcpServer {
         }
         Self {
             engine,
+            index_operations,
             status,
             toolset,
             router,
@@ -226,16 +328,15 @@ impl ZvecGrepMcpServer {
             .into_request()
             .map_err(|message| ErrorData::invalid_params(message, None))?;
         Ok(match request {
-            IndexToolRequest::Index(request) => {
-                let root = request_root(request.root.as_deref());
-                match self.engine.index(*request).await {
-                    Ok(reply) => index_reply_to_result(&root, &reply),
+            IndexToolRequest::Index { options, wait } => {
+                match self.index_operations.submit_index(*options, wait).await {
+                    Ok(reply) => index_operation_to_result(&reply),
                     Err(error) => error_result(&error),
                 }
             }
             IndexToolRequest::Drop(request) => {
                 let root = request_root(request.root.as_deref());
-                match self.engine.drop_index(request).await {
+                match self.index_operations.drop_index(request).await {
                     Ok(removed) => drop_result_to_index_result(&root, removed),
                     Err(error) => error_result(&error),
                 }
@@ -266,7 +367,7 @@ impl ZvecGrepMcpServer {
             root: Some(root.clone()),
             include_status: false,
         };
-        Ok(match self.engine.drop_index(request).await {
+        Ok(match self.index_operations.drop_index(request).await {
             Ok(removed) => drop_result_to_result(&root, removed),
             Err(error) => error_result(&error),
         })
@@ -321,7 +422,10 @@ impl ZvecGrepMcpServer {
             include_status: true,
         };
         Ok(match self.engine.info(request).await {
-            Ok(reply) => info_result_to_tool_result(reply),
+            Ok(reply) => {
+                let runtime = self.index_operations.runtime_snapshot(&reply.root);
+                info_result_to_tool_result(reply, runtime)
+            }
             Err(error) => error_result(&error),
         })
     }
@@ -519,7 +623,10 @@ pub struct RgInput {
 }
 
 enum IndexToolRequest {
-    Index(Box<IndexOptions>),
+    Index {
+        options: Box<IndexOptions>,
+        wait: bool,
+    },
     Drop(InfoOptions),
 }
 
@@ -529,7 +636,11 @@ pub struct EmptyInput {}
 #[derive(Clone, Copy, Debug, JsonSchema, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum IndexJobState {
+    Queued,
+    Running,
     Succeeded,
+    Failed,
+    Cancelled,
 }
 
 #[derive(Clone, Copy, Debug, JsonSchema, Serialize)]
@@ -549,6 +660,14 @@ struct IndexOutput {
     action: Option<IndexActionOutput>,
     #[serde(skip_serializing_if = "Option::is_none")]
     dropped: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<IndexJobErrorOutput>,
+}
+
+#[derive(Clone, Debug, JsonSchema, Serialize)]
+struct IndexJobErrorOutput {
+    code: String,
+    message: String,
 }
 
 #[derive(Clone, Debug, JsonSchema, Serialize)]
@@ -564,6 +683,36 @@ struct IndexStatusOutput {
     index_policy: String,
     source: String,
     persistent: PersistentIndexStatusOutput,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    runtime: Option<IndexRuntimeStatusOutput>,
+}
+
+#[derive(Clone, Debug, JsonSchema, Serialize)]
+struct IndexRuntimeStatusOutput {
+    watcher_active: bool,
+    dirty_revision: u64,
+    indexed_revision: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    active_job_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    job_state: Option<IndexJobState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    progress: Option<IndexJobProgressOutput>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<IndexJobErrorOutput>,
+}
+
+#[derive(Clone, Debug, JsonSchema, Serialize)]
+struct IndexJobProgressOutput {
+    phase: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    files_total: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    files_indexed: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    files_failed: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
 }
 
 #[derive(Clone, Debug, JsonSchema, Serialize)]
@@ -951,16 +1100,19 @@ impl IndexInput {
         } else {
             None
         };
-        Ok(IndexToolRequest::Index(Box::new(IndexOptions {
-            root: Some(root),
-            roots: vec![root_spec],
-            rebuild: self.rebuild.unwrap_or(false),
-            reset_paths: self.reset_paths.unwrap_or(false),
-            discovery,
-            embedding,
-            embedding_concurrency: self.embedding_concurrency,
-            ..IndexOptions::default()
-        })))
+        Ok(IndexToolRequest::Index {
+            options: Box::new(IndexOptions {
+                root: Some(root),
+                roots: vec![root_spec],
+                rebuild: self.rebuild.unwrap_or(false),
+                reset_paths: self.reset_paths.unwrap_or(false),
+                discovery,
+                embedding,
+                embedding_concurrency: self.embedding_concurrency,
+                ..IndexOptions::default()
+            }),
+            wait: self.wait.unwrap_or(false),
+        })
     }
 
     fn has_index_options(&self) -> bool {
@@ -1292,19 +1444,25 @@ fn request_root(root: Option<&Path>) -> PathBuf {
     root.map_or_else(|| PathBuf::from("."), Path::to_path_buf)
 }
 
-fn index_reply_to_result(root: &Path, reply: &IndexResult) -> CallToolResult {
-    structured_result(completed_index(root, reply))
-}
-
-fn completed_index(root: &Path, reply: &IndexResult) -> IndexOutput {
-    IndexOutput {
-        root: root.display().to_string(),
-        job_id: format!("generation-{}", reply.generation),
-        state: IndexJobState::Succeeded,
-        reused: false,
+fn index_operation_to_result(reply: &IndexOperationResult) -> CallToolResult {
+    structured_result(IndexOutput {
+        root: reply.root.display().to_string(),
+        job_id: reply.job_id.clone(),
+        state: match reply.state {
+            IndexOperationState::Queued => IndexJobState::Queued,
+            IndexOperationState::Running => IndexJobState::Running,
+            IndexOperationState::Succeeded => IndexJobState::Succeeded,
+            IndexOperationState::Failed => IndexJobState::Failed,
+            IndexOperationState::Cancelled => IndexJobState::Cancelled,
+        },
+        reused: reply.reused,
         action: Some(IndexActionOutput::Index),
         dropped: None,
-    }
+        error: reply.error.as_ref().map(|error| IndexJobErrorOutput {
+            code: error_code_label(error.code).to_owned(),
+            message: error.message.clone(),
+        }),
+    })
 }
 
 fn drop_result_to_index_result(root: &Path, removed: bool) -> CallToolResult {
@@ -1315,6 +1473,7 @@ fn drop_result_to_index_result(root: &Path, removed: bool) -> CallToolResult {
         reused: false,
         action: Some(IndexActionOutput::Drop),
         dropped: Some(removed),
+        error: None,
     })
 }
 
@@ -1325,8 +1484,13 @@ fn drop_result_to_result(root: &Path, removed: bool) -> CallToolResult {
     })
 }
 
-fn info_result_to_tool_result(reply: InfoResult) -> CallToolResult {
-    structured_result(IndexStatusOutput::from(reply))
+fn info_result_to_tool_result(
+    reply: InfoResult,
+    runtime: Option<IndexRuntimeSnapshot>,
+) -> CallToolResult {
+    let mut output = IndexStatusOutput::from(reply);
+    output.runtime = runtime.map(IndexRuntimeStatusOutput::from);
+    structured_result(output)
 }
 
 impl From<InfoResult> for IndexStatusOutput {
@@ -1375,7 +1539,46 @@ impl From<InfoResult> for IndexStatusOutput {
                 files,
                 suggestion: reply.suggestion,
             },
+            runtime: None,
         }
+    }
+}
+
+impl From<IndexRuntimeSnapshot> for IndexRuntimeStatusOutput {
+    fn from(runtime: IndexRuntimeSnapshot) -> Self {
+        Self {
+            watcher_active: runtime.watcher_active,
+            dirty_revision: runtime.dirty_revision,
+            indexed_revision: runtime.indexed_revision,
+            active_job_id: runtime.active_job_id,
+            job_state: runtime.job_state.map(index_job_state),
+            progress: runtime.progress.map(|progress| IndexJobProgressOutput {
+                phase: match progress.phase {
+                    zg_engine::api::index::progress::IndexProgressPhase::Scanning => "scanning",
+                    zg_engine::api::index::progress::IndexProgressPhase::Indexing => "indexing",
+                    zg_engine::api::index::progress::IndexProgressPhase::Done => "done",
+                }
+                .to_owned(),
+                files_total: progress.files_total,
+                files_indexed: progress.files_indexed,
+                files_failed: progress.files_failed,
+                detail: progress.detail,
+            }),
+            error: runtime.error.map(|error| IndexJobErrorOutput {
+                code: error_code_label(error.code).to_owned(),
+                message: error.message,
+            }),
+        }
+    }
+}
+
+const fn index_job_state(state: IndexOperationState) -> IndexJobState {
+    match state {
+        IndexOperationState::Queued => IndexJobState::Queued,
+        IndexOperationState::Running => IndexJobState::Running,
+        IndexOperationState::Succeeded => IndexJobState::Succeeded,
+        IndexOperationState::Failed => IndexJobState::Failed,
+        IndexOperationState::Cancelled => IndexJobState::Cancelled,
     }
 }
 
@@ -1638,9 +1841,14 @@ mod tests {
         let request = index_input()
             .into_request()
             .expect("index input should map");
-        let IndexToolRequest::Index(request) = request else {
+        let IndexToolRequest::Index {
+            options: request,
+            wait,
+        } = request
+        else {
             panic!("index tool must create an index request");
         };
+        assert!(wait);
         assert_eq!(request.root, Some(test_root()));
         assert_eq!(request.roots.len(), 1);
         assert_eq!(request.discovery.globs, ["*.rs"]);

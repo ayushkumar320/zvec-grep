@@ -208,6 +208,7 @@ pub(crate) async fn get_workspace_index_status(
         .discover(
             &ScanRequest {
                 roots: host_roots(&workspace_index.roots),
+                scope_paths: Vec::new(),
                 known_files: known_source_files(&stored_files),
             },
             &control,
@@ -364,6 +365,7 @@ async fn run_index_pass(
         .discover(
             &ScanRequest {
                 roots: host_roots(&context.workspace_index.roots),
+                scope_paths: scope.scan_paths(),
                 known_files: known_source_files(&all_stored),
             },
             &control,
@@ -1866,6 +1868,13 @@ impl ChangeScope {
         }
     }
 
+    fn scan_paths(&self) -> Vec<PathBuf> {
+        match self {
+            Self::All => Vec::new(),
+            Self::Paths(paths) => paths.clone(),
+        }
+    }
+
     fn filter_stored(&self, files: &[FileInfo]) -> Vec<FileInfo> {
         files
             .iter()
@@ -2129,6 +2138,43 @@ mod tests {
         }
     }
 
+    struct RecordingScanner {
+        inner: NativeScanner,
+        requests: Mutex<Vec<ScanRequest>>,
+    }
+
+    impl RecordingScanner {
+        fn new() -> Self {
+            Self {
+                inner: NativeScanner::default(),
+                requests: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl WorkspaceScannerPort for RecordingScanner {
+        async fn discover(
+            &self,
+            request: &ScanRequest,
+            control: &TaskControl,
+        ) -> Result<ScanSnapshot, HostError> {
+            self.requests
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(request.clone());
+            self.inner.discover(request, control).await
+        }
+
+        async fn read_batch(
+            &self,
+            request: &ReadBatchRequest,
+            control: &TaskControl,
+        ) -> Result<Vec<HostSource>, HostError> {
+            self.inner.read_batch(request, control).await
+        }
+    }
+
     struct ConcurrentModel {
         info: EmbeddingModelInfo,
         calls: AtomicUsize,
@@ -2285,7 +2331,7 @@ mod tests {
         std::fs::write(&first_path, "first").expect("first fixture");
         std::fs::write(&second_path, "second").expect("second fixture");
         let workspace = workspace(directory.path());
-        let scanner = NativeScanner::default();
+        let scanner = RecordingScanner::new();
         let storage = MemoryStorage::default();
         let model = ConcurrentModel::new();
         index_workspace(&IndexingContext {
@@ -2317,6 +2363,15 @@ mod tests {
         .await
         .expect("narrow index");
 
+        let requests = scanner
+            .requests
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        assert!(requests[0].scope_paths.is_empty());
+        assert_eq!(
+            requests[1].scope_paths.as_slice(),
+            std::slice::from_ref(&first_path)
+        );
         assert_eq!(result.files_scanned, 1);
         assert_eq!(result.files_modified, 1);
         let stored = storage.list_files().expect("stored files");

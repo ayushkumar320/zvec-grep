@@ -8,6 +8,7 @@ pub mod options {
     use std::path::PathBuf;
 
     use serde::{Deserialize, Serialize};
+    use tokio_util::sync::CancellationToken;
 
     use super::progress::IndexProgressReporter;
     #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -32,6 +33,12 @@ pub mod options {
         /// daemon and transport requests.
         #[serde(skip)]
         pub on_progress: Option<IndexProgressReporter>,
+        /// Cancels this in-process indexing operation.
+        ///
+        /// Like progress reporters, cancellation is runtime-only and is never
+        /// serialized across the daemon protocol.
+        #[serde(skip)]
+        pub signal: Option<CancellationToken>,
     }
 
     #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -105,7 +112,8 @@ pub mod progress {
             Self(Arc::new(reporter))
         }
 
-        pub(crate) fn report(&self, progress: IndexProgress) {
+        /// Publishes one progress snapshot to the configured observer.
+        pub fn report(&self, progress: IndexProgress) {
             (self.0)(progress);
         }
     }
@@ -213,6 +221,8 @@ pub mod result {
 
 #[cfg(test)]
 mod tests {
+    use tokio_util::sync::CancellationToken;
+
     use super::{IndexOptions, progress::IndexProgressReporter};
 
     #[test]
@@ -220,14 +230,17 @@ mod tests {
         let request = IndexOptions {
             root: Some("/workspace".into()),
             on_progress: Some(IndexProgressReporter::new(|_| {})),
+            signal: Some(CancellationToken::new()),
             ..IndexOptions::default()
         };
 
         let encoded = serde_json::to_string(&request).expect("index request should serialize");
         assert!(!encoded.contains("on_progress"));
+        assert!(!encoded.contains("signal"));
         let decoded: IndexOptions =
             serde_json::from_str(&encoded).expect("index request should deserialize");
         assert!(decoded.on_progress.is_none());
+        assert!(decoded.signal.is_none());
         assert_eq!(decoded.root, request.root);
     }
 }

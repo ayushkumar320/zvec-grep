@@ -3805,6 +3805,7 @@ dependencies = [
 name = "zg-daemon"
 version = "0.0.1"
 dependencies = [
+ "async-trait",
  "axum",
  "bytes",
  "futures",
@@ -3826,6 +3827,7 @@ dependencies = [
  "windows-spawn",
  "zg-daemon-protocol",
  "zg-engine",
+ "zg-host-native",
  "zg-transport-mcp",
 ]
 
@@ -3909,6 +3911,7 @@ dependencies = [
 name = "zg-transport-mcp"
 version = "0.0.1"
 dependencies = [
+ "async-trait",
  "chrono",
  "rmcp",
  "schemars",
