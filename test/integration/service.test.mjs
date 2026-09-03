@@ -3,6 +3,7 @@ import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { EngineError } from "../../dist/engine/errors.js";
+import { Model2VecEmbeddingModel } from "../../dist/engine/models/backends/model2vec.js";
 import { CURRENT_INDEX_VERSION } from "../../dist/engine/types.js";
 import { createZvecGrep } from "../../dist/index.js";
 import { createTemporaryDirectory } from "../helpers/fixtures.mjs";
@@ -107,6 +108,117 @@ class DownloadProgressEmbeddingModel extends FakeEmbeddingModel {
   }
 }
 
+function multiBatchModel2Vec(modelCacheDir, failure) {
+  const calls = {
+    downloads: [],
+    loads: [],
+    batches: [],
+    completedBatches: [],
+    events: [],
+    activeBatches: 0,
+    maxActiveBatches: 0,
+    failure,
+  };
+  let releaseFailedDownload;
+  let releaseFirstBatch;
+  const firstBatchMayComplete = new Promise((resolve) => {
+    releaseFirstBatch = resolve;
+  });
+  class TrackedModel2Vec extends Model2VecEmbeddingModel {
+    async doEmbed(contents, options) {
+      const batch = calls.batches.length;
+      calls.batches.push(contents.map((content) => content.text));
+      calls.events.push("embed");
+      calls.activeBatches++;
+      calls.maxActiveBatches = Math.max(
+        calls.maxActiveBatches,
+        calls.activeBatches,
+      );
+      try {
+        const result = await super.doEmbed(contents, options);
+        if (batch === 0) {
+          // Complete a later batch first to exercise vector/fragment ordering.
+          await firstBatchMayComplete;
+        } else if (batch === 1) {
+          releaseFirstBatch();
+        }
+        calls.completedBatches.push(batch);
+        return result;
+      } finally {
+        calls.activeBatches--;
+      }
+    }
+  }
+  const model = new TrackedModel2Vec(
+    {
+      backend: "model2vec",
+      reference: "local/test-multi-batch-potion",
+      provider: "local",
+      model: "test-multi-batch-potion",
+      repo: "test/multi-batch-potion",
+      revision: "0123456789abcdef",
+      modelFile: "model.safetensors",
+      embeddingTensor: "embeddings",
+      tokenizerFile: "tokenizer.json",
+      dimension: 3,
+      metric: "cosine",
+      normalize: true,
+      maxInputTokens: 512,
+      maxBatchSize: 256,
+      defaultConcurrency: 2,
+    },
+    { modelCacheDir },
+    {
+      async download(url, destination) {
+        calls.downloads.push(url.split("/").at(-1));
+        calls.events.push("download");
+        if (calls.failure === "download") {
+          // Both artifacts belong to one preparation attempt. Let both start
+          // before failing so the count does not depend on filesystem timing.
+          if (calls.downloads.length % 2 === 1) {
+            await new Promise((resolve) => {
+              releaseFailedDownload = resolve;
+            });
+          } else {
+            releaseFailedDownload();
+          }
+          throw new Error("HTTP 503 Service Unavailable");
+        }
+        await writeFile(destination, "fixture model asset");
+      },
+      async loadSafetensors() {
+        calls.loads.push("table");
+        calls.events.push("load:table");
+        if (calls.failure === "load") {
+          throw new Error("invalid model tensor");
+        }
+        return {
+          data: Float32Array.from(
+            Array.from({ length: 770 }, (_, id) => [
+              Math.cos(id / 250),
+              Math.sin(id / 250),
+              1,
+            ]).flat(),
+          ),
+          dimension: 3,
+          dtype: "F32",
+          rows: 770,
+        };
+      },
+      async loadTokenizer() {
+        calls.loads.push("tokenizer");
+        calls.events.push("load:tokenizer");
+        return async (text) => ({
+          input_ids: {
+            data: [Number(/\bFragment(\d+)\b/.exec(text)?.[1] ?? 769)],
+          },
+        });
+      },
+    },
+  );
+  return { model, calls };
+}
+
 test("service exposes embedding model download progress while indexing", async (t) => {
   const temporaryDirectory = await createTemporaryDirectory(
     t,
@@ -193,6 +305,109 @@ test("service fails fast when a shared local embedding model cannot be prepared"
     ),
     false,
   );
+});
+
+test("service prepares Model2Vec once before queuing a large file and can recover on a later index", async (t) => {
+  for (const failure of ["download", "load"]) {
+    await t.test(failure, { timeout: 60_000 }, async (t) => {
+      const temporaryDirectory = await createTemporaryDirectory(
+        t,
+        "zvec-grep-multi-batch-model-preparation-",
+      );
+      const root = join(temporaryDirectory, "repo");
+      await mkdir(root, { recursive: true });
+      await writeFile(
+        join(root, "large.ts"),
+        Array.from(
+          { length: 769 },
+          (_, index) =>
+            `export function Fragment${index}() { return ${index}; }\n`,
+        ).join(""),
+      );
+      const { model, calls } = multiBatchModel2Vec(
+        join(temporaryDirectory, "models"),
+        failure,
+      );
+      const service = await createZvecGrep({ root, embeddingModel: model });
+      t.after(() => service.close());
+
+      await assert.rejects(
+        service.index({ embeddingConcurrency: 2 }),
+        (error) =>
+          error.code ===
+          `ZVEC_GREP.ENGINE.MODELS.MODEL2VEC_${failure.toUpperCase()}_FAILED`,
+      );
+      assert.deepEqual(calls.downloads.toSorted(), [
+        "model.safetensors",
+        "tokenizer.json",
+      ]);
+      assert.deepEqual(calls.loads, failure === "load" ? ["table"] : []);
+      assert.deepEqual(calls.batches, []);
+
+      calls.failure = null;
+      calls.events.length = 0;
+      const recovered = await service.index({ embeddingConcurrency: 2 });
+
+      assert.equal(recovered.filesFailed, 0);
+      assert.equal(recovered.filesScanned, 1);
+      assert.ok(recovered.entitiesCreated >= 769);
+      assert.equal(calls.downloads.length, failure === "download" ? 4 : 2);
+      assert.deepEqual(
+        calls.loads,
+        failure === "load"
+          ? ["table", "table", "tokenizer"]
+          : ["table", "tokenizer"],
+      );
+      assert.ok(calls.batches.length >= 4);
+      assert.equal(calls.batches[0].length, 256);
+      assert.equal(calls.maxActiveBatches, 2);
+      assert.notEqual(calls.completedBatches[0], 0);
+      assert.ok(
+        calls.events.indexOf("load:tokenizer") < calls.events.indexOf("embed"),
+      );
+
+      for (const index of [0, 256, 512, 768]) {
+        const result = await service.context({
+          routes: [{ mode: "vector", query: `Fragment${index}` }],
+          autoUpdate: false,
+          limit: 1,
+        });
+        assert.equal(result.items[0]?.metadata?.symbolName, `Fragment${index}`);
+      }
+    });
+  }
+});
+
+test("service only prepares local models for changed embeddable content", async (t) => {
+  for (const provider of ["local", "qwen"]) {
+    await t.test(provider, async (t) => {
+      const temporaryDirectory = await createTemporaryDirectory(
+        t,
+        "zvec-grep-lazy-model-preparation-",
+      );
+      const root = join(temporaryDirectory, "repo");
+      await mkdir(root, { recursive: true });
+      const model = new FakeEmbeddingModel();
+      model.info = { ...model.info, provider };
+      let preparations = 0;
+      model.prepare = async () => {
+        preparations++;
+      };
+      const service = await createZvecGrep({ root, embeddingModel: model });
+      t.after(() => service.close());
+
+      await service.index();
+      assert.equal(preparations, 0);
+      await writeFile(join(root, "empty.ts"), "");
+      await service.index();
+      assert.equal(preparations, 0);
+      await writeFile(join(root, "example.ts"), "export const Example = 1;\n");
+      await service.index();
+      assert.equal(preparations, provider === "local" ? 1 : 0);
+      await service.index();
+      assert.equal(preparations, provider === "local" ? 1 : 0);
+    });
+  }
 });
 
 test("service fails fast on permanent remote authentication failures", async (t) => {

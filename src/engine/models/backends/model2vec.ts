@@ -13,6 +13,7 @@ import {
   type CreateEmbeddingModelOptions,
   type EmbeddingModelProgress,
   type EmbeddingModelInfo,
+  type EmbeddingOptions,
   type EmbeddingResult,
   type NormalizedEmbeddingOptions,
 } from "../embeddings.js";
@@ -138,6 +139,16 @@ export class Model2VecEmbeddingModel extends BaseEmbeddingModel {
     options: NormalizedEmbeddingOptions,
   ): Promise<EmbeddingResult> {
     return await this.embedBatch(contents, options);
+  }
+
+  async prepare(
+    options: Pick<EmbeddingOptions, "signal" | "onProgress"> = {},
+  ): Promise<void> {
+    options.signal?.throwIfAborted();
+    this.ensureNotDisposed();
+    await this.ensureLoaded(options.onProgress);
+    options.signal?.throwIfAborted();
+    this.ensureNotDisposed();
   }
 
   private async embedBatch(

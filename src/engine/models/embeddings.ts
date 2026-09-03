@@ -63,6 +63,11 @@ export type EmbeddingModelInfo = Readonly<{
 export interface EmbeddingModel {
   readonly info: EmbeddingModelInfo;
 
+  /** Prepare local resources before indexing queues any embedding batches. */
+  prepare?(
+    options?: Pick<EmbeddingOptions, "signal" | "onProgress">,
+  ): Promise<void>;
+
   embed(
     contents: readonly Content[],
     options?: EmbeddingOptions,

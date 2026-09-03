@@ -112,6 +112,15 @@ test("Model2Vec downloads pinned Safetensors assets and performs normalized stat
     dependencies,
   );
   assert.equal(model.info.defaultConcurrency, 2);
+  await model.prepare({
+    onProgress: (progress) => downloadProgress.push(progress),
+  });
+  assert.equal(calls.tokenizerCalls, undefined);
+  assert.equal(calls.tableLoads.length, 1);
+  assert.equal(calls.tokenizerLoads.length, 1);
+  await model.prepare({
+    onProgress: (progress) => downloadProgress.push(progress),
+  });
   const { vectors } = await model.embed(
     [
       { kind: "text", text: "both tokens" },
@@ -191,6 +200,34 @@ test("Model2Vec downloads pinned Safetensors assets and performs normalized stat
   await assert.rejects(
     model.embed([{ kind: "text", text: "after dispose" }]),
     /disposed/,
+  );
+});
+
+test("Model2Vec preparation respects cancellation and disposal before loading", async () => {
+  const model = new Model2VecEmbeddingModel(
+    entry(),
+    { modelCacheDir: "/unused" },
+    {
+      async download() {
+        assert.fail("cancelled or disposed preparation must not download");
+      },
+    },
+  );
+  const cancelled = new Error("cancelled before model preparation");
+  const progress = [];
+  await assert.rejects(
+    model.prepare({
+      signal: AbortSignal.abort(cancelled),
+      onProgress: (event) => progress.push(event),
+    }),
+    (error) => error === cancelled,
+  );
+  assert.deepEqual(progress, []);
+
+  await model.dispose();
+  await assert.rejects(
+    model.prepare(),
+    (error) => error.code === "ZVEC_GREP.ENGINE.MODELS.MODEL2VEC_DISPOSED",
   );
 });
 

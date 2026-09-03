@@ -719,6 +719,11 @@ async function indexFiles(
   );
   const embeddingTiming = new ConcurrentTiming(timings, "index_embedding");
   const runningEmbeddings = new Set<Promise<void>>();
+  const prepareModel =
+    ctx.embeddingModel.info.provider === "local"
+      ? ctx.embeddingModel.prepare?.bind(ctx.embeddingModel)
+      : undefined;
+  let modelPrepared = false;
   const reportEmbeddingProgress = (
     currentStats: IndexStats,
     detail: string,
@@ -752,6 +757,28 @@ async function indexFiles(
     task: () => Promise<void>,
   ): Promise<void> => {
     throwIfIndexCancelled(ctx);
+    if (!modelPrepared && prepareModel) {
+      // Finish shared initialization before any file or fragment batch is queued.
+      try {
+        await embeddingTiming.time(() =>
+          prepareModel({
+            signal: ctx.signal,
+            onProgress: (progress) =>
+              reportModelDownloadProgress(
+                stats,
+                progress,
+                onProgress,
+                embeddingScheduler,
+              ),
+          }),
+        );
+      } catch (error) {
+        throwIfIndexCancelled(ctx);
+        throw error;
+      }
+      throwIfIndexCancelled(ctx);
+    }
+    modelPrepared = true;
     const promise = task().finally(() => {
       runningEmbeddings.delete(promise);
     });
