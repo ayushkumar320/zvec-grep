@@ -79,7 +79,7 @@ export type ZvecGrepIndexResult = {
   reused: boolean;
   action?: "index" | "drop";
   dropped?: boolean;
-  error?: { code: string; message: string };
+  error?: { code: string; message: string; context?: string };
   scanDiagnostics?: FileScanDiagnostics;
 };
 
@@ -165,7 +165,7 @@ export type ZvecGrepIndexStatusResult = {
       completed: number;
       total: number;
     };
-    error?: { code: string; message: string };
+    error?: { code: string; message: string; context?: string };
   };
 };
 
@@ -405,6 +405,9 @@ export function registerZvecGrepTools(
                   ? [
                       `error_code: ${result.error.code}`,
                       `error_message: ${result.error.message}`,
+                      ...(result.error.context
+                        ? [`error_context: ${result.error.context}`]
+                        : []),
                     ]
                   : []),
                 ...(result.scanDiagnostics

@@ -32,6 +32,7 @@ import {
 } from "./format/context.js";
 import { printDebug } from "./format/debug.js";
 import { createIndexProgressReporter } from "./format/progress.js";
+import { formatContextLines, modelDownloadFailureMessage } from "./errors.js";
 import {
   printWorkspaceInfo,
   printIndexPathFilterTip,
@@ -275,7 +276,9 @@ async function runIndex(parsed: ParsedArgs): Promise<void> {
         );
       }
       if (result.state === "failed") {
-        throw new Error(serverIndexFailureMessage(result));
+        throw new Error(
+          serverIndexFailureMessage(result, parsed.options.debug),
+        );
       }
       if (result.state === "succeeded") {
         const status = (await client
@@ -293,7 +296,34 @@ async function runIndex(parsed: ParsedArgs): Promise<void> {
   });
 }
 
-function serverIndexFailureMessage(result: Record<string, unknown>): string {
+function serverIndexFailureMessage(
+  result: Record<string, unknown>,
+  debug = false,
+): string {
+  const error = result.error;
+  const downloadFailure = modelDownloadFailureMessage(error);
+  if (downloadFailure && !debug) return downloadFailure;
+  const summary = downloadFailure ?? serverIndexFailureSummary(result);
+  const context =
+    error && typeof error === "object" && "context" in error
+      ? error.context
+      : undefined;
+  const details =
+    typeof context === "string" ? formatContextLines(context) : [];
+  const code =
+    downloadFailure && error && typeof error === "object" && "code" in error
+      ? [`Code: ${String(error.code)}`]
+      : [];
+  return [
+    summary,
+    ...code,
+    ...(details.length > 0
+      ? ["Details:", ...details.map((line) => `  ${line}`)]
+      : []),
+  ].join("\n");
+}
+
+function serverIndexFailureSummary(result: Record<string, unknown>): string {
   const error = result.error;
   if (error && typeof error === "object") {
     const code = (error as Record<string, unknown>).code;

@@ -13,9 +13,11 @@ void main();
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const errorColor = colorModeFromArgs(args);
+  let debug = false;
 
   try {
     const parsed = parseArgs(args);
+    debug = parsed.options.debug === true;
 
     if (parsed.command === "version") {
       console.log(PACKAGE_VERSION);
@@ -32,7 +34,7 @@ async function main(): Promise<void> {
     await runParsedCommand(parsed);
     process.exitCode = 0;
   } catch (error) {
-    printError(error, { color: errorColor });
+    printError(error, { color: errorColor, debug });
     process.exitCode = 1;
   }
 }

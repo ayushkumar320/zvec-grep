@@ -8,6 +8,12 @@ export type JobState =
 export type JobReason =
   "watch" | "reconcile" | "background_reconcile" | "manual" | "fresh_query";
 
+export type IndexJobError = {
+  code: string;
+  message: string;
+  context?: string;
+};
+
 export type IndexJobSnapshot = {
   id: string;
   canonicalRoot: string;
@@ -18,7 +24,7 @@ export type IndexJobSnapshot = {
   startedAt?: number;
   finishedAt?: number;
   progress?: IndexProgress;
-  error?: { code: string; message: string };
+  error?: IndexJobError;
 };
 
 export type SubmitIndexJob = {
@@ -435,9 +441,21 @@ function isRetryable(error: unknown): boolean {
   );
 }
 
-function errorInfo(error: unknown): { code: string; message: string } {
+function errorInfo(error: unknown): IndexJobError {
+  const context =
+    error &&
+    typeof error === "object" &&
+    "context" in error &&
+    typeof error.context === "string" &&
+    error.context.length > 0
+      ? { context: redactMessage(error.context, 4096) }
+      : {};
   if (error instanceof DaemonError) {
-    return { code: error.code, message: redactMessage(error.message) };
+    return {
+      code: error.code,
+      message: redactMessage(error.message),
+      ...context,
+    };
   }
   if (
     error &&
@@ -450,6 +468,7 @@ function errorInfo(error: unknown): { code: string; message: string } {
       message: redactMessage(
         error instanceof Error ? error.message : String(error),
       ),
+      ...context,
     };
   }
   return {
@@ -457,15 +476,17 @@ function errorInfo(error: unknown): { code: string; message: string } {
     message: redactMessage(
       error instanceof Error ? error.message : String(error),
     ),
+    ...context,
   };
 }
 
-function redactMessage(message: string): string {
+function redactMessage(message: string, maxLength = 512): string {
   return message
-    .replace(/Bearer\s+\S+/gi, "Bearer [redacted]")
+    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^/\s@]+@/gi, "$1[redacted]@")
+    .replace(/\b(Bearer|Basic)\s+[^\s"',;]+/gi, "$1 [redacted]")
     .replace(
-      /(api[_ -]?key|token|authorization)\s*[:=]\s*\S+/gi,
-      "$1=[redacted]",
+      /(["']?(?:api[_ -]?key|(?:access[_ -]?|refresh[_ -]?|id[_ -]?)?token|authorization|password|secret)["']?\s*[:=]\s*)(?:"(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|[^\s&]+)/gi,
+      "$1[redacted]",
     )
-    .slice(0, 512);
+    .slice(0, maxLength);
 }

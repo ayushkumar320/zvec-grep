@@ -9,6 +9,7 @@ import type {
 } from "../../index.js";
 import type { RemoteEmbeddingAuthorizationStatus } from "../../authorization/types.js";
 import type { CliOptions } from "../types.js";
+import { formatContextLines, modelDownloadFailureMessage } from "../errors.js";
 import { shouldUseColor } from "./highlight.js";
 import { formatGreenProgressBar } from "./progress.js";
 import {
@@ -40,6 +41,7 @@ export type WorkspaceIndexState =
 type WorkspaceRootPath = WorkspaceIndexInfo["rootPaths"][number];
 
 type WorkspaceStatusView = {
+  debug?: boolean;
   root: string;
   indexPath: string;
   policy: "enabled" | "disabled" | "undecided";
@@ -63,6 +65,7 @@ type WorkspaceStatusView = {
   error?: {
     code: string;
     message: string;
+    context?: string;
   };
   failedReasons?: string;
 };
@@ -134,6 +137,7 @@ type ServerIndexInfo = {
     error?: {
       code: string;
       message: string;
+      context?: string;
     };
   };
 };
@@ -220,6 +224,7 @@ export function printWorkspaceInfo(
 
   const state = workspaceState(info);
   printWorkspaceIndexStatus(theme, {
+    debug: options.debug,
     root: info.root,
     indexPath: info.indexPath,
     policy: info.indexPolicy,
@@ -264,6 +269,7 @@ export function printServerIndexInfo(
   const completion = info.runtime?.completion;
 
   printWorkspaceIndexStatus(theme, {
+    debug: options.debug,
     root: info.root,
     indexPath: info.persistent.index_path,
     policy: info.index_policy,
@@ -388,17 +394,50 @@ function printWorkspaceIndexStatus(
 
   const diagnostics: string[] = [];
   if (view.error) {
+    const downloadFailure = modelDownloadFailureMessage(view.error);
     diagnostics.push(
-      ...formatStatusField(theme, "Error", [
-        theme.danger(view.error.code),
-        theme.danger(view.error.message),
-      ]),
+      ...formatStatusField(
+        theme,
+        "Error",
+        (downloadFailure
+          ? [downloadFailure, ...(view.debug ? [view.error.code] : [])]
+          : [view.error.code, view.error.message]
+        ).map((line) => theme.danger(line)),
+      ),
     );
+    if (view.error.context && (!downloadFailure || view.debug)) {
+      diagnostics.push(
+        ...formatStatusField(
+          theme,
+          "Details",
+          formatContextLines(view.error.context).map((line) =>
+            theme.danger(line),
+          ),
+        ),
+      );
+    }
   }
   if (view.failedReasons) {
+    const downloadFailure = modelDownloadFailureMessage({
+      code: "ZVEC_GREP.ENGINE.INDEXING.FILES_FAILED",
+      context: `failedReasons=${view.failedReasons}`,
+    });
     diagnostics.push(
-      ...formatStatusField(theme, "Problem", theme.danger(view.failedReasons)),
+      ...formatStatusField(
+        theme,
+        downloadFailure ? "Error" : "Problem",
+        theme.danger(downloadFailure ?? view.failedReasons),
+      ),
     );
+    if (downloadFailure && view.debug) {
+      diagnostics.push(
+        ...formatStatusField(
+          theme,
+          "Details",
+          theme.danger(view.failedReasons),
+        ),
+      );
+    }
   }
   if (view.suggestion) {
     diagnostics.push(

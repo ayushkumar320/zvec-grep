@@ -14,6 +14,10 @@ import {
   resolveMcpToolset,
 } from "../dist/mcp/toolset.js";
 import { EMBEDDING_ENVIRONMENT_META_KEY } from "../dist/mcp/request-metadata.js";
+import {
+  zvecGrepIndexOutputSchema,
+  zvecGrepIndexStatusOutputSchema,
+} from "../dist/mcp/schemas.js";
 import { indexProgressFromMessage } from "../dist/index-progress.js";
 import { formatAgentContextResult } from "../dist/cli/format/context.js";
 import { ZVEC_GREP_WORKSPACE_EVIDENCE_RULES } from "../dist/prompts/zvec-grep-guidance.js";
@@ -564,10 +568,65 @@ test("index result includes an immediately available failure reason", async (t) 
     message: "Embedding schema could not be resolved.",
   });
   assert.match(result.content[0].text, /error_code: MODEL_LOAD_FAILED/);
+  assert.doesNotMatch(result.content[0].text, /error_context:/);
   assert.match(
     result.content[0].text,
     /Embedding schema could not be resolved/,
   );
+});
+
+test("index and status preserve the underlying job failure context", async (t) => {
+  const error = {
+    code: "ZVEC_GREP.ENGINE.INDEXING.FILES_FAILED",
+    message: "Indexing completed with 1 failed file",
+    context:
+      "failedReasons=fail.ts: MODEL2VEC_DOWNLOAD_FAILED: Failed to download Potion model (HTTP 503)",
+  };
+  const backend = createBackend();
+  backend.index = async (input) => ({
+    root: input.root,
+    jobId: "job-failed",
+    state: "failed",
+    reused: false,
+    error,
+  });
+  backend.indexStatus = async (input) => {
+    const result = await createBackend().indexStatus(input);
+    return {
+      ...result,
+      runtime: { ...result.runtime, jobState: "failed", error },
+    };
+  };
+  const { client, server } = await connectFull(backend);
+  t.after(async () => {
+    await client.close();
+    await server.close();
+  });
+
+  const index = await client.callTool({
+    name: "zvec_grep_index",
+    arguments: { root, wait: true },
+  });
+  assert.equal(index.isError, undefined);
+  assert.deepEqual(index.structuredContent.error, error);
+  assert.deepEqual(
+    zvecGrepIndexOutputSchema.parse(index.structuredContent).error,
+    error,
+  );
+  assert.ok(index.content[0].text.includes(`error_context: ${error.context}`));
+
+  const status = await client.callTool({
+    name: "zvec_grep_index_status",
+    arguments: { root },
+  });
+  assert.equal(status.isError, undefined);
+  assert.deepEqual(status.structuredContent.runtime.error, error);
+  assert.deepEqual(
+    zvecGrepIndexStatusOutputSchema.parse(status.structuredContent).runtime
+      .error,
+    error,
+  );
+  assert.deepEqual(JSON.parse(status.content[0].text).runtime.error, error);
 });
 
 test("index streams daemon progress through MCP", async (t) => {

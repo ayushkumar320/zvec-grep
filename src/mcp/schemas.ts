@@ -312,6 +312,7 @@ const jobStateSchema = z.enum([
 const jobErrorSchema = z.object({
   code: z.string(),
   message: z.string(),
+  context: z.string().optional(),
 });
 const rangeSchema = z.union([
   z.object({ kind: z.literal("file") }),
