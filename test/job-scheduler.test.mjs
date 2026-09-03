@@ -309,6 +309,173 @@ test("scheduler preserves bounded EngineError diagnostics without credentials", 
   await scheduler.close();
 });
 
+test("scheduler preserves model download failure context in job snapshots", async (t) => {
+  const scheduler = new JobScheduler({ maxAttempts: 1 });
+  t.after(() => scheduler.close());
+  const context = [
+    "failedFiles=1",
+    "failedReasons=[ZVEC_GREP.ENGINE.MODELS.MODEL2VEC_DOWNLOAD_FAILED] Failed to download Model2Vec model",
+    "model=local/potion-code-16m-v2",
+    "downloadUrl=https://models.example/potion-code-16m-v2/tokenizer.json",
+    "status=503",
+  ].join("\n");
+  const expectedError = {
+    code: "ZVEC_GREP.ENGINE.INDEXING.FILES_FAILED",
+    message: "Indexing completed with 1 failed file",
+    context,
+  };
+  const submitted = scheduler.submit({
+    canonicalRoot: "/repo-model-download",
+    reason: "manual",
+    run: async () => {
+      throw new EngineError(expectedError.message, {
+        code: expectedError.code,
+        context,
+      });
+    },
+  });
+
+  const completed = await scheduler.wait(submitted.job.id);
+  const byId = scheduler.get(submitted.job.id);
+  const byRoot = scheduler.getByRoot("/repo-model-download");
+  for (const result of [completed, byId, byRoot]) {
+    assert.equal(result.state, "failed");
+    assert.deepEqual(result.error, expectedError);
+  }
+  assert.notStrictEqual(completed.error, byId.error);
+  assert.notStrictEqual(byId.error, byRoot.error);
+
+  completed.error.context = "changed completion";
+  byId.error.context = "changed lookup";
+  byRoot.error.message = "changed root lookup";
+  assert.deepEqual(scheduler.get(submitted.job.id).error, expectedError);
+  assert.deepEqual(
+    scheduler.getByRoot("/repo-model-download").error,
+    expectedError,
+  );
+});
+
+test("scheduler redacts credentials from failure context", async (t) => {
+  const scheduler = new JobScheduler({ maxAttempts: 1 });
+  t.after(() => scheduler.close());
+  const submitted = scheduler.submit({
+    canonicalRoot: "/repo-model-download",
+    reason: "manual",
+    run: async () => {
+      throw new EngineError(
+        "Indexing completed with 1 failed file secret=message-secret",
+        {
+          code: "ZVEC_GREP.ENGINE.INDEXING.FILES_FAILED",
+          context: [
+            "failedReasons=MODEL2VEC_DOWNLOAD_FAILED",
+            "model=local/potion-code-16m-v2",
+            "authorization=Bearer bearer-secret",
+            "apiKey=camel-secret api_key=snake-secret token:token-secret",
+            '{"api_key":"json-secret","token":"quoted-token-start quoted-token-end"}',
+            JSON.stringify({ password: 'escaped-prefix"escaped-tail' }),
+            "secret='single-prefix\\'single-tail'",
+            "Authorization: Basic basic-secret",
+            "Authorization: Negotiate negotiate-secret",
+            JSON.stringify({
+              authorization: 'Negotiate quoted-auth-start, quoted-auth-end"',
+            }),
+            "Basic standalone-basic-secret",
+            "id_token=id-secret refresh_token=refresh-secret",
+            "downloadUrl=https://models.example/tokenizer.json?token=url-secret",
+            "downloadUrl=https://user-secret:password-secret@models.example/tokenizer.json?access_token=access-secret&other=retained",
+            "downloadUrl=ftp://userinfo-secret@models.example/tokenizer.json",
+            "downloadUrl=custom.scheme+v1://scheme-user-secret@models.example/tokenizer.json",
+          ].join("\n"),
+          cause: new Error(
+            'fetch failed password="cause password secret" id_token=cause-id-secret',
+          ),
+        },
+      );
+    },
+  });
+
+  const result = await scheduler.wait(submitted.job.id);
+  assert.equal(result.state, "failed");
+  assert.match(result.error.context, /MODEL2VEC_DOWNLOAD_FAILED/);
+  assert.match(result.error.context, /model=local\/potion-code-16m-v2/);
+  assert.match(result.error.context, /\[redacted\]/);
+  assert.doesNotMatch(
+    JSON.stringify(result.error),
+    /message-secret|bearer-secret|camel-secret|snake-secret|token-secret|json-secret|quoted-token-start|quoted-token-end|escaped-prefix|escaped-tail|single-prefix|single-tail|basic-secret|negotiate-secret|quoted-auth-start|quoted-auth-end|standalone-basic-secret|id-secret|refresh-secret|url-secret|user-secret|password-secret|access-secret|userinfo-secret|scheme-user-secret|cause password secret|cause-id-secret/,
+  );
+  assert.match(result.error.context, /models\.example\/tokenizer\.json/);
+  assert.match(result.error.context, /&other=retained/);
+  assert.deepEqual(scheduler.get(submitted.job.id).error, result.error);
+  assert.deepEqual(
+    scheduler.getByRoot("/repo-model-download").error,
+    result.error,
+  );
+});
+
+test("scheduler bounds failure context without losing the initial cause", async (t) => {
+  const scheduler = new JobScheduler({ maxAttempts: 1 });
+  t.after(() => scheduler.close());
+  const cause = [
+    "failedReasons=MODEL2VEC_DOWNLOAD_FAILED",
+    "model=local/potion-code-16m-v2",
+  ].join("\n");
+  const submitted = scheduler.submit({
+    canonicalRoot: "/repo-long-failure",
+    reason: "manual",
+    run: async () => {
+      throw new EngineError("Indexing completed with 1 failed file", {
+        code: "ZVEC_GREP.ENGINE.INDEXING.FILES_FAILED",
+        context: `${cause}\ndetail=${"x.".repeat(30_000)}\ntoken=tail-secret`,
+      });
+    },
+  });
+
+  const result = await scheduler.wait(submitted.job.id);
+  assert.equal(result.state, "failed");
+  assert.equal(result.error.context.startsWith(cause), true);
+  assert.ok(result.error.context.length > 512);
+  assert.ok(result.error.context.length <= 4096);
+  assert.doesNotMatch(result.error.context, /tail-secret/);
+});
+
+test("scheduler keeps failures without context backward compatible", async (t) => {
+  const cases = [
+    {
+      error: new EngineError("Indexing failed", {
+        code: "ZVEC_GREP.ENGINE.INDEXING.FILES_FAILED",
+      }),
+      expected: {
+        code: "ZVEC_GREP.ENGINE.INDEXING.FILES_FAILED",
+        message: "Indexing failed",
+      },
+    },
+    {
+      error: new DaemonError("INDEX_BUSY", "busy", false),
+      expected: { code: "INDEX_BUSY", message: "[INDEX_BUSY] busy" },
+    },
+    {
+      error: new Error("Indexing failed"),
+      expected: { code: "INDEX_FAILED", message: "Indexing failed" },
+    },
+  ];
+  for (const { error, expected } of cases) {
+    await t.test(error.name, async (t) => {
+      const scheduler = new JobScheduler({ maxAttempts: 1 });
+      t.after(() => scheduler.close());
+      const submitted = scheduler.submit({
+        canonicalRoot: "/repo",
+        reason: "manual",
+        run: async () => {
+          throw error;
+        },
+      });
+      const result = await scheduler.wait(submitted.job.id);
+      assert.equal(result.state, "failed");
+      assert.deepEqual(result.error, expected);
+    });
+  }
+});
+
 async function waitFor(predicate) {
   for (let attempt = 0; attempt < 100; attempt++) {
     if (predicate()) {

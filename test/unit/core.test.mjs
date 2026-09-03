@@ -403,6 +403,32 @@ test("CLI parser covers utility commands, provider controls, routes, and equals 
   assert.equal(parseArgs(["index", "--debug"]).options.debug, true);
 });
 
+test("CLI parser limits debug output to query, index, and workspace status", () => {
+  const supported = [
+    ["query", "--debug", "needle"],
+    ["index", "--debug"],
+    ["status", "--debug"],
+    ["status", "--check-ready", "--debug"],
+  ];
+  for (const args of supported) {
+    assert.equal(parseArgs(args).options.debug, true, args.join(" "));
+  }
+
+  const unsupported = [
+    ["install", "--debug"],
+    ["uninstall", "--debug"],
+    ["server", "start", "--debug"],
+    ["server", "status", "--debug"],
+  ];
+  for (const args of unsupported) {
+    assert.throws(
+      () => parseArgs(args),
+      /--debug can only be used with/,
+      args.join(" "),
+    );
+  }
+});
+
 test("CLI parser covers managed rg long and short compatibility options", () => {
   const long = parseArgs([
     "query",

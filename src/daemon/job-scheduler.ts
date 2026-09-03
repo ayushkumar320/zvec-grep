@@ -566,18 +566,17 @@ function safeErrorCode(code: string): string | undefined {
 
 function redactAndTruncate(value: string, maxLength: number): string {
   const redacted = value
-    .replace(/(https?:\/\/)[^/\s:@]+:[^@\s/]+@/gi, "$1[redacted]@")
-    .replace(/Bearer\s+\S+/gi, "Bearer [redacted]")
     .replace(
-      /(^|[\s{,?&])(["']?authorization["']?\s*[:=]\s*)[^\r\n,;]+/gim,
-      "$1$2[redacted]",
+      /(?<![a-z0-9+.-])([a-z][a-z0-9+.-]*:\/\/)[^/\s@]+@/gi,
+      "$1[redacted]@",
     )
     .replace(
-      /(["']?(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|token|authorization)["']?\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*')/gi,
+      /(["']?authorization["']?\s*[:=]\s*)(?:"(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|[^\r\n]+)/gi,
       "$1[redacted]",
     )
+    .replace(/\b(Bearer|Basic)\s+[^\s"',;]+/gi, "$1 [redacted]")
     .replace(
-      /(["']?(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|token|authorization)["']?\s*[:=]\s*)[^\s,;&]+/gi,
+      /(["']?(?:api[_ -]?key|(?:access[_ -]?|refresh[_ -]?|id[_ -]?)?token|authorization|password|secret)["']?\s*[:=]\s*)(?:"(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|[^\s&]+)/gi,
       "$1[redacted]",
     )
     .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/gi, "sk-[redacted]");

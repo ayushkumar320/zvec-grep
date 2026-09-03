@@ -9,6 +9,13 @@ globalThis.fetch = async (input, init) => {
     return await originalFetch(input, init);
   }
 
+  if (process.env.ZVEC_GREP_TEST_MODEL_DOWNLOAD_FAILURE === "1") {
+    return new Response("Injected model download failure", {
+      status: 503,
+      statusText: "Service Unavailable",
+    });
+  }
+
   const size = url.endsWith("/tokenizer.json") ? 128 : 1024;
   const bytes = new Uint8Array(size);
   bytes.fill(1);

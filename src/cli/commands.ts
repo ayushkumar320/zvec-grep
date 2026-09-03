@@ -37,6 +37,7 @@ import {
 } from "./format/context.js";
 import { printDebug } from "./format/debug.js";
 import { createIndexProgressReporter } from "./format/progress.js";
+import { formatContextLines } from "./errors.js";
 import {
   printWorkspaceInfo,
   printIndexPathFilterTip,
@@ -313,10 +314,30 @@ function serverIndexFailure(result: Record<string, unknown>): Error {
       });
     }
   }
-  return new Error(serverIndexFailureMessage(result));
+  const cause =
+    error && typeof error === "object" && "cause" in error
+      ? nonEmptyString(error.cause)
+      : undefined;
+  return new Error(serverIndexFailureMessage(result), { cause });
 }
 
 function serverIndexFailureMessage(result: Record<string, unknown>): string {
+  const error = result.error;
+  const context =
+    error && typeof error === "object" && "context" in error
+      ? error.context
+      : undefined;
+  const details =
+    typeof context === "string" ? formatContextLines(context) : [];
+  return [
+    serverIndexFailureSummary(result),
+    ...(details.length > 0
+      ? ["Details:", ...details.map((line) => `  ${line}`)]
+      : []),
+  ].join("\n");
+}
+
+function serverIndexFailureSummary(result: Record<string, unknown>): string {
   const error = result.error;
   if (error && typeof error === "object") {
     const code = (error as Record<string, unknown>).code;
