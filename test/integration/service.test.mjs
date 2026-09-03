@@ -2,12 +2,18 @@ import assert from "node:assert/strict";
 import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
+import { EngineError } from "../../dist/engine/errors.js";
 import { CURRENT_INDEX_VERSION } from "../../dist/engine/types.js";
 import { createZvecGrep } from "../../dist/index.js";
 import { createTemporaryDirectory } from "../helpers/fixtures.mjs";
 import { FakeEmbeddingModel } from "../helpers/fake-embedding.mjs";
 
 class SelectivelyFailingEmbeddingModel extends FakeEmbeddingModel {
+  constructor() {
+    super();
+    this.info = { ...this.info, provider: "qwen" };
+  }
+
   async doEmbed(contents) {
     if (
       contents.some(
@@ -15,7 +21,47 @@ class SelectivelyFailingEmbeddingModel extends FakeEmbeddingModel {
           content.kind === "text" && content.text.includes("FailureNeedle"),
       )
     ) {
-      throw new Error("fixture embedding failure");
+      throw new EngineError("fixture embedding failure", {
+        code: "ZVEC_GREP.ENGINE.MODELS.QWEN_TEXT_EMBEDDING_API_ERROR",
+        context: "status=400 providerCode=invalid_input",
+      });
+    }
+    return super.doEmbed(contents);
+  }
+}
+
+class SharedFailureEmbeddingModel extends FakeEmbeddingModel {
+  calls = 0;
+
+  constructor({ provider, code, context }) {
+    super();
+    this.info = { ...this.info, provider };
+    this.code = code;
+    this.context = context;
+  }
+
+  async doEmbed() {
+    this.calls++;
+    throw new EngineError("shared embedding failure", {
+      code: this.code,
+      context: this.context,
+    });
+  }
+}
+
+class RecoveringRemoteEmbeddingModel extends FakeEmbeddingModel {
+  calls = 0;
+
+  constructor(failure) {
+    super();
+    this.info = { ...this.info, provider: "qwen" };
+    this.failure = failure;
+  }
+
+  async doEmbed(contents) {
+    this.calls++;
+    if (this.calls < 3) {
+      throw this.failure();
     }
     return super.doEmbed(contents);
   }
@@ -112,6 +158,161 @@ test("service exposes embedding model download progress while indexing", async (
       .slice(preparingIndex, readyIndex + 1)
       .some((progress) => progress.embedding?.stage === undefined),
   );
+});
+
+test("service fails fast when a shared local embedding model cannot be prepared", async (t) => {
+  const temporaryDirectory = await createTemporaryDirectory(
+    t,
+    "zvec-grep-local-model-failure-",
+  );
+  const root = join(temporaryDirectory, "repo");
+  await mkdir(root, { recursive: true });
+  await writeFile(join(root, "first.ts"), "export const First = 1;\n");
+  await writeFile(join(root, "second.ts"), "export const Second = 2;\n");
+  const model = new SharedFailureEmbeddingModel({
+    provider: "local",
+    code: "ZVEC_GREP.ENGINE.MODELS.MODEL2VEC_DOWNLOAD_FAILED",
+    context: "model=local/test-potion repo=test/potion status=503",
+  });
+  const service = await createZvecGrep({ root, embeddingModel: model });
+  t.after(() => service.close());
+  const progressEvents = [];
+
+  await assert.rejects(
+    service.index({
+      onProgress: (progress) => progressEvents.push(progress),
+    }),
+    (error) =>
+      error.code === "ZVEC_GREP.ENGINE.MODELS.MODEL2VEC_DOWNLOAD_FAILED",
+  );
+
+  assert.equal(model.calls, 1);
+  assert.equal(
+    progressEvents.some((progress) =>
+      progress.detail?.toLowerCase().includes("retrying"),
+    ),
+    false,
+  );
+});
+
+test("service fails fast on permanent remote authentication failures", async (t) => {
+  const temporaryDirectory = await createTemporaryDirectory(
+    t,
+    "zvec-grep-remote-auth-failure-",
+  );
+  const root = join(temporaryDirectory, "repo");
+  await mkdir(root, { recursive: true });
+  await writeFile(join(root, "first.ts"), "export const First = 1;\n");
+  await writeFile(join(root, "second.ts"), "export const Second = 2;\n");
+  const model = new SharedFailureEmbeddingModel({
+    provider: "qwen",
+    code: "ZVEC_GREP.ENGINE.MODELS.QWEN_TEXT_EMBEDDING_API_ERROR",
+    context: "status=401 providerCode=invalid_api_key",
+  });
+  const service = await createZvecGrep({ root, embeddingModel: model });
+  t.after(() => service.close());
+
+  await assert.rejects(
+    service.index(),
+    (error) =>
+      error.code === "ZVEC_GREP.ENGINE.MODELS.QWEN_TEXT_EMBEDDING_API_ERROR",
+  );
+  assert.equal(model.calls, 1);
+});
+
+test("service stops after bounded remote retries without a failed-file pass", async (t) => {
+  const temporaryDirectory = await createTemporaryDirectory(
+    t,
+    "zvec-grep-remote-retry-exhausted-",
+  );
+  const root = join(temporaryDirectory, "repo");
+  await mkdir(root, { recursive: true });
+  await writeFile(join(root, "example.ts"), "export const Example = 1;\n");
+  const model = new SharedFailureEmbeddingModel({
+    provider: "qwen",
+    code: "ZVEC_GREP.ENGINE.MODELS.QWEN_TEXT_EMBEDDING_API_ERROR",
+    context: "status=503 retryAfterMs=0",
+  });
+  const service = await createZvecGrep({ root, embeddingModel: model });
+  t.after(() => service.close());
+  const progressEvents = [];
+
+  await assert.rejects(
+    service.index({
+      onProgress: (progress) => progressEvents.push(progress),
+    }),
+    (error) =>
+      error.code === "ZVEC_GREP.ENGINE.MODELS.QWEN_TEXT_EMBEDDING_API_ERROR",
+  );
+
+  assert.equal(model.calls, 4);
+  assert.equal(
+    progressEvents.some((progress) =>
+      progress.detail?.toLowerCase().includes("retrying"),
+    ),
+    false,
+  );
+});
+
+test("service retries bounded remote HTTP and network failures before recovery", async (t) => {
+  const fixtures = [
+    {
+      name: "rate-limit",
+      failure: () =>
+        new EngineError("remote rate limit", {
+          code: "ZVEC_GREP.ENGINE.MODELS.QWEN_TEXT_EMBEDDING_API_ERROR",
+          context: "status=429 retryAfterMs=0",
+        }),
+    },
+    {
+      name: "request-timeout",
+      failure: () =>
+        new EngineError("remote request timeout", {
+          code: "ZVEC_GREP.ENGINE.MODELS.QWEN_TEXT_EMBEDDING_API_ERROR",
+          context: "status=408 retryAfterMs=0",
+        }),
+    },
+    {
+      name: "server",
+      failure: () =>
+        new EngineError("remote server unavailable", {
+          code: "ZVEC_GREP.ENGINE.MODELS.QWEN_TEXT_EMBEDDING_API_ERROR",
+          context: "status=503 retryAfterMs=0",
+        }),
+    },
+    {
+      name: "network",
+      failure: () => {
+        const cause = new Error("connection timed out");
+        cause.code = "ETIMEDOUT";
+        return new EngineError("remote request failed", {
+          code: "ZVEC_GREP.ENGINE.MODELS.QWEN_TEXT_EMBEDDING_REQUEST_FAILED",
+          context: "model=qwen/test endpoint=https://example.test",
+          cause,
+        });
+      },
+    },
+  ];
+
+  for (const fixture of fixtures) {
+    await t.test(fixture.name, async (t) => {
+      const temporaryDirectory = await createTemporaryDirectory(
+        t,
+        `zvec-grep-remote-${fixture.name}-recovery-`,
+      );
+      const root = join(temporaryDirectory, "repo");
+      await mkdir(root, { recursive: true });
+      await writeFile(join(root, "example.ts"), "export const Example = 1;\n");
+      const model = new RecoveringRemoteEmbeddingModel(fixture.failure);
+      const service = await createZvecGrep({ root, embeddingModel: model });
+      t.after(() => service.close());
+
+      const result = await service.index();
+
+      assert.equal(result.filesFailed, 0);
+      assert.equal(model.calls, 3);
+    });
+  }
 });
 
 test("service indexes, searches, refreshes, and drops a workspace index", async (t) => {

@@ -63,6 +63,8 @@ type WorkspaceStatusView = {
   error?: {
     code: string;
     message: string;
+    context?: string;
+    cause?: string;
   };
   failedReasons?: string;
 };
@@ -134,6 +136,8 @@ type ServerIndexInfo = {
     error?: {
       code: string;
       message: string;
+      context?: string;
+      cause?: string;
     };
   };
 };
@@ -389,10 +393,11 @@ function printWorkspaceIndexStatus(
   const diagnostics: string[] = [];
   if (view.error) {
     diagnostics.push(
-      ...formatStatusField(theme, "Error", [
-        theme.danger(view.error.code),
-        theme.danger(view.error.message),
-      ]),
+      ...formatStatusField(
+        theme,
+        "Error",
+        formatStatusError(theme, view.error),
+      ),
     );
   }
   if (view.failedReasons) {
@@ -414,6 +419,25 @@ function printWorkspaceIndexStatus(
     console.log("");
     for (const line of section) console.log(line);
   }
+}
+
+function formatStatusError(
+  theme: StatusTheme,
+  error: NonNullable<WorkspaceStatusView["error"]>,
+): string[] {
+  const lines = [theme.danger(error.code), theme.danger(error.message)];
+  const context = error.context
+    ?.split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (context && context.length > 0) {
+    lines.push(theme.label("Details:"));
+    lines.push(...context.map((line) => `  ${theme.danger(line)}`));
+  }
+  if (error.cause) {
+    lines.push(`${theme.label("Cause:")} ${theme.danger(error.cause)}`);
+  }
+  return lines;
 }
 
 function formatWorkspaceStatusHeading(

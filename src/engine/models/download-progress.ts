@@ -8,6 +8,7 @@ export type ModelArtifactDownloadProgress = {
 
 export type ModelDownloadProgressReporter = {
   start(): void;
+  begin(artifact: string): void;
   register(artifact: string): void;
   skip(artifact: string): void;
   report(progress: ModelArtifactDownloadProgress): void;
@@ -24,10 +25,45 @@ export function createModelDownloadProgressReporter(
     string,
     { downloadedBytes: number; totalBytes?: number }
   >(expectedArtifacts.map((artifact) => [artifact, { downloadedBytes: 0 }]));
+  let downloadStarted = false;
+
+  const reportDownload = (): void => {
+    const values = [...artifacts.values()];
+    const downloadedBytes = values.reduce(
+      (sum, artifact) => sum + artifact.downloadedBytes,
+      0,
+    );
+    const hasCompleteTotals =
+      values.length > 0 &&
+      values.every(
+        (artifact) =>
+          typeof artifact.totalBytes === "number" &&
+          Number.isFinite(artifact.totalBytes) &&
+          artifact.totalBytes >= 0,
+      );
+    const totalBytes = hasCompleteTotals
+      ? values.reduce((sum, artifact) => sum + (artifact.totalBytes ?? 0), 0)
+      : undefined;
+    onProgress?.({
+      stage: "downloading",
+      model,
+      downloadedBytes,
+      ...(totalBytes === undefined ? {} : { totalBytes }),
+    });
+  };
 
   return {
     start() {
       onProgress?.({ stage: "preparing", model });
+    },
+    begin(artifact) {
+      if (!artifacts.has(artifact)) {
+        artifacts.set(artifact, { downloadedBytes: 0 });
+      }
+      if (!downloadStarted) {
+        downloadStarted = true;
+        reportDownload();
+      }
     },
     register(artifact) {
       if (!artifacts.has(artifact)) {
@@ -42,28 +78,8 @@ export function createModelDownloadProgressReporter(
         downloadedBytes: progress.downloadedBytes,
         totalBytes: progress.totalBytes,
       });
-      const values = [...artifacts.values()];
-      const downloadedBytes = values.reduce(
-        (sum, artifact) => sum + artifact.downloadedBytes,
-        0,
-      );
-      const hasCompleteTotals =
-        values.length > 0 &&
-        values.every(
-          (artifact) =>
-            typeof artifact.totalBytes === "number" &&
-            Number.isFinite(artifact.totalBytes) &&
-            artifact.totalBytes >= 0,
-        );
-      const totalBytes = hasCompleteTotals
-        ? values.reduce((sum, artifact) => sum + (artifact.totalBytes ?? 0), 0)
-        : undefined;
-      onProgress?.({
-        stage: "downloading",
-        model,
-        downloadedBytes,
-        ...(totalBytes === undefined ? {} : { totalBytes }),
-      });
+      downloadStarted = true;
+      reportDownload();
     },
     warning(message) {
       if (!onProgress) {

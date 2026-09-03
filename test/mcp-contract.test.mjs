@@ -544,8 +544,11 @@ test("index result includes an immediately available failure reason", async (t) 
     state: "failed",
     reused: false,
     error: {
-      code: "MODEL_LOAD_FAILED",
-      message: "Embedding schema could not be resolved.",
+      code: "ZVEC_GREP.ENGINE.MODELS.MODEL2VEC_DOWNLOAD_FAILED",
+      message: "Unable to download Model2Vec model artifact",
+      context:
+        "model=local/potion-code-16m-v2 url=https://huggingface.co/minishlab/potion-code-16M-v2 status=503",
+      cause: "fetch failed",
     },
   });
   const { client, server } = await connectFull(backend);
@@ -560,14 +563,22 @@ test("index result includes an immediately available failure reason", async (t) 
   });
   assert.equal(result.isError, undefined);
   assert.deepEqual(result.structuredContent.error, {
-    code: "MODEL_LOAD_FAILED",
-    message: "Embedding schema could not be resolved.",
+    code: "ZVEC_GREP.ENGINE.MODELS.MODEL2VEC_DOWNLOAD_FAILED",
+    message: "Unable to download Model2Vec model artifact",
+    context:
+      "model=local/potion-code-16m-v2 url=https://huggingface.co/minishlab/potion-code-16M-v2 status=503",
+    cause: "fetch failed",
   });
-  assert.match(result.content[0].text, /error_code: MODEL_LOAD_FAILED/);
   assert.match(
     result.content[0].text,
-    /Embedding schema could not be resolved/,
+    /error_code: ZVEC_GREP\.ENGINE\.MODELS\.MODEL2VEC_DOWNLOAD_FAILED/,
   );
+  assert.match(
+    result.content[0].text,
+    /Unable to download Model2Vec model artifact/,
+  );
+  assert.match(result.content[0].text, /error_context: .*status=503/);
+  assert.match(result.content[0].text, /error_cause: fetch failed/);
 });
 
 test("index streams daemon progress through MCP", async (t) => {

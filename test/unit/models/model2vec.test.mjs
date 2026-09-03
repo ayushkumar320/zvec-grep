@@ -149,6 +149,11 @@ test("Model2Vec downloads pinned Safetensors assets and performs normalized stat
     {
       stage: "downloading",
       model: "local/test-potion",
+      downloadedBytes: 0,
+    },
+    {
+      stage: "downloading",
+      model: "local/test-potion",
       downloadedBytes: 4,
     },
     {
@@ -318,6 +323,11 @@ test("Model2Vec excludes cached artifacts from overall download progress", async
     {
       stage: "downloading",
       model: "local/test-potion",
+      downloadedBytes: 0,
+    },
+    {
+      stage: "downloading",
+      model: "local/test-potion",
       downloadedBytes: 4,
       totalBytes: 8,
     },
@@ -327,6 +337,83 @@ test("Model2Vec excludes cached artifacts from overall download progress", async
     },
   ]);
   await model.dispose();
+});
+
+test("Model2Vec reports download failures without exposing artifact names", async (t) => {
+  const root = await createTemporaryDirectory(t, "zvec-model2vec-failure-");
+  const progress = [];
+  const model = new Model2VecEmbeddingModel(
+    entry(),
+    { modelCacheDir: root },
+    {
+      async loadTokenizer() {
+        throw new Error("tokenizer should not load after a download failure");
+      },
+      async loadSafetensors() {
+        throw new Error("table should not load after a download failure");
+      },
+      async download() {
+        throw new Error("network unavailable");
+      },
+    },
+  );
+
+  let failure;
+  await assert.rejects(
+    model.embed([{ kind: "text", text: "download failure" }], {
+      onProgress: (event) => progress.push(event),
+    }),
+    (error) => {
+      failure = error;
+      return error.code === "ZVEC_GREP.ENGINE.MODELS.MODEL2VEC_DOWNLOAD_FAILED";
+    },
+  );
+
+  assert.deepEqual(
+    progress.map(({ stage }) => stage),
+    ["preparing", "downloading", "warning"],
+  );
+  assert.deepEqual(progress[1], {
+    stage: "downloading",
+    model: "local/test-potion",
+    downloadedBytes: 0,
+  });
+  assert.match(progress[2].message, /network access.*model cache/i);
+  assert.doesNotMatch(
+    JSON.stringify(progress),
+    /model\.safetensors|tokenizer\.json/,
+  );
+  assert.doesNotMatch(failure.context, /model\.safetensors|tokenizer\.json/);
+});
+
+test("Model2Vec classifies table preparation errors as model load failures", async (t) => {
+  const root = await createTemporaryDirectory(t, "zvec-model2vec-load-");
+  const progress = [];
+  const model = new Model2VecEmbeddingModel(
+    entry(),
+    { modelCacheDir: root },
+    {
+      async loadTokenizer() {
+        throw new Error("tokenizer should not load after a table failure");
+      },
+      async loadSafetensors() {
+        throw new Error("invalid static table");
+      },
+      async download(_url, destination) {
+        await writeFile(destination, "asset");
+      },
+    },
+  );
+
+  await assert.rejects(
+    model.embed([{ kind: "text", text: "load failure" }], {
+      onProgress: (event) => progress.push(event),
+    }),
+    (error) =>
+      error.code === "ZVEC_GREP.ENGINE.MODELS.MODEL2VEC_LOAD_FAILED" &&
+      error.cause?.message === "invalid static table",
+  );
+  assert.equal(progress.at(-1)?.stage, "warning");
 });
 
 test("Model2Vec reports and truncates inputs beyond the model token limit", async (t) => {

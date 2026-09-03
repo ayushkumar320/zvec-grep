@@ -121,6 +121,7 @@ type EmbeddingScheduler = {
 type EmbeddingRetryClassification = {
   retryable: boolean;
   rateLimited: boolean;
+  failFast: boolean;
   retryAfterMs?: number;
 };
 
@@ -926,13 +927,8 @@ async function embedAndCommitBatch(
     if (indexIsCancelled(ctx)) {
       throw indexCancellationError(ctx);
     }
-    if (isRetryableEmbeddingError(error)) {
-      for (const file of files) {
-        const reason = markFileFailed(ctx, file.file, error, "embed");
-        recordFileFailed(stats, file.file, reason);
-        onProgress(stats, finishedFileDetail(false, file.file.relativePath));
-      }
-      return;
+    if (shouldFailFastEmbeddingError(error, ctx.embeddingModel)) {
+      throw error;
     }
 
     for (const file of files) {
@@ -994,6 +990,9 @@ async function embedAndCommitFile(
   } catch (error) {
     if (indexIsCancelled(ctx)) {
       throw indexCancellationError(ctx);
+    }
+    if (shouldFailFastEmbeddingError(error, ctx.embeddingModel)) {
+      throw error;
     }
     const reason = markFileFailed(ctx, file.file, error, "embed");
     recordFileFailed(stats, file.file, reason);
@@ -1209,7 +1208,7 @@ async function embedFragmentBatch(
       onModelProgress,
     );
   } catch (error) {
-    if (fragments.length === 1 || isRetryableEmbeddingError(error)) {
+    if (fragments.length === 1 || shouldFailFastEmbeddingError(error, model)) {
       throw error;
     }
 
@@ -1249,6 +1248,9 @@ async function embedFragmentBatchOneByOne(
         truncatedInputIndexes.push(index);
       }
     } catch (error) {
+      if (shouldFailFastEmbeddingError(error, model)) {
+        throw error;
+      }
       throw new EngineError(
         "Embedding entity fragment failed after one-by-one fallback",
         {
@@ -1297,7 +1299,7 @@ async function embedContentsWithRetry(
           }),
         signal,
         (error) => {
-          retry = classifyEmbeddingRetry(error);
+          retry = classifyEmbeddingRetry(error, model);
           delayMs = retryDelayMs(attempt, retry);
           if (retry.retryable) {
             embeddingScheduler.recordRetryableFailure({
@@ -1316,7 +1318,7 @@ async function embedContentsWithRetry(
           : new Error("Embedding was cancelled.");
       }
       if (!retry.retryable) {
-        retry = classifyEmbeddingRetry(error);
+        retry = classifyEmbeddingRetry(error, model);
         delayMs = retryDelayMs(attempt, retry);
       }
 
@@ -1529,27 +1531,66 @@ function oneLine(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
-function isRetryableEmbeddingError(error: unknown): boolean {
-  return classifyEmbeddingRetry(error).retryable;
+function shouldFailFastEmbeddingError(
+  error: unknown,
+  model: EmbeddingModel,
+): boolean {
+  return classifyEmbeddingRetry(error, model).failFast;
 }
 
-function classifyEmbeddingRetry(error: unknown): EmbeddingRetryClassification {
-  const message = errorToMessage(error);
-  const context =
-    isEngineError(error) && error.context ? ` ${error.context}` : "";
-  const text = `${message}${context}`;
+function classifyEmbeddingRetry(
+  error: unknown,
+  model: EmbeddingModel,
+): EmbeddingRetryClassification {
+  const codes = errorCodes(error);
+  const text = errorChainText(error);
   const status = httpStatusFromText(text);
+  const remoteEmbedding = model.info.provider !== "local";
   const rateLimited =
-    status === 429 ||
-    /rate limit|quota exceeded|too many requests|request rate increased too quickly/i.test(
-      text,
-    );
+    remoteEmbedding &&
+    (status === 429 ||
+      /rate limit|quota exceeded|too many requests|request rate increased too quickly/i.test(
+        text,
+      ));
   const serverError =
-    typeof status === "number" && status >= 500 && status <= 599;
+    remoteEmbedding &&
+    typeof status === "number" &&
+    status >= 500 &&
+    status <= 599;
+  const requestTimeout = remoteEmbedding && status === 408;
+  const requestFailure = codes.some((code) => code.endsWith("_REQUEST_FAILED"));
+  const transientNetworkFailure =
+    remoteEmbedding && requestFailure && isTransientNetworkFailure(text);
+  const sharedLocalModelFailure = codes.some(
+    (code) =>
+      code === "ZVEC_GREP.ENGINE.MODELS.MODEL2VEC_DOWNLOAD_FAILED" ||
+      code === "ZVEC_GREP.ENGINE.MODELS.MODEL2VEC_LOAD_FAILED" ||
+      code === "ZVEC_GREP.ENGINE.MODELS.MODEL2VEC_DISPOSED",
+  );
+  const retryable =
+    !sharedLocalModelFailure &&
+    (rateLimited || serverError || requestTimeout || transientNetworkFailure);
+  const remoteConfigurationFailure =
+    remoteEmbedding &&
+    (codes.some(
+      (code) =>
+        code.endsWith("_MISSING_API_KEY") || code.endsWith("_MISSING_ENDPOINT"),
+    ) ||
+      status === 401 ||
+      status === 403 ||
+      status === 404 ||
+      /\b(?:invalid|missing|unauthorized|forbidden)[ _-]?(?:api[ _-]?)?key\b/i.test(
+        text,
+      ));
 
   return {
-    retryable: rateLimited || serverError,
+    retryable,
     rateLimited,
+    failFast:
+      retryable ||
+      sharedLocalModelFailure ||
+      remoteConfigurationFailure ||
+      (remoteEmbedding && requestFailure),
     retryAfterMs: retryAfterMsFromText(text),
   };
 }
@@ -1558,7 +1599,77 @@ function nonRetryableEmbeddingError(): EmbeddingRetryClassification {
   return {
     retryable: false,
     rateLimited: false,
+    failFast: false,
   };
+}
+
+function errorCodes(error: unknown): string[] {
+  const codes: string[] = [];
+
+  for (const current of errorChain(error)) {
+    if (
+      typeof current === "object" &&
+      current !== null &&
+      "code" in current &&
+      typeof current.code === "string"
+    ) {
+      codes.push(current.code);
+    }
+  }
+
+  return codes;
+}
+
+function errorChainText(error: unknown): string {
+  const parts: string[] = [];
+
+  for (const current of errorChain(error)) {
+    if (current instanceof Error) {
+      parts.push(current.name, current.message);
+    } else {
+      parts.push(String(current));
+    }
+    if (isEngineError(current) && current.context) {
+      parts.push(current.context);
+    }
+    if (
+      typeof current === "object" &&
+      current !== null &&
+      "code" in current &&
+      typeof current.code === "string"
+    ) {
+      parts.push(current.code);
+    }
+  }
+
+  return parts.join(" ");
+}
+
+function errorChain(error: unknown): unknown[] {
+  const chain: unknown[] = [];
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+
+  while (current !== undefined && current !== null && !seen.has(current)) {
+    seen.add(current);
+    chain.push(current);
+    if (
+      typeof current !== "object" ||
+      !("cause" in current) ||
+      current.cause === undefined
+    ) {
+      break;
+    }
+    current = current.cause;
+  }
+
+  return chain;
+}
+
+function isTransientNetworkFailure(text: string): boolean {
+  return /\b(?:EAI_AGAIN|ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENETDOWN|ENETUNREACH|ENOTFOUND|ETIMEDOUT|UND_ERR_CONNECT_TIMEOUT|UND_ERR_HEADERS_TIMEOUT|UND_ERR_SOCKET|TimeoutError)\b|connection (?:reset|timed out)|network connection (?:failed|was lost)|socket hang up|temporary failure/i.test(
+    text,
+  );
 }
 
 function maxRetryAttempts(retry: EmbeddingRetryClassification): number {

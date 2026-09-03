@@ -8,6 +8,13 @@ export type JobState =
 export type JobReason =
   "watch" | "reconcile" | "background_reconcile" | "manual" | "fresh_query";
 
+export type IndexJobError = {
+  code: string;
+  message: string;
+  context?: string;
+  cause?: string;
+};
+
 export type IndexJobSnapshot = {
   id: string;
   canonicalRoot: string;
@@ -18,7 +25,7 @@ export type IndexJobSnapshot = {
   startedAt?: number;
   finishedAt?: number;
   progress?: IndexProgress;
-  error?: { code: string; message: string };
+  error?: IndexJobError;
 };
 
 export type SubmitIndexJob = {
@@ -435,9 +442,12 @@ function isRetryable(error: unknown): boolean {
   );
 }
 
-function errorInfo(error: unknown): { code: string; message: string } {
+function errorInfo(error: unknown): IndexJobError {
+  const context = errorProperty(error, "context", 4_096);
+  const cause = errorCause(error);
+
   if (error instanceof DaemonError) {
-    return { code: error.code, message: redactMessage(error.message) };
+    return jobError(error.code, error.message, context, cause);
   }
   if (
     error &&
@@ -445,27 +455,133 @@ function errorInfo(error: unknown): { code: string; message: string } {
     "code" in error &&
     typeof error.code === "string"
   ) {
-    return {
-      code: error.code,
-      message: redactMessage(
-        error instanceof Error ? error.message : String(error),
-      ),
-    };
-  }
-  return {
-    code: "INDEX_FAILED",
-    message: redactMessage(
+    return jobError(
+      error.code,
       error instanceof Error ? error.message : String(error),
-    ),
+      context,
+      cause,
+    );
+  }
+  return jobError(
+    "INDEX_FAILED",
+    error instanceof Error ? error.message : String(error),
+    context,
+    cause,
+  );
+}
+
+function jobError(
+  code: string,
+  message: string,
+  context: string | undefined,
+  cause: string | undefined,
+): IndexJobError {
+  return {
+    code: safeErrorCode(code) ?? "INDEX_FAILED",
+    message: redactAndTruncate(message, 512),
+    ...(context ? { context } : {}),
+    ...(cause ? { cause } : {}),
   };
 }
 
-function redactMessage(message: string): string {
-  return message
+function errorProperty(
+  error: unknown,
+  property: "context",
+  maxLength: number,
+): string | undefined {
+  if (!error || typeof error !== "object" || !(property in error)) {
+    return undefined;
+  }
+  const value = error[property];
+  return typeof value === "string" && value.trim().length > 0
+    ? redactAndTruncate(value, maxLength)
+    : undefined;
+}
+
+function errorCause(error: unknown): string | undefined {
+  if (!(error instanceof Error) || error.cause === undefined) {
+    return undefined;
+  }
+  const summaries: string[] = [];
+  const seen = new Set<object>();
+  let cause: unknown = error.cause;
+  for (let depth = 0; cause !== undefined && depth < 3; depth++) {
+    if (cause && typeof cause === "object") {
+      if (seen.has(cause)) {
+        break;
+      }
+      seen.add(cause);
+    }
+    const summary = causeSummary(cause);
+    if (summary && !summaries.includes(summary)) {
+      summaries.push(summary);
+    }
+    cause = nestedCause(cause);
+  }
+  return summaries.length > 0
+    ? redactAndTruncate(summaries.join("; "), 512)
+    : undefined;
+}
+
+function causeSummary(cause: unknown): string | undefined {
+  const message =
+    cause instanceof Error
+      ? cause.message
+      : typeof cause === "string" ||
+          typeof cause === "number" ||
+          typeof cause === "boolean"
+        ? String(cause)
+        : cause &&
+            typeof cause === "object" &&
+            "message" in cause &&
+            typeof cause.message === "string"
+          ? cause.message
+          : undefined;
+  const code = errorCodeProperty(cause);
+  if (!message || message.trim().length === 0) {
+    return code;
+  }
+  return code && !message.includes(code) ? `${code}: ${message}` : message;
+}
+
+function nestedCause(error: unknown): unknown {
+  return error && typeof error === "object" && "cause" in error
+    ? error.cause
+    : undefined;
+}
+
+function errorCodeProperty(error: unknown): string | undefined {
+  return error &&
+    typeof error === "object" &&
+    "code" in error &&
+    typeof error.code === "string"
+    ? safeErrorCode(error.code)
+    : undefined;
+}
+
+function safeErrorCode(code: string): string | undefined {
+  const value = redactAndTruncate(code.trim(), 128);
+  return /^[A-Z][A-Z0-9_.-]{0,127}$/.test(value) ? value : undefined;
+}
+
+function redactAndTruncate(value: string, maxLength: number): string {
+  const redacted = value
+    .replace(/(https?:\/\/)[^/\s:@]+:[^@\s/]+@/gi, "$1[redacted]@")
     .replace(/Bearer\s+\S+/gi, "Bearer [redacted]")
     .replace(
-      /(api[_ -]?key|token|authorization)\s*[:=]\s*\S+/gi,
-      "$1=[redacted]",
+      /(^|[\s{,?&])(["']?authorization["']?\s*[:=]\s*)[^\r\n,;]+/gim,
+      "$1$2[redacted]",
     )
-    .slice(0, 512);
+    .replace(
+      /(["']?(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|token|authorization)["']?\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*')/gi,
+      "$1[redacted]",
+    )
+    .replace(
+      /(["']?(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|token|authorization)["']?\s*[:=]\s*)[^\s,;&]+/gi,
+      "$1[redacted]",
+    )
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/gi, "sk-[redacted]");
+  return redacted.length <= maxLength
+    ? redacted
+    : `${redacted.slice(0, maxLength - 1)}…`;
 }

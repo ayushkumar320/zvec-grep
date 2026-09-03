@@ -98,6 +98,75 @@ test("direct and server indexes report aggregate local model download progress",
   );
 });
 
+test("server-mode index reports a redacted local model download failure", async (t) => {
+  const temporaryDirectory = await createTemporaryDirectory(
+    t,
+    "zvec-grep-server-model-download-failure-",
+    { cleanup: false },
+  );
+  const root = join(temporaryDirectory, "repo");
+  const home = join(temporaryDirectory, "home");
+  const modelCache = join(temporaryDirectory, "models");
+  await mkdir(join(root, "src"), { recursive: true });
+  await writeFile(
+    join(root, "src", "example.ts"),
+    "export const ModelDownloadFailure = 1;\n",
+  );
+
+  const preload = pathToFileURL(
+    resolve("test/helpers/failing-model-download.mjs"),
+  ).href;
+  const port = await availablePort();
+  const env = {
+    HOME: home,
+    USERPROFILE: home,
+    NO_COLOR: "1",
+    NODE_OPTIONS: `--import=${preload}`,
+    ZVEC_GREP_HOME: home,
+    ZVEC_GREP_MODEL_CACHE: modelCache,
+    ZVEC_GREP_SERVER_URL: `http://127.0.0.1:${port}/mcp`,
+  };
+  t.after(async () => {
+    await runCli(["server", "off", "--home", home], {
+      cwd: root,
+      env,
+    }).catch(() => undefined);
+    await removeTemporaryDirectory(temporaryDirectory);
+  });
+  await runCli(
+    ["server", "on", "--listen", `127.0.0.1:${port}`, "--home", home],
+    { cwd: root, env },
+  );
+
+  await assert.rejects(
+    runCli(
+      [
+        "index",
+        "--mode",
+        "server",
+        "--embedding",
+        "local/potion-code-16m-v2",
+        root,
+      ],
+      { cwd: root, env, timeout: 120_000 },
+    ),
+    (error) => {
+      assert.match(error.stdout, /Workspace index: failed/);
+      assert.match(
+        error.stderr,
+        /Code:\s+ZVEC_GREP\.ENGINE\.MODELS\.MODEL2VEC_DOWNLOAD_FAILED/,
+      );
+      assert.match(
+        error.stderr,
+        /Cause:\s+simulated model download network failure/,
+      );
+      assert.match(error.stderr, /\[redacted\]/);
+      assert.doesNotMatch(error.stderr, /model-download-secret/);
+      return true;
+    },
+  );
+});
+
 test("server-mode index reports Workspace progress", async (t) => {
   const temporaryDirectory = await createTemporaryDirectory(
     t,

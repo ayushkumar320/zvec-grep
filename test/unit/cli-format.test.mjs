@@ -918,8 +918,11 @@ test("status formatters cover workspace states, failures, filters, and color", a
         runtime: {
           job_state: "failed",
           error: {
-            code: "MODEL_LOAD_FAILED",
-            message: "Embedding schema could not be resolved.",
+            code: "ZVEC_GREP.ENGINE.MODELS.MODEL2VEC_DOWNLOAD_FAILED",
+            message: "Unable to download Model2Vec model artifact",
+            context:
+              "model=local/potion-code-16m-v2 status=503\nrepo=minishlab/potion-code-16M-v2",
+            cause: "fetch failed",
           },
         },
       },
@@ -938,11 +941,17 @@ test("status formatters cover workspace states, failures, filters, and color", a
       `◐ Workspace index is updating[\\s\\S]*Coverage\\s+${progressBar(15, 5)}\\s+75%\\s+3 / 4 files`,
     ),
   );
-  assert.match(output.logs.join("\n"), /Error\s+MODEL_LOAD_FAILED/);
   assert.match(
     output.logs.join("\n"),
-    /Embedding schema could not be resolved/,
+    /Error\s+ZVEC_GREP\.ENGINE\.MODELS\.MODEL2VEC_DOWNLOAD_FAILED/,
   );
+  assert.match(
+    output.logs.join("\n"),
+    /Unable to download Model2Vec model artifact/,
+  );
+  assert.match(output.logs.join("\n"), /Details:/);
+  assert.match(output.logs.join("\n"), /status=503/);
+  assert.match(output.logs.join("\n"), /Cause:\s+fetch failed/);
 
   for (const stateInfo of [
     {

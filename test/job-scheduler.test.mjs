@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { DaemonError } from "../dist/daemon/errors.js";
 import { JobScheduler } from "../dist/daemon/job-scheduler.js";
+import { EngineError } from "../dist/engine/errors.js";
 
 test("scheduler reuses same-root jobs and enforces global concurrency", async () => {
   const scheduler = new JobScheduler({ concurrency: 1 });
@@ -245,15 +246,66 @@ test("scheduler status redacts credentials from failures", async () => {
     canonicalRoot: "/repo",
     reason: "manual",
     run: async () => {
-      throw new Error(
+      const error = new Error(
         "provider failed api_key=top-secret token:another-secret",
       );
+      error.code = "AUTH_FAILED apiKey=code-secret";
+      throw error;
     },
   });
   const result = await scheduler.wait(submitted.job.id);
   assert.equal(result.state, "failed");
+  assert.equal(result.error.code, "INDEX_FAILED");
   assert.match(result.error.message, /\[redacted\]/);
-  assert.doesNotMatch(result.error.message, /top-secret|another-secret/);
+  assert.doesNotMatch(
+    `${result.error.code}\n${result.error.message}`,
+    /top-secret|another-secret|code-secret/,
+  );
+  await scheduler.close();
+});
+
+test("scheduler preserves bounded EngineError diagnostics without credentials", async () => {
+  const scheduler = new JobScheduler({ maxAttempts: 1 });
+  const submitted = scheduler.submit({
+    canonicalRoot: "/repo",
+    reason: "manual",
+    run: async () => {
+      const networkCause = new Error(
+        "self-signed certificate in certificate chain token=nested-secret",
+      );
+      networkCause.code = "SELF_SIGNED_CERT_IN_CHAIN";
+      throw new EngineError("Indexing completed with 1 failed file", {
+        code: "ZVEC_GREP.ENGINE.INDEXING.FILES_FAILED",
+        context:
+          "failedReasons=src/a.ts: ZVEC_GREP.ENGINE.MODELS.QWEN_API_ERROR model=qwen/text-embedding-v4 status=403 providerCode=InvalidApiKey endpoint=https://user:password@example.test/embeddings?api_key=context-secret Authorization: Bearer context-bearer\n" +
+          "Authorization: Basic basic-secret\ndetail=" +
+          "x".repeat(5_000),
+        cause: new TypeError(
+          "fetch failed token=cause-secret apiKey='quoted-secret' sk-secretvalue123",
+          { cause: networkCause },
+        ),
+      });
+    },
+  });
+
+  const result = await scheduler.wait(submitted.job.id);
+  assert.equal(result.state, "failed");
+  assert.equal(result.error.code, "ZVEC_GREP.ENGINE.INDEXING.FILES_FAILED");
+  assert.match(result.error.context, /status=403/);
+  assert.match(result.error.context, /providerCode=InvalidApiKey/);
+  assert.match(result.error.context, /MODEL.*QWEN_API_ERROR/);
+  assert.match(result.error.context, /\[redacted\]/);
+  assert.match(result.error.cause, /fetch failed/);
+  assert.match(result.error.cause, /SELF_SIGNED_CERT_IN_CHAIN/);
+  assert.match(result.error.cause, /self-signed certificate/);
+  assert.match(result.error.cause, /\[redacted\]/);
+  assert.equal(result.error.context.length, 4_096);
+  assert.match(result.error.context, /…$/);
+  assert.ok(result.error.cause.length <= 512);
+  assert.doesNotMatch(
+    `${result.error.message}\n${result.error.context}\n${result.error.cause}`,
+    /context-secret|context-bearer|basic-secret|cause-secret|nested-secret|quoted-secret|secretvalue123|user:password/,
+  );
   await scheduler.close();
 });
 
