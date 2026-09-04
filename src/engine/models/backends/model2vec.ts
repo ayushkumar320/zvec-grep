@@ -13,6 +13,7 @@ import {
   type CreateEmbeddingModelOptions,
   type EmbeddingModelProgress,
   type EmbeddingModelInfo,
+  type EmbeddingOptions,
   type EmbeddingResult,
   type NormalizedEmbeddingOptions,
 } from "../embeddings.js";
@@ -140,6 +141,16 @@ export class Model2VecEmbeddingModel extends BaseEmbeddingModel {
     return await this.embedBatch(contents, options);
   }
 
+  async prepare(
+    options: Pick<EmbeddingOptions, "signal" | "onProgress"> = {},
+  ): Promise<void> {
+    options.signal?.throwIfAborted();
+    this.ensureNotDisposed();
+    await this.ensureLoaded(options.onProgress);
+    options.signal?.throwIfAborted();
+    this.ensureNotDisposed();
+  }
+
   private async embedBatch(
     contents: readonly Content[],
     options: NormalizedEmbeddingOptions,
@@ -203,47 +214,68 @@ export class Model2VecEmbeddingModel extends BaseEmbeddingModel {
       [basename(this.entry.modelFile), basename(this.entry.tokenizerFile)],
     );
     downloadProgress.start();
-    const [modelPath, tokenizerSource] = await Promise.all([
-      this.resolveModelPath(downloadProgress),
-      this.resolveTokenizerSource(downloadProgress),
-    ]);
-    const staticTable = await this.dependencies.loadSafetensors(
-      modelPath,
-      this.entry.embeddingTensor,
-      this.info.dimension,
-    );
-    this.ensureNotDisposed();
-    if (this.useWorkerPool) {
-      const sharedTable = sharedStaticEmbeddingTable(staticTable);
-      const workerPool = new Model2VecWorkerPool({
-        tokenizerSource,
-        maxInputTokens: this.entry.maxInputTokens,
-        normalize: this.entry.normalize,
-        tableBuffer: sharedTable.data.buffer as SharedArrayBuffer,
-        dimension: sharedTable.dimension,
-        dtype: sharedTable.dtype,
-        rows: sharedTable.rows,
-      });
-      try {
-        await workerPool.start();
-        this.ensureNotDisposed();
-        this.workerPool = workerPool;
-      } catch (error) {
-        await workerPool.dispose();
-        throw error;
-      }
-    } else {
-      this.tokenizer = await this.dependencies.loadTokenizer(tokenizerSource, {
-        cache_dir: this.modelCacheDir,
-        revision: this.entry.revision,
-        ...(tokenizerSource !== this.entry.repo
-          ? { local_files_only: true }
-          : {}),
-      });
+    try {
+      const [modelPath, tokenizerSource] = await Promise.all([
+        this.resolveModelPath(downloadProgress),
+        this.resolveTokenizerSource(downloadProgress),
+      ]);
+      const staticTable = await this.dependencies.loadSafetensors(
+        modelPath,
+        this.entry.embeddingTensor,
+        this.info.dimension,
+      );
       this.ensureNotDisposed();
-      this.staticTable = staticTable;
+      if (this.useWorkerPool) {
+        const sharedTable = sharedStaticEmbeddingTable(staticTable);
+        const workerPool = new Model2VecWorkerPool({
+          tokenizerSource,
+          maxInputTokens: this.entry.maxInputTokens,
+          normalize: this.entry.normalize,
+          tableBuffer: sharedTable.data.buffer as SharedArrayBuffer,
+          dimension: sharedTable.dimension,
+          dtype: sharedTable.dtype,
+          rows: sharedTable.rows,
+        });
+        try {
+          await workerPool.start();
+          this.ensureNotDisposed();
+          this.workerPool = workerPool;
+        } catch (error) {
+          await workerPool.dispose();
+          throw error;
+        }
+      } else {
+        this.tokenizer = await this.dependencies.loadTokenizer(
+          tokenizerSource,
+          {
+            cache_dir: this.modelCacheDir,
+            revision: this.entry.revision,
+            ...(tokenizerSource !== this.entry.repo
+              ? { local_files_only: true }
+              : {}),
+          },
+        );
+        this.ensureNotDisposed();
+        this.staticTable = staticTable;
+      }
+      downloadProgress.finish();
+    } catch (cause) {
+      downloadProgress.warning(
+        "Unable to prepare the local embedding model. Check network access and the model cache.",
+      );
+      if (
+        cause instanceof EngineError &&
+        (cause.code === "ZVEC_GREP.ENGINE.MODELS.MODEL2VEC_DOWNLOAD_FAILED" ||
+          cause.code === "ZVEC_GREP.ENGINE.MODELS.MODEL2VEC_DISPOSED")
+      ) {
+        throw cause;
+      }
+      throw new EngineError("Unable to load Model2Vec model", {
+        code: "ZVEC_GREP.ENGINE.MODELS.MODEL2VEC_LOAD_FAILED",
+        context: `model=${this.entry.reference} repo=${this.entry.repo} revision=${this.entry.revision}`,
+        cause,
+      });
     }
-    downloadProgress.finish();
   }
 
   private async resolveModelPath(
@@ -302,6 +334,7 @@ export class Model2VecEmbeddingModel extends BaseEmbeddingModel {
     const partialPath = `${localPath}.part-${process.pid}-${Date.now()}`;
     const url = `https://huggingface.co/${this.entry.repo}/resolve/${this.entry.revision}/${remoteFile}`;
     try {
+      downloadProgress.begin(basename(remoteFile));
       await this.dependencies.download(url, partialPath, (progress) => {
         downloadProgress.report({
           artifact: basename(remoteFile),
@@ -317,7 +350,7 @@ export class Model2VecEmbeddingModel extends BaseEmbeddingModel {
       await rm(partialPath, { force: true });
       throw new EngineError("Unable to download Model2Vec model artifact", {
         code: "ZVEC_GREP.ENGINE.MODELS.MODEL2VEC_DOWNLOAD_FAILED",
-        context: `model=${this.entry.reference} url=${url}`,
+        context: `model=${this.entry.reference} repo=${this.entry.repo} revision=${this.entry.revision}`,
         cause,
       });
     }

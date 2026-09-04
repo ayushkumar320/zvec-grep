@@ -175,7 +175,7 @@ Index options:
   --rebuild                         Rebuild the existing index
   --drop                            Permanently remove the workspace index
   --yes                             Confirm --drop without prompting
-  --debug                           Print skipped-file diagnostics to stderr
+  --debug                           Print file-scan and model failure diagnostics
   --mode <direct|server|auto>       Select indexing transport
 
 Embedding options:
@@ -216,11 +216,12 @@ ${formatEnvironmentVariables([
 See zg help environment for precedence and Server-mode scope.`;
     case "status":
       return `Usage:
-  zg status [root] [--mode <direct|server|auto>] [--check-ready]
+  zg status [root] [--mode <direct|server|auto>] [--check-ready] [--debug]
 
 Shows the nearest workspace root, index policy, index state, embedding schema,
 stored paths, refresh status, and suggested next action.
 
+--debug includes model download failure details.
 --check-ready preserves the normal output and exits non-zero unless the
 Workspace index is ready.`;
     case "config":

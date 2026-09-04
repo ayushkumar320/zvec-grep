@@ -667,8 +667,15 @@ function validateCliShape(
   if (command !== "query" && queryOnly) {
     throw new Error(`${queryOnly} can only be used with zg query`);
   }
-  if (options.debug && command !== "query" && command !== "index") {
-    throw new Error("--debug can only be used with zg query or zg index");
+  if (
+    options.debug &&
+    command !== "query" &&
+    command !== "index" &&
+    command !== "status"
+  ) {
+    throw new Error(
+      "--debug can only be used with zg query, zg index, or zg status",
+    );
   }
 
   const sharedSelection = firstEnabledOption([

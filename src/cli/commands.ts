@@ -12,6 +12,11 @@ import {
   type ZvecGrepInfoResult,
 } from "../index.js";
 import { globalConfigPath, updateGlobalConfig } from "../engine/config.js";
+import {
+  ENGINE_ERROR_CODE_PREFIX,
+  EngineError,
+  type EngineErrorCode,
+} from "../engine/errors.js";
 import { listEmbeddingModels } from "../engine/models/index.js";
 import { DaemonClient } from "../client/daemon-client.js";
 import {
@@ -32,6 +37,7 @@ import {
 } from "./format/context.js";
 import { printDebug } from "./format/debug.js";
 import { createIndexProgressReporter } from "./format/progress.js";
+import { formatContextLines } from "./errors.js";
 import {
   printWorkspaceInfo,
   printIndexPathFilterTip,
@@ -275,7 +281,7 @@ async function runIndex(parsed: ParsedArgs): Promise<void> {
         );
       }
       if (result.state === "failed") {
-        throw new Error(serverIndexFailureMessage(result));
+        throw serverIndexFailure(result);
       }
       if (result.state === "succeeded") {
         const status = (await client
@@ -293,7 +299,45 @@ async function runIndex(parsed: ParsedArgs): Promise<void> {
   });
 }
 
+function serverIndexFailure(result: Record<string, unknown>): Error {
+  const error = result.error;
+  if (error && typeof error === "object") {
+    const fields = error as Record<string, unknown>;
+    const code = nonEmptyString(fields.code);
+    if (code?.startsWith(`${ENGINE_ERROR_CODE_PREFIX}.`)) {
+      const message =
+        nonEmptyString(fields.message) ?? "Index job failed unexpectedly.";
+      return new EngineError(stripErrorCode(message, code), {
+        code: code as EngineErrorCode,
+        context: nonEmptyString(fields.context),
+        cause: nonEmptyString(fields.cause),
+      });
+    }
+  }
+  const cause =
+    error && typeof error === "object" && "cause" in error
+      ? nonEmptyString(error.cause)
+      : undefined;
+  return new Error(serverIndexFailureMessage(result), { cause });
+}
+
 function serverIndexFailureMessage(result: Record<string, unknown>): string {
+  const error = result.error;
+  const context =
+    error && typeof error === "object" && "context" in error
+      ? error.context
+      : undefined;
+  const details =
+    typeof context === "string" ? formatContextLines(context) : [];
+  return [
+    serverIndexFailureSummary(result),
+    ...(details.length > 0
+      ? ["Details:", ...details.map((line) => `  ${line}`)]
+      : []),
+  ].join("\n");
+}
+
+function serverIndexFailureSummary(result: Record<string, unknown>): string {
   const error = result.error;
   if (error && typeof error === "object") {
     const code = (error as Record<string, unknown>).code;
@@ -313,6 +357,19 @@ function serverIndexFailureMessage(result: Record<string, unknown>): string {
     }
   }
   return `Index job ${String(result.job_id ?? "unknown")} failed. Run zg status --mode server for details.`;
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0
+    ? value
+    : undefined;
+}
+
+function stripErrorCode(message: string, code: string): string {
+  const prefix = `[${code}]`;
+  return message.startsWith(prefix)
+    ? message.slice(prefix.length).trimStart()
+    : message;
 }
 
 async function runDirectIndex(

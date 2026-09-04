@@ -98,6 +98,303 @@ test("direct and server indexes report aggregate local model download progress",
   );
 });
 
+test("direct-mode debug index reports a redacted local model download failure", async (t) => {
+  const temporaryDirectory = await createTemporaryDirectory(
+    t,
+    "zvec-grep-direct-model-download-failure-",
+  );
+  const root = join(temporaryDirectory, "repo");
+  const home = join(temporaryDirectory, "home");
+  const modelCache = join(temporaryDirectory, "models");
+  await mkdir(join(root, "src"), { recursive: true });
+  await writeFile(
+    join(root, "src", "example.ts"),
+    "export const DirectModelDownloadFailure = 1;\n",
+  );
+
+  const preload = pathToFileURL(
+    resolve("test/helpers/failing-model-download.mjs"),
+  ).href;
+  const env = {
+    HOME: home,
+    USERPROFILE: home,
+    NO_COLOR: "1",
+    NODE_OPTIONS: `--import=${preload}`,
+    ZVEC_GREP_HOME: home,
+  };
+
+  await assert.rejects(
+    runCli(
+      [
+        "index",
+        "--mode",
+        "direct",
+        "--embedding",
+        "local/potion-code-16m-v2",
+        "--model-cache",
+        modelCache,
+        "--debug",
+        root,
+      ],
+      { cwd: root, env, timeout: 120_000 },
+    ),
+    (error) => {
+      assert.match(
+        error.stderr,
+        /Code:\s+ZVEC_GREP\.ENGINE\.MODELS\.MODEL2VEC_DOWNLOAD_FAILED/,
+      );
+      assert.match(
+        error.stderr,
+        /Cause:\s+simulated model download network failure/,
+      );
+      assert.match(error.stderr, /\[redacted\]/);
+      assert.doesNotMatch(
+        `${error.stdout}\n${error.stderr}`,
+        /model-download-secret/,
+      );
+      return true;
+    },
+  );
+});
+
+test("server-mode debug index reports a redacted local model download failure", async (t) => {
+  const temporaryDirectory = await createTemporaryDirectory(
+    t,
+    "zvec-grep-server-model-download-failure-",
+    { cleanup: false },
+  );
+  const root = join(temporaryDirectory, "repo");
+  const home = join(temporaryDirectory, "home");
+  const modelCache = join(temporaryDirectory, "models");
+  await mkdir(join(root, "src"), { recursive: true });
+  await writeFile(
+    join(root, "src", "example.ts"),
+    "export const ModelDownloadFailure = 1;\n",
+  );
+
+  const preload = pathToFileURL(
+    resolve("test/helpers/failing-model-download.mjs"),
+  ).href;
+  const port = await availablePort();
+  const env = {
+    HOME: home,
+    USERPROFILE: home,
+    NO_COLOR: "1",
+    NODE_OPTIONS: `--import=${preload}`,
+    ZVEC_GREP_HOME: home,
+    ZVEC_GREP_MODEL_CACHE: modelCache,
+    ZVEC_GREP_SERVER_URL: `http://127.0.0.1:${port}/mcp`,
+  };
+  t.after(async () => {
+    await runCli(["server", "off", "--home", home], {
+      cwd: root,
+      env,
+    }).catch(() => undefined);
+    await removeTemporaryDirectory(temporaryDirectory);
+  });
+  await runCli(
+    ["server", "on", "--listen", `127.0.0.1:${port}`, "--home", home],
+    { cwd: root, env },
+  );
+
+  await assert.rejects(
+    runCli(
+      [
+        "index",
+        "--mode",
+        "server",
+        "--embedding",
+        "local/potion-code-16m-v2",
+        "--debug",
+        root,
+      ],
+      { cwd: root, env, timeout: 120_000 },
+    ),
+    (error) => {
+      assert.match(error.stdout, /Workspace index: failed/);
+      assert.match(
+        error.stderr,
+        /Code:\s+ZVEC_GREP\.ENGINE\.MODELS\.MODEL2VEC_DOWNLOAD_FAILED/,
+      );
+      assert.match(
+        error.stderr,
+        /Cause:\s+simulated model download network failure/,
+      );
+      assert.match(error.stderr, /\[redacted\]/);
+      assert.doesNotMatch(error.stderr, /model-download-secret/);
+      return true;
+    },
+  );
+});
+
+test("direct and server indexes summarize model download failures unless debugging", async (t) => {
+  const temporaryDirectory = await createTemporaryDirectory(
+    t,
+    "zvec-grep-local-download-failure-",
+    { cleanup: false },
+  );
+  const directRoot = join(temporaryDirectory, "direct-repo");
+  const serverRoot = join(temporaryDirectory, "server-repo");
+  const home = join(temporaryDirectory, "home");
+  for (const root of [directRoot, serverRoot]) {
+    await mkdir(root, { recursive: true });
+    await writeFile(join(root, "README.md"), "# Model download failure\n");
+  }
+  const preload = pathToFileURL(
+    resolve("test/helpers/fake-model-download.mjs"),
+  ).href;
+  const port = await availablePort();
+  const clientEnv = {
+    HOME: home,
+    USERPROFILE: home,
+    NO_COLOR: "1",
+    ZVEC_GREP_HOME: home,
+    ZVEC_GREP_SERVER_URL: `http://127.0.0.1:${port}/mcp`,
+    ZVEC_GREP_SERVER_TOKEN: undefined,
+    ZVEC_GREP_SERVER_TOKEN_FILE: undefined,
+  };
+  const downloadEnv = {
+    ...clientEnv,
+    NODE_OPTIONS: `--import=${preload}`,
+    ZVEC_GREP_TEST_MODEL_DOWNLOAD_FAILURE: "1",
+  };
+  t.after(async () => {
+    await runCli(["server", "off", "--home", home], {
+      env: clientEnv,
+    }).catch(() => undefined);
+    await removeTemporaryDirectory(temporaryDirectory);
+  });
+
+  const conciseMessage = 'Failed to download model "local/potion-code-16m-v2".';
+  const conciseError = `Error: ${conciseMessage}`;
+  const assertConciseOutput = (output) => {
+    assert.ok(output.includes(conciseMessage), output);
+    assert.doesNotMatch(
+      output,
+      /ZVEC_GREP\.|MODEL2VEC_DOWNLOAD_FAILED|Code:|Details:|Cause:|huggingface\.co/,
+    );
+  };
+  const assertDebugOutput = (output) => {
+    assert.ok(output.includes(conciseMessage), output);
+    assert.match(output, /^\s*Details(?:\s|:)/m);
+    assert.match(output, /MODEL2VEC_DOWNLOAD_FAILED/);
+    assert.match(output, /model: local\/potion-code-16m-v2/);
+    assert.match(output, /repo: minishlab\/potion-code-16M-v2/);
+    assert.match(output, /revision: [a-f0-9]{40}/);
+    assert.match(output, /Cause(?:\s|:).*503/);
+    assert.doesNotMatch(
+      output,
+      /FILES_FAILED|failedReasons|model\.safetensors|tokenizer\.json|huggingface\.co/,
+    );
+  };
+  const assertDownloadFailure = (debug) => (error) => {
+    assert.equal(error.code, 1);
+    assert.ok(error.stderr.split("\n").includes(conciseError), error.stderr);
+    if (debug) {
+      assert.match(error.stderr, /^Code:/m);
+      assertDebugOutput(error.stderr);
+    } else {
+      assert.equal(error.stderr.trimEnd().split("\n").at(-1), conciseError);
+      assertConciseOutput(error.stderr);
+    }
+    return true;
+  };
+  for (const debug of [false, true]) {
+    await assert.rejects(
+      runCli(
+        [
+          "index",
+          directRoot,
+          "--mode",
+          "direct",
+          "--embedding",
+          "local/potion-code-16m-v2",
+          "--model-cache",
+          join(temporaryDirectory, "direct-models"),
+          ...(debug ? ["--debug"] : []),
+        ],
+        { env: downloadEnv, timeout: 120_000 },
+      ),
+      assertDownloadFailure(debug),
+    );
+    await assert.rejects(
+      runCli(
+        [
+          "query",
+          "model download failure",
+          "--mode",
+          "direct",
+          "--refresh",
+          "wait",
+          "--model-cache",
+          join(temporaryDirectory, "direct-models"),
+          ...(debug ? ["--debug"] : []),
+        ],
+        { cwd: directRoot, env: downloadEnv, timeout: 120_000 },
+      ),
+      assertDownloadFailure(debug),
+    );
+    const directStatus = await runCli(
+      ["status", directRoot, "--mode", "direct", ...(debug ? ["--debug"] : [])],
+      { env: clientEnv },
+    );
+    assert.doesNotMatch(
+      directStatus.stdout,
+      /Failed to download model|MODEL2VEC_DOWNLOAD_FAILED|failedReasons|^\s*Error\s/m,
+    );
+  }
+
+  await runCli(
+    ["server", "on", "--listen", `127.0.0.1:${port}`, "--home", home],
+    {
+      env: {
+        ...downloadEnv,
+        ZVEC_GREP_MODEL_CACHE: join(temporaryDirectory, "server-models"),
+      },
+    },
+  );
+  for (const debug of [false, true]) {
+    await assert.rejects(
+      runCli(
+        [
+          "index",
+          serverRoot,
+          "--mode",
+          "server",
+          "--embedding",
+          "local/potion-code-16m-v2",
+          ...(debug ? ["--debug"] : []),
+        ],
+        { env: clientEnv, timeout: 120_000 },
+      ),
+      assertDownloadFailure(debug),
+    );
+  }
+  const ready = await runCli(["server", "status", "--check-ready"], {
+    env: clientEnv,
+  });
+  assert.match(ready.stdout, /Server: ready/);
+  const status = await runCli(["status", serverRoot, "--mode", "server"], {
+    env: clientEnv,
+  });
+  assert.match(status.stdout, /Workspace index failed/);
+  assert.match(
+    status.stdout,
+    /^\s*Error\s+Failed to download model "local\/potion-code-16m-v2"\.$/m,
+  );
+  assertConciseOutput(status.stdout);
+  const debugStatus = await runCli(
+    ["status", serverRoot, "--mode", "server", "--debug"],
+    { env: clientEnv },
+  );
+  assert.match(debugStatus.stdout, /Workspace index failed/);
+  assert.match(
+    debugStatus.stdout,
+    /^\s*Error\s+Failed to download model "local\/potion-code-16m-v2"\.$/m,
+  );
+  assertDebugOutput(debugStatus.stdout);
+});
+
 test("server-mode index reports Workspace progress", async (t) => {
   const temporaryDirectory = await createTemporaryDirectory(
     t,

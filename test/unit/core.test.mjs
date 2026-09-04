@@ -20,6 +20,7 @@ import {
   EngineError,
   errorDetails,
   isEngineError,
+  redactErrorText,
 } from "../../dist/engine/errors.js";
 import { makeEntityId } from "../../dist/engine/extraction/ids.js";
 import { detectFileType } from "../../dist/engine/file-type.js";
@@ -416,6 +417,32 @@ test("CLI parser covers utility commands, provider controls, routes, and equals 
   assert.equal(parseArgs(["index", "--debug"]).options.debug, true);
 });
 
+test("CLI parser limits debug output to query, index, and workspace status", () => {
+  const supported = [
+    ["query", "--debug", "needle"],
+    ["index", "--debug"],
+    ["status", "--debug"],
+    ["status", "--check-ready", "--debug"],
+  ];
+  for (const args of supported) {
+    assert.equal(parseArgs(args).options.debug, true, args.join(" "));
+  }
+
+  const unsupported = [
+    ["install", "--debug"],
+    ["uninstall", "--debug"],
+    ["server", "start", "--debug"],
+    ["server", "status", "--debug"],
+  ];
+  for (const args of unsupported) {
+    assert.throws(
+      () => parseArgs(args),
+      /--debug can only be used with/,
+      args.join(" "),
+    );
+  }
+});
+
 test("CLI parser covers managed rg long and short compatibility options", () => {
   const long = parseArgs([
     "query",
@@ -602,6 +629,10 @@ test("color, range, highlighting, and error helpers are deterministic", () => {
   });
   assert.equal(isEngineError(error), true);
   assert.equal(isEngineError(new Error("failed")), false);
+  assert.equal(
+    redactErrorText("fetch failed token=model-download-secret", 512),
+    "fetch failed token=[redacted]",
+  );
 });
 
 test("file, model, content, and entity helpers classify inputs", () => {
