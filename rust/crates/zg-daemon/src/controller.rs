@@ -1,7 +1,9 @@
 use std::{
+    collections::BTreeSet,
     fs::OpenOptions,
     io::Write,
     path::{Path, PathBuf},
+    sync::{Mutex, MutexGuard, PoisonError},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -80,6 +82,7 @@ impl StartupLock {
                 token: Uuid::new_v4(),
             };
             if try_create_startup_record(&path, &record)? {
+                hold_token(record.token);
                 return Ok(Self { path, record });
             }
             let existing = match read_startup_record(&path).await {
@@ -89,7 +92,7 @@ impl StartupLock {
                 }
                 Err(error) => return Err(error),
             };
-            if record_owner_alive(&existing.hostname, existing.pid) {
+            if record_owner_alive(&existing.hostname, existing.pid, existing.token) {
                 if tokio::time::Instant::now() >= deadline {
                     return Err(DaemonError::Timeout { action: "start" });
                 }
@@ -140,6 +143,7 @@ fn try_create_startup_record(path: &Path, record: &StartupRecord) -> Result<bool
 
 impl Drop for StartupLock {
     fn drop(&mut self) {
+        release_token(self.record.token);
         let Ok(bytes) = std::fs::read(&self.path) else {
             return;
         };
@@ -179,7 +183,10 @@ impl InstanceLock {
         write_instance_record_file(&candidate, &record)?;
         let result = acquire_instance_record(&path, &candidate).await;
         let _ = remove_file_if_exists(&candidate).await;
-        result.map(|()| Self { path, record })
+        result.map(|()| {
+            hold_token(record.instance_token);
+            Self { path, record }
+        })
     }
 
     pub(crate) async fn mark_ready(&mut self) -> Result<(), DaemonError> {
@@ -204,13 +211,25 @@ impl InstanceLock {
     }
 }
 
+impl Drop for InstanceLock {
+    fn drop(&mut self) {
+        release_token(self.record.instance_token);
+    }
+}
+
 async fn acquire_instance_record(path: &Path, candidate: &Path) -> Result<(), DaemonError> {
     for _ in 0..3 {
         match std::fs::hard_link(candidate, path) {
             Ok(()) => return Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                 match read_instance_record_path(path).await {
-                    Ok(Some(existing)) if record_owner_alive(&existing.hostname, existing.pid) => {
+                    Ok(Some(existing))
+                        if record_owner_alive(
+                            &existing.hostname,
+                            existing.pid,
+                            existing.instance_token,
+                        ) =>
+                    {
                         return Err(DaemonError::AlreadyRunning { pid: existing.pid });
                     }
                     Ok(_) | Err(DaemonError::InvalidRecord(_)) => {
@@ -626,12 +645,33 @@ pub(crate) fn process_is_alive(pid: u32) -> bool {
     with_process(pid, |_| ()).is_some()
 }
 
-/// Reports whether a lock record still belongs to a live process other than
-/// this one. A record naming the current PID was left by an earlier process:
-/// containers restart the daemon as PID 1 with the same hostname, so the PID
-/// and hostname alone would make a crashed daemon's lock look live forever.
-fn record_owner_alive(host: &str, pid: u32) -> bool {
-    pid != std::process::id() && host == hostname() && process_is_alive(pid)
+/// Tokens of the startup and instance locks this process currently holds.
+static HELD_TOKENS: Mutex<BTreeSet<Uuid>> = Mutex::new(BTreeSet::new());
+
+fn held_tokens() -> MutexGuard<'static, BTreeSet<Uuid>> {
+    HELD_TOKENS.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn hold_token(token: Uuid) {
+    held_tokens().insert(token);
+}
+
+fn release_token(token: Uuid) {
+    held_tokens().remove(&token);
+}
+
+/// Reports whether a lock record still belongs to a live owner. A record
+/// naming the current PID is only live if this process holds that token:
+/// containers restart the daemon as PID 1 with the same hostname, so a
+/// crashed daemon's record can name the new process without being its lock.
+fn record_owner_alive(host: &str, pid: u32, token: Uuid) -> bool {
+    if host != hostname() {
+        return false;
+    }
+    if pid == std::process::id() {
+        return held_tokens().contains(&token);
+    }
+    process_is_alive(pid)
 }
 
 fn signal_process(pid: u32, signal: Signal) {
@@ -747,13 +787,15 @@ async fn remove_file_if_exists(path: &Path) -> Result<(), std::io::Error> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use tempfile::TempDir;
 
     use super::{
         DaemonInstanceRecord, InstanceLock, STARTUP_FILE, StartupLock, StartupRecord, daemon_dir,
         hostname, instance_path, read_instance_record,
     };
-    use crate::ServerConfig;
+    use crate::{DaemonError, ServerConfig};
 
     #[tokio::test]
     async fn missing_instance_record_is_stopped() {
@@ -857,6 +899,50 @@ mod tests {
             .await
             .expect("startup lock");
         assert_ne!(lock.record.token, stale.token);
+
+        lock.release().await.expect("release startup lock");
+    }
+
+    #[tokio::test]
+    async fn instance_lock_held_by_this_process_is_not_replaced() {
+        let home = TempDir::new().expect("temp home");
+        let config = ServerConfig::new(
+            "127.0.0.1:7999".parse().expect("listen address"),
+            home.path().to_owned(),
+        );
+        let lock = InstanceLock::acquire(&config).await.expect("instance lock");
+
+        let second = InstanceLock::acquire(&config).await;
+        assert!(
+            matches!(second, Err(DaemonError::AlreadyRunning { pid }) if pid == std::process::id())
+        );
+        let current = read_instance_record(home.path())
+            .await
+            .expect("current record")
+            .expect("current record exists");
+        assert_eq!(current.instance_token, lock.record.instance_token);
+
+        lock.release().await.expect("release instance lock");
+    }
+
+    #[tokio::test]
+    async fn startup_lock_held_by_this_process_is_not_replaced() {
+        let home = TempDir::new().expect("temp home");
+        let lock = StartupLock::acquire(home.path())
+            .await
+            .expect("startup lock");
+
+        let second = tokio::time::timeout(
+            Duration::from_millis(200),
+            StartupLock::acquire(home.path()),
+        )
+        .await;
+        assert!(second.is_err(), "second acquisition should keep waiting");
+        let path = daemon_dir(home.path()).join(STARTUP_FILE);
+        let current: StartupRecord =
+            serde_json::from_slice(&std::fs::read(&path).expect("startup record"))
+                .expect("startup record json");
+        assert_eq!(current, lock.record);
 
         lock.release().await.expect("release startup lock");
     }
