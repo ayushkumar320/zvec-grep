@@ -67,6 +67,7 @@ struct StartupRecord {
 struct StartupLock {
     path: PathBuf,
     record: StartupRecord,
+    _held: HeldToken,
 }
 
 impl StartupLock {
@@ -81,9 +82,15 @@ impl StartupLock {
                 hostname: hostname(),
                 token: Uuid::new_v4(),
             };
+            // Register before publishing so a contender in this process never
+            // sees our record without its token.
+            let held = HeldToken::new(record.token);
             if try_create_startup_record(&path, &record)? {
-                hold_token(record.token);
-                return Ok(Self { path, record });
+                return Ok(Self {
+                    path,
+                    record,
+                    _held: held,
+                });
             }
             let existing = match read_startup_record(&path).await {
                 Ok(existing) => existing,
@@ -143,7 +150,6 @@ fn try_create_startup_record(path: &Path, record: &StartupRecord) -> Result<bool
 
 impl Drop for StartupLock {
     fn drop(&mut self) {
-        release_token(self.record.token);
         let Ok(bytes) = std::fs::read(&self.path) else {
             return;
         };
@@ -159,6 +165,7 @@ impl Drop for StartupLock {
 pub(crate) struct InstanceLock {
     path: PathBuf,
     record: DaemonInstanceRecord,
+    _held: HeldToken,
 }
 
 impl InstanceLock {
@@ -178,14 +185,19 @@ impl InstanceLock {
             ready: false,
             mcp_toolset: config.mcp_toolset.unwrap_or_default().to_string(),
         };
+        // Register before publishing so a contender in this process never
+        // sees our record without its token; dropping the guard on failure
+        // or cancellation unregisters it.
+        let held = HeldToken::new(record.instance_token);
         let candidate =
             path.with_file_name(format!("{INSTANCE_FILE}.{}.tmp", record.instance_token));
         write_instance_record_file(&candidate, &record)?;
         let result = acquire_instance_record(&path, &candidate).await;
         let _ = remove_file_if_exists(&candidate).await;
-        result.map(|()| {
-            hold_token(record.instance_token);
-            Self { path, record }
+        result.map(|()| Self {
+            path,
+            record,
+            _held: held,
         })
     }
 
@@ -208,12 +220,6 @@ impl InstanceLock {
             remove_file_if_exists(&self.path).await?;
         }
         Ok(())
-    }
-}
-
-impl Drop for InstanceLock {
-    fn drop(&mut self) {
-        release_token(self.record.instance_token);
     }
 }
 
@@ -652,12 +658,20 @@ fn held_tokens() -> MutexGuard<'static, BTreeSet<Uuid>> {
     HELD_TOKENS.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-fn hold_token(token: Uuid) {
-    held_tokens().insert(token);
+/// Keeps a lock token registered in [`HELD_TOKENS`] until dropped.
+struct HeldToken(Uuid);
+
+impl HeldToken {
+    fn new(token: Uuid) -> Self {
+        held_tokens().insert(token);
+        Self(token)
+    }
 }
 
-fn release_token(token: Uuid) {
-    held_tokens().remove(&token);
+impl Drop for HeldToken {
+    fn drop(&mut self) {
+        held_tokens().remove(&self.0);
+    }
 }
 
 /// Reports whether a lock record still belongs to a live owner. A record
@@ -938,6 +952,90 @@ mod tests {
         )
         .await;
         assert!(second.is_err(), "second acquisition should keep waiting");
+        let path = daemon_dir(home.path()).join(STARTUP_FILE);
+        let current: StartupRecord =
+            serde_json::from_slice(&std::fs::read(&path).expect("startup record"))
+                .expect("startup record json");
+        assert_eq!(current, lock.record);
+
+        lock.release().await.expect("release startup lock");
+    }
+
+    #[tokio::test]
+    async fn interleaved_instance_lock_acquisitions_admit_one_owner() {
+        let home = TempDir::new().expect("temp home");
+        let config = ServerConfig::new(
+            "127.0.0.1:7999".parse().expect("listen address"),
+            home.path().to_owned(),
+        );
+
+        // Poll the first acquisition once so it publishes the lock file and
+        // parks on its temporary-file cleanup, then let the second one run.
+        let mut first = Box::pin(InstanceLock::acquire(&config));
+        let first_ready =
+            std::future::poll_fn(|cx| std::task::Poll::Ready(first.as_mut().poll(cx).is_ready()))
+                .await;
+        assert!(
+            !first_ready,
+            "first acquisition should park after publishing"
+        );
+        assert!(instance_path(home.path()).exists());
+
+        let second = InstanceLock::acquire(&config).await;
+        assert!(
+            matches!(second, Err(DaemonError::AlreadyRunning { pid }) if pid == std::process::id())
+        );
+        let mut lock = first.await.expect("first owner keeps the lock");
+        lock.mark_ready().await.expect("owner keeps its lock");
+
+        lock.release().await.expect("release instance lock");
+    }
+
+    #[tokio::test]
+    async fn cancelled_instance_lock_acquisition_releases_its_token() {
+        let home = TempDir::new().expect("temp home");
+        let config = ServerConfig::new(
+            "127.0.0.1:7999".parse().expect("listen address"),
+            home.path().to_owned(),
+        );
+
+        // Cancel an acquisition after it publishes the lock file. Its record
+        // stays behind under this PID, but the token must not stay held.
+        let mut cancelled = Box::pin(InstanceLock::acquire(&config));
+        let cancelled_ready = std::future::poll_fn(|cx| {
+            std::task::Poll::Ready(cancelled.as_mut().poll(cx).is_ready())
+        })
+        .await;
+        assert!(!cancelled_ready, "acquisition should park after publishing");
+        drop(cancelled);
+        let leftover = read_instance_record(home.path())
+            .await
+            .expect("leftover record")
+            .expect("leftover record exists");
+
+        let lock = InstanceLock::acquire(&config).await.expect("instance lock");
+        assert_ne!(lock.record.instance_token, leftover.instance_token);
+
+        lock.release().await.expect("release instance lock");
+    }
+
+    #[tokio::test]
+    async fn interleaved_startup_lock_acquisitions_admit_one_owner() {
+        let home = TempDir::new().expect("temp home");
+        let wait = Duration::from_millis(200);
+
+        let (first, second) = tokio::join!(
+            tokio::time::timeout(wait, StartupLock::acquire(home.path())),
+            tokio::time::timeout(wait, StartupLock::acquire(home.path())),
+        );
+        let lock = match (first, second) {
+            (Ok(Ok(lock)), Err(_)) | (Err(_), Ok(Ok(lock))) => lock,
+            (first, second) => panic!(
+                "expected exactly one owner, got {:?} and {:?}",
+                first.map(|result| result.map(|_| ())),
+                second.map(|result| result.map(|_| ()))
+            ),
+        };
         let path = daemon_dir(home.path()).join(STARTUP_FILE);
         let current: StartupRecord =
             serde_json::from_slice(&std::fs::read(&path).expect("startup record"))
